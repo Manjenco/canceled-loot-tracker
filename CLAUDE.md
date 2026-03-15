@@ -1,36 +1,16 @@
-# Canceled Loot Tracker — Claude Code Context
+# Canceled Loot Tracker — Web App
 
 ## What this project is
-A loot council system for the **Canceled** WoW guild.
-- Discord bot (discord.js v14) manages persistent button panels and notifications
-- Web app handles all complex UI — loot council, BIS submission, roster, history
-- Google Sheets is the database (source of truth); bot and web app both read/write it
-- Discord OAuth is how users authenticate on the web app
-- Supports multiple raid teams from a single bot + web app instance
+The web app component of the Canceled guild loot tracker.
+- Handles all complex UI — loot council, BIS submission, roster, history
+- Google Sheets is the database (source of truth); reads/writes via `src/lib/sheets.js`
+- Discord OAuth is how users authenticate
+- Supports multiple raid teams from a single instance
+
+The Discord bot (panel posting, RCLC import, brief notifications) lives in a
+separate repo: `loot-tracker-bot`.
 
 ## Architecture
-
-### Discord bot — notification and quick-action layer
-The bot maintains persistent embed panels in a `#raid-console` officer channel.
-These panels are auto-posted on bot startup if not already present (message IDs
-stored in the Config tab). Officers interact entirely by clicking buttons on these panels.
-No slash commands. The one exception is a single `/setup` command used once per team
-to post the initial panels and record their message IDs.
-
-**The four persistent panels:**
-| Panel | Buttons |
-|-------|---------|
-| Raid | Start Raid · End Raid · Import Loot (file upload modal) |
-| Roster | Open Roster → (link to web app `/roster`) |
-| BIS | Pending Submissions → (link to web app `/bis/review`) · Run Brief |
-| Links | Open Console → · Officer Guide → |
-
-**Simple actions** (Start Raid, End Raid, Run Brief) happen entirely inside Discord
-via ephemeral confirmation messages. **Complex actions** (loot council, BIS review,
-roster management) open the web app in the browser via link buttons.
-
-**RCLC loot import flow:** Import Loot button → Discord file upload modal →
-officer attaches CSV → bot parses, deduplicates, and writes to Loot Log sheet.
 
 ### Web app — the real UI
 Both officers and raiders log in with Discord OAuth. The app resolves their team
@@ -47,31 +27,44 @@ and role from the Roster sheet after login.
 | `/loot` | Officers | Full loot log, fix entries |
 | `/admin` | Officers | Config, RCLC map, sync loot tables |
 
-**Hosting:** TBD — Railway (bot + web app as two services) or Railway + Vercel.
-Decide before Phase 2 build starts.
+**Hosting:** Railway (web app as a service). Bot is deployed separately.
 
 ## Stack
 - **Runtime:** Node.js 20+, ESM modules (`"type": "module"` in package.json)
-- **Discord bot:** discord.js v14 — button interactions and modals only, no slash commands
-- **Web app:** TBD at Phase 2 (likely Express + React, or Next.js)
-- **Auth:** Discord OAuth2 for web app login
+- **Server:** Express + express-session
+- **Client:** React 18 + Vite (dev proxy to Express on port 3001)
+- **Auth:** Discord OAuth2
 - **Data:** Google Sheets API v4 via `googleapis` — Sheets is the database
 - **Service auth:** Google service account (JSON key file locally, env var on Railway)
-- **Config:** dotenv — secrets only (tokens, sheet IDs, session secret); all operational config in sheets
+- **Config:** dotenv — all secrets and sheet IDs in `.env`
 
 ## Project structure
 ```
 src/
-  index.js                 — bot entry point; registers button/modal handlers
   lib/
     sheets.js              — ALL Sheets reads/writes live here (master + per-team)
-    teams.js               — loads team registry from master sheet; resolves team by channel
-    permissions.js         — isOfficer() role check helper
-    panels.js              — posts and refreshes persistent Discord panels
-  handlers/
-    buttons/               — one file per button ID
-    modals/                — one file per modal ID (e.g. loot-import)
-  web/                     — web app (added Phase 2)
+    teams.js               — loads team registry from master sheet; resolves team by name
+    specs.js               — spec/class constants
+    rclc.js                — RCLC response map helpers
+  web/
+    server/
+      index.js             — Express entry point
+      routes/              — one file per route group (auth, me, dashboard, bis, etc.)
+      middleware/          — session auth guard
+    client/
+      src/
+        App.jsx            — React app root
+        pages/             — one file per page
+        components/        — shared components
+        hooks/             — shared hooks
+    vite.config.js         — Vite config (root: ./client, proxy /api → 3001)
+    package.json           — web deps (express, react, vite, etc.)
+scripts/
+  seed-item-db.js          — seed Item DB from Blizzard API
+  seed-default-bis.js      — seed Default BIS from guides
+  backfill-weapon-types.js — maintenance backfill
+  blizzard.js              — Blizzard API helpers
+  wowhead.js               — Wowhead scraping helpers
 config/
   service-account.json     — gitignored Google service account key
 ```
@@ -85,7 +78,7 @@ One guild-wide sheet that all teams share. Contains:
 |-----|---------|
 | **Teams** (A=TeamName, B=SheetId) | Registry of all teams — the only place to add/remove a team |
 | **Global Config** (A=Key, B=Value) | Guild-wide settings: `guild_id`, `web_app_url` |
-| **Item DB** | Raid and M+ item database (seeded via Blizzard API) |
+| **Item DB** | Raid and M+ item database (seeded via web admin) |
 | **Default BIS** | Spec BIS defaults (seeded via web admin) |
 | **Spec BIS Config** | Per-spec preferred BIS source |
 | **Transfers** | Cross-team transfer audit log |
@@ -106,19 +99,18 @@ Each team has its own sheet with team-specific data:
 - Adding a new team = add a row to the master sheet Teams tab + create a team sheet
 - Zero env var changes, zero code changes, zero redeploy needed
 - `initTeams()` in `teams.js` reads the Teams registry at startup, then loads each team's Config
-- `getTeamByChannel(channelId)` resolves which team a Discord interaction belongs to
 - Master-sheet functions (`getItemDb`, `getDefaultBis`, `getEffectiveDefaultBis`, etc.) take no `sheetId`
 - Team-sheet functions (`getRoster`, `getLootLog`, `getBisSubmissions`, etc.) take `sheetId`
 
 ## Access control model
 | Level | Who | Can do |
 |-------|-----|--------|
-| Anyone | — | View public pages on web app (none currently) |
-| Raider | Team Discord role | Web app: view own dashboard, submit/edit BIS |
-| Officer | Officer Discord role | Web app: all officer pages; Discord: all panel buttons |
+| Anyone | — | View public pages (none currently) |
+| Raider | Team Discord role | View own dashboard, submit/edit BIS |
+| Officer | Officer Discord role | All officer pages |
 
-Discord panel buttons check the officer role before acting. The web app checks
-the role resolved from the Roster sheet after OAuth login.
+The web app checks the role resolved from the Roster sheet after OAuth login.
+`guild_id` comes from the master sheet Global Config; `officer_role_id` comes from the team's Config tab.
 
 ## Google Sheets schema
 Column order is the source of truth. Tabs marked **[master]** live in the master sheet; all others live in each team's sheet.
@@ -135,7 +127,7 @@ Column order is the source of truth. Tabs marked **[master]** live in the master
 - UpgradeType values: BIS | Non-BIS | Tertiary
 - BIS and Non-BIS count toward loot totals (shown by difficulty N/H/M)
 - Tertiary is recorded but excluded from totals, shown separately
-- Primary loot entry path: RCLC CSV import via Discord modal
+- Primary loot entry path: RCLC CSV import via Discord bot
 - Fallback: manual entry form on web app `/loot`
 
 ### BIS Submissions (A=Id B=CharName C=Spec D=Slot E=TrueBIS F=RaidBIS G=Rationale H=Status I=SubmittedAt J=ReviewedBy K=OfficerNote)
@@ -166,15 +158,15 @@ Column order is the source of truth. Tabs marked **[master]** live in the master
 ### Global Config **[master]** (A=Key B=Value)
 Guild-wide settings shared across all teams:
 - `guild_id`    — Discord guild (server) ID; required for officer role checks on web login
-- `web_app_url` — base URL of the web app (for link buttons in panels)
+- `web_app_url` — base URL of the web app (for link buttons in bot panels)
 
-### Config (A=Key B=Value)
-Team-specific settings. One per team sheet:
-- `console_message_ids`       — JSON map of panel name -> Discord message ID (written by bot on setup)
+### Config (A=Key B=Value) — per team
+Team-specific settings:
 - `officer_role_id`           — Discord role ID for officers
 - `team_role_id`              — Discord role ID for team members
-- `console_channel_id`        — #raid-console channel ID
-- `brief_channel_id`          — pre-raid brief channel ID
+- `console_channel_id`        — #raid-console channel ID (used by bot)
+- `brief_channel_id`          — pre-raid brief channel ID (used by bot)
+- `console_message_ids`       — JSON map of panel name -> Discord message ID (written by bot)
 - `raid_days`                 — e.g. "Tue,Thu"
 - `raid_time`                 — e.g. "20:00"
 - `raid_instance`             — e.g. "Amirdrassil"
@@ -189,7 +181,7 @@ Maps RCLootCouncil button labels to internal upgrade types:
 - "BIS" -> BIS (counted)
 - "Item Upgrade" -> Non-BIS (counted)
 - "Tertiary" -> Tertiary (not counted)
-Unmapped responses default to Non-BIS with a bot warning.
+Unmapped responses default to Non-BIS.
 
 ### Transfers **[master]** (A=Id B=CharName C=FromTeam D=ToTeam E=Date F=Reason)
 - Lives in the master sheet — covers all teams
@@ -231,7 +223,7 @@ dropdown for each slot. Invalid combinations are never presented to the user.
 
 ## BIS display labels
 Column names in the sheet are `TrueBIS` and `RaidBIS` — do not rename them.
-Display labels in all UI (web app, Discord embeds) are:
+Display labels in all UI are:
 - `TrueBIS` -> **"Overall BIS"**
 - `RaidBIS` -> **"Raid BIS"**
 
@@ -280,26 +272,8 @@ Default candidate filter: players with Raid BIS set for this slot.
 | Item Upgrade | Non-BIS  | Yes — Non-BIS drop count (by N/H/M)       |
 | Tertiary     | Tertiary | No — shown separately, not in totals      |
 
-## Pre-raid brief contents
-Auto-posted to brief channel at `brief_lead_time_minutes` before raid (default 60 min).
-Also triggered manually via the BIS panel "Run Brief" button.
-1. Pending BIS submissions with Approve / Reject buttons
-2. Raiders with zero approved personal BIS submissions
-3. Roster changes since last raid
-
-## Discord channel structure (per team)
-| Channel              | Purpose                                    | Access         |
-|----------------------|--------------------------------------------|----------------|
-| #[team]-raid-console | Persistent bot panels — all officer actions| Officers only  |
-| #[team]-brief        | Pre-raid brief auto-posts                  | Officers (read)|
-
-No public loot channel — raiders use the web app for history and BIS status.
-
 ## Key design decisions (don't re-litigate these)
-**No slash commands.** Bot uses persistent button panels only. One `/setup` command
-exists solely to post the initial panels on first run.
-
-**No priority score.** The bot shows raw data only. Council makes the call.
+**No priority score.** The app shows raw data only. Council makes the call.
 
 **Loot history stays with the team.** On transfer, player starts fresh. History on
 old team is untouched.
@@ -307,13 +281,12 @@ old team is untouched.
 **Crafted items not tracked.** `<Crafted>` is a sentinel in BIS lists only.
 No crafted items in Item DB or Loot Log.
 
-**RCLC is the primary import path.** Discord modal file upload -> CSV parse ->
-dedup -> write to Loot Log. Manual entry on web app `/loot` is the fallback.
+**RCLC is the primary import path.** Handled by the bot. Manual entry on web app `/loot` is the fallback.
 
 **Attendance via Warcraft Logs (Phase 10).** Direct Sheet edit is the interim fallback.
 
 **Roster Role column is always computed.** Never write to Role (column D) directly.
-The onEdit Apps Script trigger handles it. Bot reads Role but never writes it.
+The onEdit Apps Script trigger handles it.
 
 **Realm not tracked.** Removed from Roster — character name alone is the identifier
 within a team.
@@ -323,26 +296,20 @@ slots. `<Catalyst>` is only offered for non-tier armor slots. Neither is offered
 accessory slots. This is a UI constraint only — validate it on form submit too.
 
 ## Build phases (current status)
-- ✅ **Phase 1** — Bot scaffold, Sheets auth, panel posting, basic button handlers
-- ⬜ **Phase 2** — Web app skeleton + Discord OAuth login + raider dashboard
+- ✅ **Phase 2** — Web app skeleton + Discord OAuth login + raider dashboard
 - ⬜ **Phase 3** — BIS submission form (web app `/bis`)
 - ⬜ **Phase 4** — Loot council view (web app `/council`)
-- ⬜ **Phase 5** — RCLC CSV import via Discord modal
 - ⬜ **Phase 6** — Officer web pages: roster mgmt, BIS review, loot log, admin
 - ⬜ **Phase 7** — Multi-team support, transfers
-- ⬜ **Phase 8** — Pre-raid brief auto-scheduler
-- ⬜ **Phase 9** — Blizzard API sync (Item DB seeding)
+- ⬜ **Phase 9** — Blizzard API sync (Item DB seeding via `/admin`)
 - ⬜ **Phase 10** — Warcraft Logs attendance integration
 
 ## Code style conventions
 - ESM throughout (`import`/`export`, no `require`)
 - Async/await, no raw Promise chains
 - All Sheets access goes through `src/lib/sheets.js` — never import googleapis elsewhere
-- Button handlers live in `src/handlers/buttons/` — one file per customId
-- Modal handlers live in `src/handlers/modals/` — one file per customId
-- Always check officer role before acting on any button in the console channel
-- Error format: `❌ Reason for failure.` (red X emoji, ephemeral)
-- Success embeds: color `0xCC1010` (Canceled crimson) for positive, `0x1A1A1A` for neutral
+- Route handlers live in `src/web/server/routes/` — one file per route group
+- Error responses: `{ error: 'message' }` JSON with appropriate HTTP status
 
 ## Guild branding
 - Name: **Canceled**
