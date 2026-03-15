@@ -96,9 +96,9 @@ router.get('/default-bis', async (req, res) => {
 
   try {
     const [allRows, itemDb, specConfig] = await Promise.all([
-      getDefaultBis(teamSheetId),
-      getItemDb(teamSheetId),
-      getSpecBisConfig(teamSheetId),
+      getDefaultBis(),
+      getItemDb(),
+      getSpecBisConfig(),
     ]);
 
     const canonicalSpec = toCanonical(spec);
@@ -158,7 +158,7 @@ router.post('/default-bis', async (req, res) => {
       raidBisItemId: u.raidBisItemId ?? '',
     }));
 
-    await updateDefaultBisRaidBis(teamSheetId, writes);
+    await updateDefaultBisRaidBis(writes);
     res.json({ ok: true, updated: writes.length });
   } catch (err) {
     console.error('[ADMIN] default-bis POST error:', err);
@@ -179,7 +179,7 @@ router.post('/spec-bis-source', async (req, res) => {
 
   try {
     const canonicalSpec = toCanonical(spec);
-    await setSpecBisSource(teamSheetId, canonicalSpec, source);
+    await setSpecBisSource(canonicalSpec, source);
     res.json({ ok: true, spec: canonicalSpec, source });
   } catch (err) {
     console.error('[ADMIN] spec-bis-source POST error:', err);
@@ -203,9 +203,9 @@ router.get('/bis-review', async (req, res) => {
   try {
     const [allSubmissions, itemDb, allDefaults, specConfig] = await Promise.all([
       getBisSubmissions(teamSheetId),
-      getItemDb(teamSheetId),
-      getDefaultBis(teamSheetId),
-      getSpecBisConfig(teamSheetId),
+      getItemDb(),
+      getDefaultBis(),
+      getSpecBisConfig(),
     ]);
 
     // ── Item DB index ──────────────────────────────────────────────────────────

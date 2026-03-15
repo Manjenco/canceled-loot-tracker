@@ -57,15 +57,15 @@ Decide before Phase 2 build starts.
 - **Auth:** Discord OAuth2 for web app login
 - **Data:** Google Sheets API v4 via `googleapis` — Sheets is the database
 - **Service auth:** Google service account (JSON key file locally, env var on Railway)
-- **Config:** dotenv — all secrets and team config in `.env`
+- **Config:** dotenv — secrets only (tokens, sheet IDs, session secret); all operational config in sheets
 
 ## Project structure
 ```
 src/
   index.js                 — bot entry point; registers button/modal handlers
   lib/
-    sheets.js              — ALL Sheets reads/writes live here
-    teams.js               — resolves team from channel ID via TEAM_* env vars
+    sheets.js              — ALL Sheets reads/writes live here (master + per-team)
+    teams.js               — loads team registry from master sheet; resolves team by channel
     permissions.js         — isOfficer() role check helper
     panels.js              — posts and refreshes persistent Discord panels
   handlers/
@@ -76,16 +76,39 @@ config/
   service-account.json     — gitignored Google service account key
 ```
 
+## Sheet architecture
+
+### Master sheet (`MASTER_SHEET_ID` env var)
+One guild-wide sheet that all teams share. Contains:
+
+| Tab | Purpose |
+|-----|---------|
+| **Teams** (A=TeamName, B=SheetId) | Registry of all teams — the only place to add/remove a team |
+| **Global Config** (A=Key, B=Value) | Guild-wide settings: `guild_id`, `web_app_url` |
+| **Item DB** | Raid and M+ item database (seeded via Blizzard API) |
+| **Default BIS** | Spec BIS defaults (seeded via web admin) |
+| **Spec BIS Config** | Per-spec preferred BIS source |
+| **Transfers** | Cross-team transfer audit log |
+
+### Per-team sheets
+Each team has its own sheet with team-specific data:
+
+| Tab | Purpose |
+|-----|---------|
+| Roster | Characters, owners, status |
+| Loot Log | All loot awarded to this team |
+| BIS Submissions | Player BIS submissions + review status |
+| Config (A=Key, B=Value) | Team-specific: channel IDs, role IDs, raid settings |
+| Raids | Raid sessions and attendance |
+| RCLC Response Map | Team-specific RCLC button→type mapping |
+
 ## Multi-team model
-- Each team has its own Google Sheet (same schema)
-- Adding a new team = one env var + populate that team's Config sheet. No code changes:
-  ```
-  TEAM_MYTHIC_SHEET_ID=...   <- the only env var needed per team
-  ```
-- All other team config lives in the Config sheet tab (channel IDs, role IDs, guild ID).
-  `initTeams()` reads this at startup and populates the in-memory team objects.
-- `getTeamByChannel(channelId)` in `teams.js` resolves which team an interaction belongs to
-- All sheet helpers take `sheetId` as first argument so the same function serves all teams
+- Adding a new team = add a row to the master sheet Teams tab + create a team sheet
+- Zero env var changes, zero code changes, zero redeploy needed
+- `initTeams()` in `teams.js` reads the Teams registry at startup, then loads each team's Config
+- `getTeamByChannel(channelId)` resolves which team a Discord interaction belongs to
+- Master-sheet functions (`getItemDb`, `getDefaultBis`, `getEffectiveDefaultBis`, etc.) take no `sheetId`
+- Team-sheet functions (`getRoster`, `getLootLog`, `getBisSubmissions`, etc.) take `sheetId`
 
 ## Access control model
 | Level | Who | Can do |
@@ -98,7 +121,7 @@ Discord panel buttons check the officer role before acting. The web app checks
 the role resolved from the Roster sheet after OAuth login.
 
 ## Google Sheets schema
-Each team has one Sheet with these tabs. Column order is the source of truth.
+Column order is the source of truth. Tabs marked **[master]** live in the master sheet; all others live in each team's sheet.
 
 ### Roster (A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick)
 - Realm column removed — not needed
@@ -123,11 +146,11 @@ Each team has one Sheet with these tabs. Column order is the source of truth.
 - RaidBIS is optional per slot — empty means player has no Raid BIS preference for this slot
 - Effective BIS per slot: approved personal submission > spec default fallback
 
-### Default BIS (A=Spec B=Slot C=TrueBIS D=TrueBISItemId E=RaidBIS F=RaidBISItemId G=Source)
+### Default BIS **[master]** (A=Spec B=Slot C=TrueBIS D=TrueBISItemId E=RaidBIS F=RaidBISItemId G=Source)
 - Source = where the default came from: Icy Veins | Wowhead | Maxroll | Class Discord | Manual
 - Seeded via web app `/admin`
 
-### Item DB (A=ItemId B=Name C=Slot D=SourceType E=SourceName F=Instance G=Difficulty H=ArmorType I=IsTierToken)
+### Item DB **[master]** (A=ItemId B=Name C=Slot D=SourceType E=SourceName F=Instance G=Difficulty H=ArmorType I=IsTierToken)
 - SourceType: Raid | Mythic+
 - ArmorType: Cloth | Leather | Mail | Plate | Accessory | Tier Token
   (Accessory = armor-type-agnostic slots like neck/ring/trinket/back/weapon — matches any armor type)
@@ -140,10 +163,14 @@ Each team has one Sheet with these tabs. Column order is the source of truth.
 - AttendeeIds = comma-separated Discord user IDs
 - Populated via Warcraft Logs API (Phase 10); direct Sheet edit as interim
 
+### Global Config **[master]** (A=Key B=Value)
+Guild-wide settings shared across all teams:
+- `guild_id`    — Discord guild (server) ID; required for officer role checks on web login
+- `web_app_url` — base URL of the web app (for link buttons in panels)
+
 ### Config (A=Key B=Value)
-Key settings:
+Team-specific settings. One per team sheet:
 - `console_message_ids`       — JSON map of panel name -> Discord message ID (written by bot on setup)
-- `guild_id`                  — Discord guild (server) ID; required for officer role checks on web login
 - `officer_role_id`           — Discord role ID for officers
 - `team_role_id`              — Discord role ID for team members
 - `console_channel_id`        — #raid-console channel ID
@@ -156,7 +183,6 @@ Key settings:
 - `brief_lead_time_minutes`   — default 60
 - `brief_auto_enabled`        — default true
 - `bis_default_sources`       — default "Icy Veins,Wowhead,Maxroll,Class Discord,Manual"
-- `web_app_url`               — base URL of the web app (for link buttons in panels)
 
 ### RCLC Response Map (A=RCLCButton B=InternalType C=CountedInTotals)
 Maps RCLootCouncil button labels to internal upgrade types:
@@ -165,7 +191,8 @@ Maps RCLootCouncil button labels to internal upgrade types:
 - "Tertiary" -> Tertiary (not counted)
 Unmapped responses default to Non-BIS with a bot warning.
 
-### Transfers (A=Id B=CharName C=FromTeam D=ToTeam E=Date F=Reason)
+### Transfers **[master]** (A=Id B=CharName C=FromTeam D=ToTeam E=Date F=Reason)
+- Lives in the master sheet — covers all teams
 - Loot history does NOT follow a transfer — player starts fresh on new team
 - This tab is audit log only
 

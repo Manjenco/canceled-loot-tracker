@@ -105,8 +105,8 @@ router.get('/:charName', async (req, res) => {
       getRoster(teamSheetId),
       getLootLog(teamSheetId),
       getBisSubmissions(teamSheetId),
-      getEffectiveDefaultBis(teamSheetId),
-      getItemDb(teamSheetId),
+      getEffectiveDefaultBis(),
+      getItemDb(),
     ]);
 
     const rosterChar = roster.find(r => r.charName === charName);

@@ -65,7 +65,7 @@ router.get('/items', async (req, res) => {
 
   try {
     const [itemDb, config] = await Promise.all([
-      getItemDb(teamSheetId),
+      getItemDb(),
       getConfig(teamSheetId),
     ]);
 
@@ -120,11 +120,11 @@ router.get('/candidates', async (req, res) => {
 
   try {
     const [itemDb, roster, lootLog, bisSubmissions, effectiveBis, raids] = await Promise.all([
-      getItemDb(teamSheetId),
+      getItemDb(),
       getRoster(teamSheetId),
       getLootLog(teamSheetId),
       getBisSubmissions(teamSheetId),
-      getEffectiveDefaultBis(teamSheetId),
+      getEffectiveDefaultBis(),
       getRaids(teamSheetId),
     ]);
 
@@ -305,7 +305,7 @@ router.get('/curio-candidates', async (req, res) => {
       getRoster(teamSheetId),
       getLootLog(teamSheetId),
       getBisSubmissions(teamSheetId),
-      getEffectiveDefaultBis(teamSheetId),
+      getEffectiveDefaultBis(),
       getRaids(teamSheetId),
       getConfig(teamSheetId),
     ]);

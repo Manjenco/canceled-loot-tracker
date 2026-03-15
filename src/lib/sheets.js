@@ -2,7 +2,16 @@
  * sheets.js — Google Sheets abstraction layer.
  *
  * All bot code talks to this module; nothing else imports googleapis directly.
- * Every public function takes a sheetId so the same code serves multiple teams.
+ *
+ * Two kinds of functions:
+ *   Master-sheet functions   — read/write the guild-wide master sheet (MASTER_SHEET_ID).
+ *                              These have NO sheetId parameter; they resolve the ID internally.
+ *                              Covers: Item DB, Default BIS, Spec BIS Config, Team Registry,
+ *                              Global Config, Transfers.
+ *   Team-sheet functions     — read/write a specific team's sheet.
+ *                              These take sheetId as the first parameter.
+ *                              Covers: Roster, Loot Log, BIS Submissions, Config, Raids,
+ *                              RCLC Response Map.
  *
  * Auth strategy:
  *   Local dev  → GOOGLE_SERVICE_ACCOUNT_KEY_PATH points to a JSON key file
@@ -96,6 +105,18 @@ async function cachedRead(sheetId, tabKey, fn) {
   const result = await fn();
   cacheSet(key, result);
   return result;
+}
+
+// ── Master sheet accessor ─────────────────────────────────────────────────────
+
+/**
+ * Returns the guild-wide master sheet ID from MASTER_SHEET_ID env var.
+ * Throws a clear error if the env var is not set so misconfiguration is obvious.
+ */
+function getMasterSheetId() {
+  const id = process.env.MASTER_SHEET_ID;
+  if (!id) throw new Error('MASTER_SHEET_ID env var is required but not set');
+  return id;
 }
 
 // ── Low-level read/write ──────────────────────────────────────────────────────
@@ -671,14 +692,16 @@ export async function clearRejectedBisSubmission(sheetId, charName, slot) {
  * Item DB tab  (A=ItemId B=Name C=Slot D=SourceType E=SourceName
  *               F=Instance G=Difficulty H=ArmorType I=IsTierToken J=WeaponType)
  *
+ * Lives in the master sheet. No sheetId parameter.
+ *
  * Upserts items by ItemId — new items are appended, existing ones are skipped.
  * Pass { replace: true } to clear first (full re-seed).
  *
- * @param {string}   sheetId
  * @param {object[]} items   Array of item objects matching the schema above
  * @param {object}   opts    { replace?: boolean }
  */
-export async function writeItemDb(sheetId, items, { replace = false } = {}) {
+export async function writeItemDb(items, { replace = false } = {}) {
+  const sheetId = getMasterSheetId();
   if (replace) {
     await clearRange(sheetId, 'Item DB!A2:J');
   }
@@ -711,11 +734,11 @@ export async function writeItemDb(sheetId, items, { replace = false } = {}) {
 }
 
 /**
- * Item DB tab — read all items.
- * @param {string} sheetId
+ * Item DB tab — read all items. Lives in the master sheet.
  * @returns {object[]}
  */
-export async function getItemDb(sheetId) {
+export async function getItemDb() {
+  const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'itemDb', async () => {
     const rows = await readRange(sheetId, 'Item DB!A2:J');
     return rows
@@ -737,10 +760,11 @@ export async function getItemDb(sheetId) {
 
 /**
  * Default BIS tab  (A=Spec B=Slot C=TrueBIS D=RaidBIS E=Source)
- * @param {string} sheetId
+ * Lives in the master sheet. No sheetId parameter.
  * @returns {object[]}
  */
-export async function getDefaultBis(sheetId) {
+export async function getDefaultBis() {
+  const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'defaultBis', async () => {
     const rows = await readRange(sheetId, 'Default BIS!A2:G');
     return rows
@@ -769,7 +793,7 @@ function itemIdCell(id) {
 }
 
 /**
- * Write Default BIS entries.
+ * Write Default BIS entries. Lives in the master sheet. No sheetId parameter.
  *
  * Default (replace=false): skip rows whose (Spec, Slot, Source) already exists.
  *   Multiple sources for the same spec+slot coexist — each source gets its own row.
@@ -778,12 +802,12 @@ function itemIdCell(id) {
  *   being written, then append the new entries. Other specs' rows and rows from other
  *   sources for the same spec are preserved.
  *
- * @param {string}   sheetId
  * @param {object[]} entries  Array of { spec, slot, trueBis, trueBisItemId, raidBis, raidBisItemId, source }
  * @param {object}   opts     { replace?: boolean }
  * @returns {number} number of rows written
  */
-export async function writeDefaultBis(sheetId, entries, { replace = false } = {}) {
+export async function writeDefaultBis(entries, { replace = false } = {}) {
+  const sheetId = getMasterSheetId();
   if (!entries.length) return 0;
 
   if (replace) {
@@ -838,16 +862,16 @@ export async function writeDefaultBis(sheetId, entries, { replace = false } = {}
 }
 
 // ── Spec BIS Config ───────────────────────────────────────────────────────────
+// Lives in the master sheet. All functions here have no sheetId parameter.
 
 const SPEC_BIS_CONFIG_TAB = 'Spec BIS Config';
 
 /**
- * Create the Spec BIS Config tab with its header row if it doesn't already exist.
+ * Create the Spec BIS Config tab in the master sheet if it doesn't already exist.
  * Safe to call repeatedly — a no-op if the tab is present.
- *
- * @param {string} sheetId
  */
-async function ensureSpecBisConfigTab(sheetId) {
+async function ensureSpecBisConfigTab() {
+  const sheetId = getMasterSheetId();
   // Try a lightweight read first — if it succeeds the tab exists.
   try {
     await readRange(sheetId, `${SPEC_BIS_CONFIG_TAB}!A1:A1`);
@@ -872,14 +896,14 @@ async function ensureSpecBisConfigTab(sheetId) {
 }
 
 /**
- * Read the Spec BIS Config tab (A=Spec B=PreferredSource).
+ * Read the Spec BIS Config tab (A=Spec B=PreferredSource) from the master sheet.
  * Returns a Map<specName, sourceName>.
  * If the tab doesn't exist yet, returns an empty Map.
  *
- * @param {string} sheetId
  * @returns {Map<string,string>}
  */
-export async function getSpecBisConfig(sheetId) {
+export async function getSpecBisConfig() {
+  const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'specBisConfig', async () => {
     try {
       const rows = await readRange(sheetId, `${SPEC_BIS_CONFIG_TAB}!A2:B`);
@@ -892,16 +916,16 @@ export async function getSpecBisConfig(sheetId) {
 }
 
 /**
- * Set the preferred BIS source for a single spec.
+ * Set the preferred BIS source for a single spec in the master sheet.
  * Creates the Spec BIS Config tab if it doesn't exist yet.
  * Upserts the row for the given spec.
  *
- * @param {string} sheetId
  * @param {string} spec    Canonical spec name, e.g. "Frost Mage"
  * @param {string} source  Canonical source name, e.g. "Icy Veins"
  */
-export async function setSpecBisSource(sheetId, spec, source) {
-  await ensureSpecBisConfigTab(sheetId);
+export async function setSpecBisSource(spec, source) {
+  const sheetId = getMasterSheetId();
+  await ensureSpecBisConfigTab();
   const rows = await readRange(sheetId, `${SPEC_BIS_CONFIG_TAB}!A2:B`);
   const rowIndex = rows.findIndex(r => r[0] === spec);
   if (rowIndex >= 0) {
@@ -913,15 +937,15 @@ export async function setSpecBisSource(sheetId, spec, source) {
 }
 
 /**
- * Overwrite the entire Spec BIS Config tab with a new mapping.
+ * Overwrite the entire Spec BIS Config tab in the master sheet with a new mapping.
  * Creates the tab if it doesn't exist yet.
  * Efficient for bulk operations like set-source-all.
  *
- * @param {string}   sheetId
  * @param {object[]} entries  Array of { spec, source }
  */
-export async function writeSpecBisConfig(sheetId, entries) {
-  await ensureSpecBisConfigTab(sheetId);
+export async function writeSpecBisConfig(entries) {
+  const sheetId = getMasterSheetId();
+  await ensureSpecBisConfigTab();
   await clearRange(sheetId, `${SPEC_BIS_CONFIG_TAB}!A2:B`);
   if (entries.length) {
     await appendRows(sheetId, `${SPEC_BIS_CONFIG_TAB}!A:B`, entries.map(e => [e.spec, e.source]));
@@ -931,18 +955,19 @@ export async function writeSpecBisConfig(sheetId, entries) {
 
 /**
  * Return Default BIS rows filtered to each spec's preferred source.
+ * Reads from the master sheet. No sheetId parameter.
  *
  * For each (spec, slot), the row from the spec's preferred source (per Spec BIS Config)
  * is returned. Falls back to available sources in order: Icy Veins → Wowhead → Maxroll.
  *
- * @param {string} sheetId
  * @returns {object[]}
  */
-export async function getEffectiveDefaultBis(sheetId) {
+export async function getEffectiveDefaultBis() {
+  const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'effectiveBis', async () => {
     const [all, config] = await Promise.all([
-      getDefaultBis(sheetId),
-      getSpecBisConfig(sheetId),
+      getDefaultBis(),
+      getSpecBisConfig(),
     ]);
 
     const FALLBACK_ORDER = ['Icy Veins', 'Wowhead', 'Maxroll'];
@@ -1064,11 +1089,12 @@ export async function getRaids(sheetId) {
 
 /**
  * Write Raid BIS values for specific (spec, slot, source) rows in the Default BIS tab.
+ * Writes to the master sheet. No sheetId parameter.
  *
- * @param {string}   sheetId
  * @param {object[]} updates  Array of { spec, slot, source, raidBis, raidBisItemId }
  */
-export async function updateDefaultBisRaidBis(sheetId, updates) {
+export async function updateDefaultBisRaidBis(updates) {
+  const sheetId = getMasterSheetId();
   if (!updates.length) return;
 
   const rows = await readRange(sheetId, 'Default BIS!A2:G');
@@ -1099,4 +1125,45 @@ export async function updateDefaultBisRaidBis(sheetId, updates) {
     },
   }));
   cacheInvalidate(sheetId, 'defaultBis', 'effectiveBis');
+}
+
+// ── Master sheet — registry and global config ─────────────────────────────────
+
+/**
+ * Teams tab in the master sheet  (A=TeamName  B=SheetId)
+ *
+ * Returns the list of all registered teams. Used by initTeams() in teams.js
+ * to discover which team sheets to load at startup.
+ *
+ * @returns {{ name: string, sheetId: string }[]}
+ */
+export async function getTeamRegistry() {
+  const masterSheetId = getMasterSheetId();
+  return cachedRead(masterSheetId, 'teamRegistry', async () => {
+    const rows = await readRange(masterSheetId, 'Teams!A2:B');
+    return rows
+      .filter(r => r[0] && r[1])
+      .map(r => ({ name: r[0].trim().toLowerCase(), sheetId: r[1].trim() }));
+  });
+}
+
+/**
+ * Global Config tab in the master sheet  (A=Key  B=Value)
+ *
+ * Holds guild-wide settings that apply across all teams:
+ *   guild_id    — Discord guild (server) ID; required for officer role checks
+ *   web_app_url — base URL of the web app (used in Discord link buttons)
+ *
+ * Returns a flat object: { guild_id: "...", web_app_url: "...", ... }
+ *
+ * @returns {object}
+ */
+export async function getGlobalConfig() {
+  const masterSheetId = getMasterSheetId();
+  return cachedRead(masterSheetId, 'globalConfig', async () => {
+    const rows = await readRange(masterSheetId, 'Global Config!A2:B');
+    return Object.fromEntries(
+      rows.filter(r => r[0]).map(([k, v]) => [k, v ?? ''])
+    );
+  });
 }

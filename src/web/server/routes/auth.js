@@ -8,7 +8,7 @@
 
 import { Router } from 'express';
 import { getAllTeams } from '../../../lib/teams.js';
-import { getRoster, getConfig } from '../../../lib/sheets.js';
+import { getRoster, getConfig, getGlobalConfig } from '../../../lib/sheets.js';
 
 const router       = Router();
 const DISCORD_API  = 'https://discord.com/api/v10';
@@ -76,8 +76,15 @@ router.get('/callback', async (req, res) => {
     // Active character defaults to the first one found
     const activeChar = resolvedChars[0] ?? null;
 
-    // 4. Read team config from sheet (guild ID + officer role ID live there)
-    let teamConfig = {};
+    // 4. Read guild_id from master sheet Global Config (guild-wide setting)
+    //    Read officer_role_id from the team's own Config tab (team-specific)
+    let globalConfig = {};
+    let teamConfig   = {};
+    try {
+      globalConfig = await getGlobalConfig();
+    } catch (err) {
+      console.warn('[AUTH] Could not read Global Config from master sheet:', err.message);
+    }
     if (resolvedTeam) {
       try {
         teamConfig = await getConfig(resolvedTeam.sheetId);
@@ -87,9 +94,9 @@ router.get('/callback', async (req, res) => {
     }
 
     // 5. Check officer role via guild member (uses bot token)
-    //    guild_id comes from the Config sheet; bot token from env
+    //    guild_id comes from the master sheet Global Config
     let guildRoles = [];
-    const guildId = teamConfig.guild_id || null;
+    const guildId = globalConfig.guild_id || null;
     if (guildId) {
       const memberRes = await fetch(`${DISCORD_API}/guilds/${guildId}/members/${discordUser.id}`, {
         headers: { Authorization: `Bot ${process.env.DISCORD_TOKEN}` },
@@ -100,7 +107,7 @@ router.get('/callback', async (req, res) => {
       }
     }
 
-    // 6. Determine officer status using role ID from Config sheet
+    // 6. Determine officer status using role ID from the team's Config tab
     const officerRoleId = teamConfig.officer_role_id || null;
     const isOfficer     = officerRoleId ? guildRoles.includes(officerRoleId) : false;
 

@@ -74,8 +74,8 @@ router.get('/', async (req, res) => {
   try {
     const [submissions, itemDb, effectiveBis] = await Promise.all([
       getBisSubmissions(teamSheetId),
-      getItemDb(teamSheetId),
-      getEffectiveDefaultBis(teamSheetId),
+      getItemDb(),
+      getEffectiveDefaultBis(),
     ]);
 
     const canonicalSpec = toCanonical(spec);

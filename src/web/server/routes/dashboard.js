@@ -24,8 +24,8 @@ router.get('/', requireAuth, async (req, res) => {
     const [lootLog, bisSubmissions, effectiveBis, itemDb] = await Promise.all([
       getLootLog(teamSheetId),
       getBisSubmissions(teamSheetId),
-      getEffectiveDefaultBis(teamSheetId),
-      getItemDb(teamSheetId),
+      getEffectiveDefaultBis(),
+      getItemDb(),
     ]);
 
     // Item name → itemId lookup from Item DB (case-insensitive, first match wins)
