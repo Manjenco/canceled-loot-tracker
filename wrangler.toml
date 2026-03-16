@@ -7,11 +7,13 @@ compatibility_flags = [ "nodejs_compat" ]
 [[routes]]
 pattern = "canceledwow.com/loot*"
 zone_name = "canceledwow.com"
+[[routes]]
+pattern = "www.canceledwow.com/loot*"
+zone_name = "canceledwow.com"
 
 [assets]
 directory = "./src/web/client/dist/loot"
 binding = "ASSETS"
-not_found_handling = "single-page-application"
 
 [build]
 command = "npm run build"
