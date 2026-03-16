@@ -221,7 +221,7 @@ function CandidateTable({ itemId, showAll, onToggle }) {
     setLoading(true);
     setError(null);
     setData(null);
-    fetch(`/api/council/candidates?itemId=${encodeURIComponent(itemId)}`, { credentials: 'include' })
+    fetch(apiPath(`/api/council/candidates?itemId=${encodeURIComponent(itemId)}`), { credentials: 'include' })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(d => { setData(d); setLoading(false); })
       .catch(() => { setError('Failed to load candidates.'); setLoading(false); });

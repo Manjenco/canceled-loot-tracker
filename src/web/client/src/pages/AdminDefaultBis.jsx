@@ -53,7 +53,7 @@ export default function AdminDefaultBis() {
       const params = new URLSearchParams({ spec });
       if (source) params.set('source', source);
       const res = await fetch(
-        `/api/admin/default-bis?${params}`,
+        apiPath(`/api/admin/default-bis?${params}`),
         { credentials: 'include' }
       );
       if (!res.ok) throw new Error(res.status);
