@@ -198,7 +198,7 @@ export async function readRange(sheetId, range) {
   const url = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(range)}?${qs}`;
   const res = await withRetry(() => sheetsRequest('GET', url));
   const values = res.values ?? [];
-  log.debug(`[sheets] readRange  ${range} → ${values.length} rows`, values);
+  log.verbose(`[sheets] readRange  ${range} → ${values.length} rows`);
   return values;
 }
 
@@ -315,6 +315,7 @@ export async function setOwnerNick(sheetId, ownerId, ownerNick) {
     }
   }
   if (!updates.length) throw new Error(`No characters found for ownerId "${ownerId}"`);
+  log.debug(`[sheets] setOwnerNick updating ${updates.length} chars at rows`, updates.map(u => u.range));
   await batchWriteRanges(sheetId, updates);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -334,6 +335,7 @@ export async function setRosterOwner(sheetId, charName, ownerId, ownerNick) {
   const idx  = rows.findIndex(r => (r[0] ?? '') === charName);
   if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
   const rowNum = idx + 2;
+  log.debug(`[sheets] setRosterOwner found "${charName}" at row ${rowNum}`);
   await writeRange(sheetId, `Roster!F${rowNum}:G${rowNum}`, [[ownerId, ownerNick ?? '']]);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -352,6 +354,7 @@ export async function setRosterStatus(sheetId, charName, status) {
   const idx  = rows.findIndex(r => (r[0] ?? '') === charName);
   if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
   const rowNum = idx + 2; // +1 for 1-indexed, +1 for header
+  log.debug(`[sheets] setRosterStatus found "${charName}" at row ${rowNum}`);
   await writeRange(sheetId, `Roster!E${rowNum}`, [[status]]);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -545,6 +548,7 @@ export async function upsertBisSubmission(sheetId, {
 
   if (idx >= 0) {
     const rowNum = idx + 2; // +1 for 1-indexed, +1 for header
+    log.debug(`[sheets] upsertBisSubmission updating existing row ${rowNum} for "${charName}" slot="${slot}"`);
     // Update content columns (E–I) and item-ID columns (L–M) separately
     // so that ReviewedBy (J) and OfficerNote (K) are never overwritten.
     await writeRange(sheetId, `BIS Submissions!E${rowNum}:I${rowNum}`, [[
@@ -560,6 +564,7 @@ export async function upsertBisSubmission(sheetId, {
     ]]);
   } else {
     const id = `bis-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    log.debug(`[sheets] upsertBisSubmission inserting new row id="${id}" for "${charName}" slot="${slot}"`);
     await appendRows(sheetId, 'BIS Submissions!A:M', [[
       id,
       charName,
@@ -589,7 +594,7 @@ export async function upsertBisSubmission(sheetId, {
 async function batchWriteRanges(sheetId, updates) {
   if (!updates.length) return;
   log.verbose(`[sheets] batchWriteRanges ${updates.length} ranges (sheet ${sheetId.slice(-6)})`);
-  log.debug(`[sheets] batchWriteRanges ranges`, updates.map(u => u.range));
+  log.debug(`[sheets] batchWriteRanges ranges:`, updates.map(u => u.range).join(', '));
   const url = `${SHEETS_BASE}/${sheetId}/values:batchUpdate`;
   await withRetry(() => sheetsRequest('POST', url, {
     valueInputOption: 'USER_ENTERED',
@@ -611,7 +616,6 @@ async function batchWriteRanges(sheetId, updates) {
 export async function batchUpsertBisSubmissions(sheetId, updates) {
   if (!updates.length) return;
   log.verbose(`[sheets] batchUpsertBisSubmissions ${updates.length} slots for char="${updates[0]?.charName}" (sheet ${sheetId.slice(-6)})`);
-  log.debug(`[sheets] batchUpsertBisSubmissions updates`, updates);
 
   const rows  = await readRange(sheetId, 'BIS Submissions!A2:K');
   const today = new Date().toISOString().slice(0, 10);
@@ -633,6 +637,7 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
 
     if (idx >= 0) {
       const rowNum = idx + 2;
+      log.debug(`[sheets] batchUpsert slot="${slot}" → update row ${rowNum} trueBis="${trueBis}" raidBis="${raidBis}"`);
       // Two sub-ranges per updated row, batched into a single API call.
       // J (ReviewedBy) and K (OfficerNote) are intentionally skipped.
       rangeWrites.push(
@@ -644,6 +649,7 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
     } else {
       // Mix index into the ID so two inserts in the same ms still differ
       const id = `bis-${Date.now().toString(36)}-${i.toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+      log.debug(`[sheets] batchUpsert slot="${slot}" → new row id="${id}" trueBis="${trueBis}" raidBis="${raidBis}"`);
       newRows.push([
         id, charName, spec, slot,
         trueBis, raidBis, rationale,
