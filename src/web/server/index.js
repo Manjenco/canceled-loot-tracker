@@ -8,7 +8,6 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { serveStatic } from 'hono/cloudflare-workers';
 import { initTeams } from '../../lib/teams.js';
 import { sessionMiddleware } from './session.js';
 
@@ -55,9 +54,6 @@ app.route('/api/admin',     adminRouter);
 app.route('/api/council',   councilRouter);
 app.route('/api/loot',      lootRouter);
 app.route('/api/roster',    rosterRouter);
-
-// Serve static React build (the 'dist' folder)
-app.get('/*', serveStatic({ root: './' }));
 
 console.log('[WEB] Worker ready');
 

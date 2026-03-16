@@ -11,6 +11,7 @@ zone_name = "canceledwow.com"
 [assets]
 directory = "./src/web/client/dist"
 binding = "ASSETS"
+not_found_handling = "single-page-application"
 
 [build]
 command = "npm run build"
