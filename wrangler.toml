@@ -13,4 +13,5 @@ directory = "./src/web/client/dist"
 binding = "ASSETS"
 
 [build]
-command = "npm run build" # Wrangler will run this at the root
+command = "npm run build"
+watch_dir = ["src/web/client/src", "src/web/server"]
