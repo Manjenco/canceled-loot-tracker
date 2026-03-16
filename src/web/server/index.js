@@ -59,8 +59,21 @@ app.route('/api/roster',    rosterRouter);
 // For any non-API route (e.g. /login, /bis, /council), serve index.html and
 // let React Router handle client-side routing.
 app.get('/*', async (c) => {
-  const indexUrl = new URL('/index.html', new URL(c.req.url).origin);
-  return c.env.ASSETS.fetch(indexUrl.toString());
+  const url = new URL(c.req.url);
+  // Strip the /loot prefix before looking up in ASSETS
+  url.pathname = url.pathname.replace(/^\/loot/, '') || '/';
+  if (!url.pathname.startsWith('/')) url.pathname = '/' + url.pathname;
+  
+  const res = await c.env.ASSETS.fetch(new Request(url.toString()));
+  if (res.ok) return res;
+  
+  // SPA fallback
+  url.pathname = '/index.html';
+  const indexRes = await c.env.ASSETS.fetch(new Request(url.toString()));
+  const newRes = new Response(indexRes.body, indexRes);
+  newRes.headers.delete('Content-Encoding');
+  newRes.headers.delete('Content-Length');
+  return newRes;
 });
 
 console.log('[WEB] Worker ready');
