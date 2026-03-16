@@ -7,6 +7,10 @@ export default defineConfig(({ command }) => ({
   // In production builds the app lives at /loot/, so asset paths and
   // import.meta.env.BASE_URL are automatically prefixed with /loot/.
   base: command === 'build' ? '/loot/' : '/',
+  build: {
+    outDir: 'dist/loot',
+    emptyOutDir: true,
+  },
   server: {
     port: 3000,
     proxy: {
