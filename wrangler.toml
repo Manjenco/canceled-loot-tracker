@@ -5,7 +5,7 @@ compatibility_flags = [ "nodejs_compat" ]
 
 # This maps your worker to the subpath we discussed
 [[routes]]
-pattern = "www.canceledwow.com/loot*"
+pattern = "canceledwow.com/loot*"
 zone_name = "canceledwow.com"
 
 [assets]

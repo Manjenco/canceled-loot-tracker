@@ -10,7 +10,7 @@
     {
       "name": "Web Server",
       "runtimeExecutable": "node.exe",
-      "runtimeArgs": ["--watch", "--env-file=.env", "src/web/server/index.js"],
+      "runtimeArgs": ["--watch", "--env-file=.env", "src/web/server/node.js"],
       "port": 3001
     },
     {
