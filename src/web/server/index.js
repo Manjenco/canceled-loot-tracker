@@ -74,6 +74,7 @@ app.route('/api/roster',    rosterRouter);
 // c.req.path returns the full URL path, so we strip BASE_PATH manually before
 // looking up files in the ASSETS binding (which maps to dist/ with no prefix).
 app.get('/*', async (c) => {
+  log.verbose('[SPA] fallback hit for path:', c.req.path);
   if (!c.env?.ASSETS) return c.notFound(); // Node dev — no ASSETS binding
 
   const origin  = new URL(c.req.url).origin;
