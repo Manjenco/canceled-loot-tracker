@@ -166,7 +166,9 @@ async function cachedRead(sheetId, tabKey, fn) {
   log.verbose(`[sheets] cache miss ${tabKey} (sheet ${sheetId.slice(-6)}) — fetching`);
   const result = await fn();
   cacheSet(key, result);
-  log.verbose(`[sheets] cached     ${tabKey} (sheet ${sheetId.slice(-6)}) — ${Array.isArray(result) ? result.length + ' rows' : 'object'}`);
+  const count = result instanceof Map ? result.size : Array.isArray(result) ? result.length : 1;
+  log.verbose(`[sheets] cached     ${tabKey} (sheet ${sheetId.slice(-6)}) — ${count} ${count === 1 && !(result instanceof Map) && !Array.isArray(result) ? 'entry' : 'entries'}`);
+  log.debug(`[sheets] ${tabKey} data:`, result);
   return result;
 }
 
@@ -211,7 +213,6 @@ export async function readRange(sheetId, range) {
  */
 export async function appendRows(sheetId, range, rows) {
   log.verbose(`[sheets] appendRows ${range} (sheet ${sheetId.slice(-6)}) — ${rows.length} rows`);
-  log.debug(`[sheets] appendRows ${range} data`, rows);
   const qs  = new URLSearchParams({ valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS' });
   const url = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(range)}:append?${qs}`;
   await withRetry(() => sheetsRequest('POST', url, { values: rows }));
@@ -226,7 +227,6 @@ export async function appendRows(sheetId, range, rows) {
  */
 export async function writeRange(sheetId, range, values) {
   log.verbose(`[sheets] writeRange ${range} (sheet ${sheetId.slice(-6)}) — ${values.length} rows`);
-  log.debug(`[sheets] writeRange ${range} data`, values);
   const qs  = new URLSearchParams({ valueInputOption: 'USER_ENTERED' });
   const url = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(range)}?${qs}`;
   await withRetry(() => sheetsRequest('PUT', url, { values }));
@@ -694,8 +694,10 @@ export async function approveBisSubmission(sheetId, submissionId, reviewerName) 
   const idx  = rows.findIndex(r => (r[0] ?? '') === submissionId);
   if (idx < 0) throw new Error(`BIS submission "${submissionId}" not found`);
 
-  const rowNum    = idx + 2;
-  const submittedAt = rows[idx][8] ?? '';
+  const rowNum      = idx + 2;
+  const r           = rows[idx];
+  const submittedAt = r[8] ?? '';
+  log.debug(`[sheets] approveBisSubmission row ${rowNum}: char="${r[1]}" slot="${r[3]}" trueBis="${r[4]}" raidBis="${r[5]}" → Approved by ${reviewerName}`);
 
   // Single write: Status=Approved (H), preserve SubmittedAt (I), ReviewedBy (J), clear OfficerNote (K)
   await writeRange(sheetId, `BIS Submissions!H${rowNum}:K${rowNum}`, [[
@@ -723,6 +725,7 @@ export async function rejectBisSubmission(sheetId, submissionId, reviewerName, o
 
   const rowNum = idx + 2;
   const r      = rows[idx];
+  log.debug(`[sheets] rejectBisSubmission row ${rowNum}: char="${r[1]}" slot="${r[3]}" trueBis="${r[4]}" raidBis="${r[5]}" → Rejected by ${reviewerName}${officerNote ? ` note="${officerNote}"` : ''}`);
 
   // Status (H), SubmittedAt preserved (I), ReviewedBy (J), OfficerNote (K)
   await writeRange(sheetId, `BIS Submissions!H${rowNum}:K${rowNum}`, [[
