@@ -62,7 +62,7 @@ export default function App() {
           <Layout><Council /></Layout>
         </OfficerRoute>
       } />
-      <Route path="/loot/import" element={
+      <Route path="/import" element={
         <OfficerRoute>
           <Layout><LootImport /></Layout>
         </OfficerRoute>
