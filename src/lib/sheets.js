@@ -19,6 +19,8 @@
  *   Production → GOOGLE_SERVICE_ACCOUNT_KEY_JSON is set directly in the environment
  */
 
+import { log } from './logger.js';
+
 // ── Auth — Web Crypto JWT (works in Cloudflare Workers and Node.js 18+) ────────
 
 function loadCredentials() {
@@ -62,7 +64,11 @@ async function makeServiceAccountJwt(creds) {
 let _tokenCache = null;
 
 async function getAccessToken() {
-  if (_tokenCache && Date.now() < _tokenCache.expiresAt) return _tokenCache.token;
+  if (_tokenCache && Date.now() < _tokenCache.expiresAt) {
+    log.verbose('[sheets] Access token cache hit');
+    return _tokenCache.token;
+  }
+  log.verbose('[sheets] Fetching new Google access token');
   const creds = loadCredentials();
   const jwt   = await makeServiceAccountJwt(creds);
   const res   = await fetch('https://oauth2.googleapis.com/token', {
@@ -76,6 +82,7 @@ async function getAccessToken() {
   if (!res.ok) throw new Error(`Google token exchange failed ${res.status}: ${await res.text()}`);
   const { access_token, expires_in } = await res.json();
   _tokenCache = { token: access_token, expiresAt: Date.now() + (expires_in - 60) * 1000 };
+  log.verbose('[sheets] New access token acquired, expires in', expires_in, 's');
   return access_token;
 }
 
@@ -119,7 +126,7 @@ async function withRetry(fn, retries = 6, baseDelayMs = 1000) {
       const isRateLimit = status === 429 || status === 503;
       if (!isRateLimit || attempt === retries) throw err;
       const delay = baseDelayMs * Math.pow(2, attempt);
-      console.warn(`[sheets] Rate limited (${status}) — retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
+      log.warn(`[sheets] Rate limited (${status}) — retrying in ${delay}ms (attempt ${attempt + 1}/${retries})`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
@@ -152,9 +159,15 @@ function cacheInvalidate(sheetId, ...tabKeys) {
 async function cachedRead(sheetId, tabKey, fn) {
   const key    = `${sheetId}|${tabKey}`;
   const cached = cacheGet(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    log.verbose(`[sheets] cache hit  ${tabKey} (sheet ${sheetId.slice(-6)})`);
+    return cached;
+  }
+  log.verbose(`[sheets] cache miss ${tabKey} (sheet ${sheetId.slice(-6)}) — fetching`);
   const result = await fn();
   cacheSet(key, result);
+  const count = result instanceof Map ? result.size : Array.isArray(result) ? result.length : 1;
+  log.verbose(`[sheets] cached     ${tabKey} (sheet ${sheetId.slice(-6)}) — ${count} entries`);
   return result;
 }
 
@@ -181,10 +194,13 @@ function getMasterSheetId() {
  * @returns {Array<Array<string>>}
  */
 export async function readRange(sheetId, range) {
+  log.verbose(`[sheets] readRange  ${range} (sheet ${sheetId.slice(-6)})`);
   const qs  = new URLSearchParams({ valueRenderOption: 'UNFORMATTED_VALUE' });
   const url = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(range)}?${qs}`;
   const res = await withRetry(() => sheetsRequest('GET', url));
-  return res.values ?? [];
+  const values = res.values ?? [];
+  log.verbose(`[sheets] readRange  ${range} → ${values.length} rows`);
+  return values;
 }
 
 /**
@@ -195,6 +211,7 @@ export async function readRange(sheetId, range) {
  * @param {Array<Array<string>>} rows
  */
 export async function appendRows(sheetId, range, rows) {
+  log.verbose(`[sheets] appendRows ${range} (sheet ${sheetId.slice(-6)}) — ${rows.length} rows`);
   const qs  = new URLSearchParams({ valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS' });
   const url = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(range)}:append?${qs}`;
   await withRetry(() => sheetsRequest('POST', url, { values: rows }));
@@ -208,6 +225,7 @@ export async function appendRows(sheetId, range, rows) {
  * @param {Array<Array<string>>} values
  */
 export async function writeRange(sheetId, range, values) {
+  log.verbose(`[sheets] writeRange ${range} (sheet ${sheetId.slice(-6)}) — ${values.length} rows`);
   const qs  = new URLSearchParams({ valueInputOption: 'USER_ENTERED' });
   const url = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(range)}?${qs}`;
   await withRetry(() => sheetsRequest('PUT', url, { values }));
@@ -220,6 +238,7 @@ export async function writeRange(sheetId, range, values) {
  * @param {string} range   A1 notation, e.g. "Item DB!A2:I"
  */
 export async function clearRange(sheetId, range) {
+  log.verbose(`[sheets] clearRange ${range} (sheet ${sheetId.slice(-6)})`);
   const url = `${SHEETS_BASE}/${sheetId}/values/${encodeURIComponent(range)}:clear`;
   await withRetry(() => sheetsRequest('POST', url, {}));
 }
@@ -260,6 +279,7 @@ function normalizeSheetDate(val) {
  * @returns {object[]}
  */
 export async function getRoster(sheetId) {
+  log.verbose(`[sheets] getRoster (sheet ${sheetId.slice(-6)})`);
   return cachedRead(sheetId, 'roster', async () => {
     const rows = await readRange(sheetId, 'Roster!A2:G');
     return rows
@@ -285,6 +305,7 @@ export async function getRoster(sheetId) {
  * @param {string} ownerNick  New display name to set
  */
 export async function setOwnerNick(sheetId, ownerId, ownerNick) {
+  log.verbose(`[sheets] setOwnerNick ownerId=${ownerId} nick="${ownerNick}" (sheet ${sheetId.slice(-6)})`);
   const rows    = await readRange(sheetId, 'Roster!A2:G');
   const updates = [];
   for (let i = 0; i < rows.length; i++) {
@@ -293,6 +314,7 @@ export async function setOwnerNick(sheetId, ownerId, ownerNick) {
     }
   }
   if (!updates.length) throw new Error(`No characters found for ownerId "${ownerId}"`);
+  log.debug(`[sheets] setOwnerNick updating ${updates.length} chars at rows`, updates.map(u => u.range));
   await batchWriteRanges(sheetId, updates);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -307,10 +329,12 @@ export async function setOwnerNick(sheetId, ownerId, ownerNick) {
  * @param {string} ownerNick  Display name (may be empty string)
  */
 export async function setRosterOwner(sheetId, charName, ownerId, ownerNick) {
+  log.verbose(`[sheets] setRosterOwner char="${charName}" ownerId=${ownerId} (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'Roster!A2:G');
   const idx  = rows.findIndex(r => (r[0] ?? '') === charName);
   if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
   const rowNum = idx + 2;
+  log.debug(`[sheets] setRosterOwner found "${charName}" at row ${rowNum}`);
   await writeRange(sheetId, `Roster!F${rowNum}:G${rowNum}`, [[ownerId, ownerNick ?? '']]);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -324,10 +348,12 @@ export async function setRosterOwner(sheetId, charName, ownerId, ownerNick) {
  * @param {string} status
  */
 export async function setRosterStatus(sheetId, charName, status) {
+  log.verbose(`[sheets] setRosterStatus char="${charName}" status="${status}" (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'Roster!A2:E');
   const idx  = rows.findIndex(r => (r[0] ?? '') === charName);
   if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
   const rowNum = idx + 2; // +1 for 1-indexed, +1 for header
+  log.debug(`[sheets] setRosterStatus found "${charName}" at row ${rowNum}`);
   await writeRange(sheetId, `Roster!E${rowNum}`, [[status]]);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -345,6 +371,7 @@ export async function setRosterStatus(sheetId, charName, status) {
  * @param {string} status    "Active" | "Bench" | "Inactive"
  */
 export async function addRosterChar(sheetId, charName, cls, spec, role, status) {
+  log.verbose(`[sheets] addRosterChar char="${charName}" class="${cls}" spec="${spec}" role="${role}" status="${status}" (sheet ${sheetId.slice(-6)})`);
   await appendRows(sheetId, 'Roster!A:G', [[charName, cls, spec, role, status, '', '']]);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -356,6 +383,7 @@ export async function addRosterChar(sheetId, charName, cls, spec, role, status) 
  * @returns {object[]}
  */
 export async function getLootLog(sheetId) {
+  log.verbose(`[sheets] getLootLog (sheet ${sheetId.slice(-6)})`);
   return cachedRead(sheetId, 'lootLog', async () => {
     const rows = await readRange(sheetId, 'Loot Log!A2:J');
     return rows
@@ -383,6 +411,8 @@ export async function getLootLog(sheetId) {
  * @param {object[]} entries
  */
 export async function appendLootEntries(sheetId, entries) {
+  log.verbose(`[sheets] appendLootEntries ${entries.length} entries (sheet ${sheetId.slice(-6)})`);
+  log.debug(`[sheets] appendLootEntries data`, entries);
   if (!entries.length) return;
   const rows = entries.map(e => [
     e.id, e.raidId, e.date, e.boss, e.itemName,
@@ -422,6 +452,7 @@ export async function getRclcResponseMap(sheetId) {
  * @returns {object}
  */
 export async function getConfig(sheetId) {
+  log.verbose(`[sheets] getConfig (sheet ${sheetId.slice(-6)})`);
   return cachedRead(sheetId, 'config', async () => {
     const rows = await readRange(sheetId, 'Config!A2:B');
     return Object.fromEntries(
@@ -440,6 +471,7 @@ export async function getConfig(sheetId) {
  * @param {string} value
  */
 export async function setConfigValue(sheetId, key, value) {
+  log.verbose(`[sheets] setConfigValue key="${key}" value="${value}" (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'Config!A2:B');
   const rowIndex = rows.findIndex(r => r[0] === key);
 
@@ -461,6 +493,7 @@ export async function setConfigValue(sheetId, key, value) {
  * @returns {object[]}
  */
 export async function getBisSubmissions(sheetId) {
+  log.verbose(`[sheets] getBisSubmissions (sheet ${sheetId.slice(-6)})`);
   return cachedRead(sheetId, 'bisSubmissions', async () => {
     // Schema: A=Id B=CharName C=Spec D=Slot E=TrueBIS F=RaidBIS G=Rationale
     //         H=Status I=SubmittedAt J=ReviewedBy K=OfficerNote
@@ -504,6 +537,7 @@ export async function upsertBisSubmission(sheetId, {
   raidBis, raidBisItemId,
   rationale,
 }) {
+  log.verbose(`[sheets] upsertBisSubmission char="${charName}" slot="${slot}" trueBis="${trueBis}" raidBis="${raidBis}" (sheet ${sheetId.slice(-6)})`);
   const rows  = await readRange(sheetId, 'BIS Submissions!A2:K');
   const today = new Date().toISOString().slice(0, 10);
 
@@ -513,6 +547,7 @@ export async function upsertBisSubmission(sheetId, {
 
   if (idx >= 0) {
     const rowNum = idx + 2; // +1 for 1-indexed, +1 for header
+    log.debug(`[sheets] upsertBisSubmission updating existing row ${rowNum} for "${charName}" slot="${slot}"`);
     // Update content columns (E–I) and item-ID columns (L–M) separately
     // so that ReviewedBy (J) and OfficerNote (K) are never overwritten.
     await writeRange(sheetId, `BIS Submissions!E${rowNum}:I${rowNum}`, [[
@@ -528,6 +563,7 @@ export async function upsertBisSubmission(sheetId, {
     ]]);
   } else {
     const id = `bis-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    log.debug(`[sheets] upsertBisSubmission inserting new row id="${id}" for "${charName}" slot="${slot}"`);
     await appendRows(sheetId, 'BIS Submissions!A:M', [[
       id,
       charName,
@@ -556,6 +592,8 @@ export async function upsertBisSubmission(sheetId, {
  */
 async function batchWriteRanges(sheetId, updates) {
   if (!updates.length) return;
+  log.verbose(`[sheets] batchWriteRanges ${updates.length} ranges (sheet ${sheetId.slice(-6)})`);
+  log.debug(`[sheets] batchWriteRanges ranges:`, updates.map(u => u.range).join(', '));
   const url = `${SHEETS_BASE}/${sheetId}/values:batchUpdate`;
   await withRetry(() => sheetsRequest('POST', url, {
     valueInputOption: 'USER_ENTERED',
@@ -576,6 +614,7 @@ async function batchWriteRanges(sheetId, updates) {
  */
 export async function batchUpsertBisSubmissions(sheetId, updates) {
   if (!updates.length) return;
+  log.verbose(`[sheets] batchUpsertBisSubmissions ${updates.length} slots for char="${updates[0]?.charName}" (sheet ${sheetId.slice(-6)})`);
 
   const rows  = await readRange(sheetId, 'BIS Submissions!A2:K');
   const today = new Date().toISOString().slice(0, 10);
@@ -597,6 +636,7 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
 
     if (idx >= 0) {
       const rowNum = idx + 2;
+      log.debug(`[sheets] batchUpsert slot="${slot}" → update row ${rowNum} trueBis="${trueBis}" raidBis="${raidBis}"`);
       // Two sub-ranges per updated row, batched into a single API call.
       // J (ReviewedBy) and K (OfficerNote) are intentionally skipped.
       rangeWrites.push(
@@ -608,6 +648,7 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
     } else {
       // Mix index into the ID so two inserts in the same ms still differ
       const id = `bis-${Date.now().toString(36)}-${i.toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+      log.debug(`[sheets] batchUpsert slot="${slot}" → new row id="${id}" trueBis="${trueBis}" raidBis="${raidBis}"`);
       newRows.push([
         id, charName, spec, slot,
         trueBis, raidBis, rationale,
@@ -618,6 +659,7 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
     }
   });
 
+  log.verbose(`[sheets] batchUpsertBisSubmissions: ${rangeWrites.length / 2} updates, ${newRows.length} inserts`);
   if (rangeWrites.length) await batchWriteRanges(sheetId, rangeWrites);
   if (newRows.length) {
     // Use writeRange with explicit row numbers instead of appendRows (:append).
@@ -646,12 +688,15 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
  * @param {string} reviewerName  Officer's character name or username
  */
 export async function approveBisSubmission(sheetId, submissionId, reviewerName) {
+  log.verbose(`[sheets] approveBisSubmission id="${submissionId}" reviewer="${reviewerName}" (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'BIS Submissions!A2:I');
   const idx  = rows.findIndex(r => (r[0] ?? '') === submissionId);
   if (idx < 0) throw new Error(`BIS submission "${submissionId}" not found`);
 
-  const rowNum    = idx + 2;
-  const submittedAt = rows[idx][8] ?? '';
+  const rowNum      = idx + 2;
+  const r           = rows[idx];
+  const submittedAt = r[8] ?? '';
+  log.debug(`[sheets] approveBisSubmission row ${rowNum}: char="${r[1]}" slot="${r[3]}" trueBis="${r[4]}" raidBis="${r[5]}" → Approved by ${reviewerName}`);
 
   // Single write: Status=Approved (H), preserve SubmittedAt (I), ReviewedBy (J), clear OfficerNote (K)
   await writeRange(sheetId, `BIS Submissions!H${rowNum}:K${rowNum}`, [[
@@ -672,12 +717,14 @@ export async function approveBisSubmission(sheetId, submissionId, reviewerName) 
  * @param {string} [officerNote]
  */
 export async function rejectBisSubmission(sheetId, submissionId, reviewerName, officerNote = '') {
+  log.verbose(`[sheets] rejectBisSubmission id="${submissionId}" reviewer="${reviewerName}" (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'BIS Submissions!A2:K');
   const idx  = rows.findIndex(r => (r[0] ?? '') === submissionId);
   if (idx < 0) throw new Error(`BIS submission "${submissionId}" not found`);
 
   const rowNum = idx + 2;
   const r      = rows[idx];
+  log.debug(`[sheets] rejectBisSubmission row ${rowNum}: char="${r[1]}" slot="${r[3]}" trueBis="${r[4]}" raidBis="${r[5]}" → Rejected by ${reviewerName}${officerNote ? ` note="${officerNote}"` : ''}`);
 
   // Status (H), SubmittedAt preserved (I), ReviewedBy (J), OfficerNote (K)
   await writeRange(sheetId, `BIS Submissions!H${rowNum}:K${rowNum}`, [[
@@ -750,6 +797,7 @@ export async function clearRejectedBisSubmission(sheetId, charName, slot) {
  * @param {object}   opts    { replace?: boolean }
  */
 export async function writeItemDb(items, { replace = false } = {}) {
+  log.verbose(`[sheets] writeItemDb ${items.length} items replace=${replace}`);
   const sheetId = getMasterSheetId();
   if (replace) {
     await clearRange(sheetId, 'Item DB!A2:J');
@@ -787,6 +835,7 @@ export async function writeItemDb(items, { replace = false } = {}) {
  * @returns {object[]}
  */
 export async function getItemDb() {
+  log.verbose('[sheets] getItemDb');
   const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'itemDb', async () => {
     const rows = await readRange(sheetId, 'Item DB!A2:J');
@@ -813,6 +862,7 @@ export async function getItemDb() {
  * @returns {object[]}
  */
 export async function getDefaultBis() {
+  log.verbose('[sheets] getDefaultBis');
   const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'defaultBis', async () => {
     const rows = await readRange(sheetId, 'Default BIS!A2:G');
@@ -948,6 +998,7 @@ async function ensureSpecBisConfigTab() {
  * @returns {Map<string,string>}
  */
 export async function getSpecBisConfig() {
+  log.verbose('[sheets] getSpecBisConfig');
   const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'specBisConfig', async () => {
     try {
@@ -1008,6 +1059,7 @@ export async function writeSpecBisConfig(entries) {
  * @returns {object[]}
  */
 export async function getEffectiveDefaultBis() {
+  log.verbose('[sheets] getEffectiveDefaultBis');
   const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'effectiveBis', async () => {
     const [all, config] = await Promise.all([
@@ -1117,6 +1169,7 @@ export function applyRaidBisInference(rows, itemDb) {
  * @returns {object[]}
  */
 export async function getRaids(sheetId) {
+  log.verbose(`[sheets] getRaids (sheet ${sheetId.slice(-6)})`);
   return cachedRead(sheetId, 'raids', async () => {
     const rows = await readRange(sheetId, 'Raids!A2:F');
     return rows
@@ -1181,6 +1234,7 @@ export async function updateDefaultBisRaidBis(updates) {
  * @returns {{ name: string, sheetId: string }[]}
  */
 export async function getTeamRegistry() {
+  log.verbose('[sheets] getTeamRegistry');
   const masterSheetId = getMasterSheetId();
   return cachedRead(masterSheetId, 'teamRegistry', async () => {
     const rows = await readRange(masterSheetId, 'Teams!A2:B');
@@ -1202,6 +1256,7 @@ export async function getTeamRegistry() {
  * @returns {object}
  */
 export async function getGlobalConfig() {
+  log.verbose('[sheets] getGlobalConfig');
   const masterSheetId = getMasterSheetId();
   return cachedRead(masterSheetId, 'globalConfig', async () => {
     const rows = await readRange(masterSheetId, 'Global Config!A2:B');
