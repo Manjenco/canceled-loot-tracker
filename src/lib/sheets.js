@@ -331,7 +331,7 @@ export async function setOwnerNick(sheetId, ownerId, ownerNick) {
 export async function setRosterOwner(sheetId, charName, ownerId, ownerNick) {
   log.verbose(`[sheets] setRosterOwner char="${charName}" ownerId=${ownerId} (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'Roster!A2:G');
-  const idx  = rows.findIndex(r => String(r[0] ?? '') === charName);
+  const idx  = rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
   if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
   const rowNum = idx + 2;
   log.debug(`[sheets] setRosterOwner found "${charName}" at row ${rowNum}`);
@@ -350,7 +350,7 @@ export async function setRosterOwner(sheetId, charName, ownerId, ownerNick) {
 export async function setRosterStatus(sheetId, charName, status) {
   log.verbose(`[sheets] setRosterStatus char="${charName}" status="${status}" (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'Roster!A2:E');
-  const idx  = rows.findIndex(r => String(r[0] ?? '') === charName);
+  const idx  = rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
   if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
   const rowNum = idx + 2; // +1 for 1-indexed, +1 for header
   log.debug(`[sheets] setRosterStatus found "${charName}" at row ${rowNum}`);
@@ -387,7 +387,7 @@ export async function addRosterChar(sheetId, charName, cls, spec, role, status) 
 export async function deleteRosterChar(sheetId, charName) {
   log.verbose(`[sheets] deleteRosterChar char="${charName}" (sheet ${sheetId.slice(-6)})`);
   const rows = await readRange(sheetId, 'Roster!A2:E');
-  const idx  = rows.findIndex(r => String(r[0] ?? '') === charName);
+  const idx  = rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
   if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
   const rowNum = idx + 2;
   await batchWriteRanges(sheetId, [
@@ -563,7 +563,7 @@ export async function upsertBisSubmission(sheetId, {
   const today = new Date().toISOString().slice(0, 10);
 
   const idx = rows.findIndex(
-    r => String(r[1] ?? '') === charName && String(r[3] ?? '') === slot
+    r => String(r[1] ?? '').toLowerCase() === charName.toLowerCase() && String(r[3] ?? '').toLowerCase() === slot.toLowerCase()
   );
 
   if (idx >= 0) {
@@ -652,7 +652,7 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
     } = u;
 
     const idx = rows.findIndex(
-      r => String(r[1] ?? '') === charName && String(r[3] ?? '') === slot
+      r => String(r[1] ?? '').toLowerCase() === charName.toLowerCase() && String(r[3] ?? '').toLowerCase() === slot.toLowerCase()
     );
 
     if (idx >= 0) {
@@ -769,8 +769,8 @@ export async function rejectBisSubmission(sheetId, submissionId, reviewerName, o
 export async function clearPendingBisSubmission(sheetId, charName, slot) {
   const rows = await readRange(sheetId, 'BIS Submissions!A2:M');
   const idx  = rows.findIndex(
-    r => String(r[1] ?? '') === charName &&
-         String(r[3] ?? '') === slot     &&
+    r => String(r[1] ?? '').toLowerCase() === charName.toLowerCase() &&
+         String(r[3] ?? '').toLowerCase() === slot.toLowerCase()     &&
          String(r[7] ?? '').toLowerCase() === 'pending'
   );
   if (idx < 0) return false;
@@ -795,7 +795,7 @@ export async function clearPendingBisSubmission(sheetId, charName, slot) {
 export async function resetBisRaidBisField(sheetId, charName, slot) {
   const rows = await readRange(sheetId, 'BIS Submissions!A2:M');
   const idx  = rows.findIndex(
-    r => String(r[1] ?? '') === charName && String(r[3] ?? '') === slot
+    r => String(r[1] ?? '').toLowerCase() === charName.toLowerCase() && String(r[3] ?? '').toLowerCase() === slot.toLowerCase()
   );
   if (idx < 0) return false;
 
@@ -821,7 +821,7 @@ export async function resetBisRaidBisField(sheetId, charName, slot) {
 export async function clearBisSubmission(sheetId, charName, slot) {
   const rows = await readRange(sheetId, 'BIS Submissions!A2:M');
   const idx  = rows.findIndex(
-    r => String(r[1] ?? '') === charName && String(r[3] ?? '') === slot
+    r => String(r[1] ?? '').toLowerCase() === charName.toLowerCase() && String(r[3] ?? '').toLowerCase() === slot.toLowerCase()
   );
   if (idx < 0) return false;
 
@@ -843,8 +843,8 @@ export async function clearBisSubmission(sheetId, charName, slot) {
 export async function clearRejectedBisSubmission(sheetId, charName, slot) {
   const rows = await readRange(sheetId, 'BIS Submissions!A2:M');
   const idx  = rows.findIndex(
-    r => String(r[1] ?? '') === charName &&
-         String(r[3] ?? '') === slot     &&
+    r => String(r[1] ?? '').toLowerCase() === charName.toLowerCase() &&
+         String(r[3] ?? '').toLowerCase() === slot.toLowerCase()     &&
          String(r[7] ?? '').toLowerCase() === 'rejected'
   );
   if (idx < 0) return false;
@@ -1095,7 +1095,7 @@ export async function setSpecBisSource(spec, source) {
   const sheetId = getMasterSheetId();
   await ensureSpecBisConfigTab();
   const rows = await readRange(sheetId, `${SPEC_BIS_CONFIG_TAB}!A2:B`);
-  const rowIndex = rows.findIndex(r => r[0] === spec);
+  const rowIndex = rows.findIndex(r => String(r[0] ?? '').toLowerCase() === spec.toLowerCase());
   if (rowIndex >= 0) {
     await writeRange(sheetId, `${SPEC_BIS_CONFIG_TAB}!B${rowIndex + 2}`, [[source]]);
   } else {
