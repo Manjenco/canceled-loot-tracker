@@ -147,6 +147,26 @@ const WEAPON_PROFICIENCY_BY_CLASS = {
 };
 
 /**
+ * Specs whose off-hand slot holds a weapon (dual wield), not a shield/frill.
+ * For these specs, Off-Hand BIS options come from slot='Weapon' items.
+ */
+const DUAL_WIELD_SPECS = new Set([
+  'Havoc Demon Hunter', 'Vengeance Demon Hunter', 'Devourer Demon Hunter',
+  'Assassination Rogue', 'Outlaw Rogue', 'Subtlety Rogue',
+  'Enhancement Shaman',
+  'Windwalker Monk', 'Brewmaster Monk',
+  'Frost Death Knight',
+  'Fury Warrior',
+]);
+
+/**
+ * Returns true if the canonical spec dual wields (off-hand slot holds a weapon).
+ */
+export function canDualWield(canonicalSpec) {
+  return DUAL_WIELD_SPECS.has(canonicalSpec);
+}
+
+/**
  * Returns true if the canonical spec can equip the given weapon type.
  * If weaponType is empty (not yet populated), returns true (no restriction).
  */

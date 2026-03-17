@@ -11,7 +11,7 @@ import {
   getBisSubmissions, getItemDb, getEffectiveDefaultBis, applyRaidBisInference,
   batchUpsertBisSubmissions, clearPendingBisSubmission, clearRejectedBisSubmission,
 } from '../../../lib/sheets.js';
-import { toCanonical, getArmorType, canUseWeapon } from '../../../lib/specs.js';
+import { toCanonical, getArmorType, canUseWeapon, canDualWield } from '../../../lib/specs.js';
 
 const ALL_SLOTS = [
   'Head', 'Neck', 'Shoulders', 'Back', 'Chest', 'Wrists',
@@ -24,7 +24,10 @@ const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 const DIFF_ORDER     = { Mythic: 0, Heroic: 1, Normal: 2, 'Mythic+': 3 };
 
 function itemOptionsForSlot(itemDb, slot, armorType, { raidOnly = false, canonSpec = '' } = {}) {
-  const dbSlot = slot.replace(/ [12]$/, '');
+  let dbSlot = slot.replace(/ [12]$/, '');
+  // Dual-wield specs equip a weapon in the off-hand, not a shield/frill.
+  // Redirect the lookup to 'Weapon' so they see 1H/2H weapon options.
+  if (dbSlot === 'Off-Hand' && canonSpec && canDualWield(canonSpec)) dbSlot = 'Weapon';
   return itemDb
     .filter(item => {
       if (item.slot !== dbSlot)   return false;
