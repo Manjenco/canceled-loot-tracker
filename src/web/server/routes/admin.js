@@ -17,14 +17,15 @@ import {
   applyRaidBisInference, updateDefaultBisRaidBis, getBisSubmissions,
   approveBisSubmission, rejectBisSubmission,
 } from '../../../lib/sheets.js';
-import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon } from '../../../lib/specs.js';
+import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield } from '../../../lib/specs.js';
 
 const TIER_SLOTS     = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
 const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 const DIFF_ORDER     = { Mythic: 0, Heroic: 1, Normal: 2 };
 
 function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '') {
-  const dbSlot = slot.replace(/ [12]$/, '');
+  let dbSlot = slot.replace(/ [12]$/, '');
+  if (dbSlot === 'Off-Hand' && canonSpec && canDualWield(canonSpec)) dbSlot = 'Weapon';
   return itemDb
     .filter(item => {
       if (item.sourceType !== 'Raid') return false;
