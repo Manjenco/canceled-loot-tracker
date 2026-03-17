@@ -167,6 +167,20 @@ export function canDualWield(canonicalSpec) {
 }
 
 /**
+ * Returns true if the canonical spec can equip an off-hand item — either a
+ * dual-wield weapon or a held-in-off-hand / shield. Used to decide whether to
+ * show an editable Off-Hand row in the default BIS editor for specs that may
+ * be seeded with a 2H weapon (e.g. Staff on a caster, 2H on Frost DK).
+ */
+export function canHaveOffHand(canonicalSpec) {
+  if (canDualWield(canonicalSpec)) return true;
+  for (const [cls, weapons] of Object.entries(WEAPON_PROFICIENCY_BY_CLASS)) {
+    if (canonicalSpec.endsWith(cls)) return weapons.has('Miscellaneous') || weapons.has('Shield');
+  }
+  return false;
+}
+
+/**
  * Returns true if the canonical spec can equip the given weapon type.
  * If weaponType is empty (not yet populated), returns true (no restriction).
  */

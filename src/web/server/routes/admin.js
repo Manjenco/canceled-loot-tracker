@@ -17,7 +17,7 @@ import {
   applyRaidBisInference, updateDefaultBisRaidBis, getBisSubmissions,
   approveBisSubmission, rejectBisSubmission,
 } from '../../../lib/sheets.js';
-import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield } from '../../../lib/specs.js';
+import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand } from '../../../lib/specs.js';
 
 const TIER_SLOTS     = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
 const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
@@ -104,7 +104,7 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
     // For dual-wield specs whose default BIS was seeded from a 2H guide, the
     // Off-Hand slot may be absent. Inject a synthetic editable row so officers
     // can set the Raid BIS without needing to re-seed.
-    if (canDualWield(canonicalSpec) && !withOptions.some(r => r.slot === 'Off-Hand')) {
+    if (canHaveOffHand(canonicalSpec) && !withOptions.some(r => r.slot === 'Off-Hand')) {
       withOptions.push({
         slot: 'Off-Hand', source: displaySource,
         trueBis: '', trueBisItemId: '', raidBis: '', raidBisItemId: '',
