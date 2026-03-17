@@ -8,6 +8,7 @@
  * POST   /api/roster/:charName/owner
  * DELETE /api/roster/:charName/owner
  * POST   /api/roster/:charName/status
+ * DELETE /api/roster/:charName
  */
 
 import { Hono } from 'hono';
@@ -15,7 +16,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getRoster, getLootLog, getBisSubmissions,
   getEffectiveDefaultBis, getItemDb, applyRaidBisInference,
-  setRosterStatus, setOwnerNick, setRosterOwner, addRosterChar,
+  setRosterStatus, setOwnerNick, setRosterOwner, addRosterChar, deleteRosterChar,
 } from '../../../lib/sheets.js';
 import { toCanonical, CLASS_SPECS } from '../../../lib/specs.js';
 
@@ -191,6 +192,18 @@ router.post('/:charName/status', async (c) => {
   } catch (err) {
     console.error('[ROSTER] Status update error:', err);
     return c.json({ error: 'Failed to update status' }, 500);
+  }
+});
+
+router.delete('/:charName', async (c) => {
+  const { teamSheetId } = c.get('session').user;
+  const charName        = c.req.param('charName');
+  try {
+    await deleteRosterChar(teamSheetId, charName);
+    return c.json({ ok: true, charName });
+  } catch (err) {
+    console.error('[ROSTER] Delete error:', err);
+    return c.json({ error: 'Failed to delete character' }, 500);
   }
 });
 

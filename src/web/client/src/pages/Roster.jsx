@@ -503,6 +503,8 @@ export default function RosterPage() {
   const [linkingOwnerChar, setLinkingOwnerChar] = useState(null); // charName being linked to a Discord ID
   const [linkOwnerIdValue, setLinkOwnerIdValue]   = useState('');
   const [linkOwnerNickValue, setLinkOwnerNickValue] = useState('');
+  const [deleteConfirmChar, setDeleteConfirmChar] = useState(null); // charName pending delete confirmation
+  const [deleting, setDeleting]                   = useState(null); // charName being deleted
 
   useEffect(() => {
     fetch(apiPath('/api/roster'), { credentials: 'include' })
@@ -643,6 +645,23 @@ export default function RosterPage() {
     }
   };
 
+  const handleDeleteChar = async (charName) => {
+    setDeleting(charName);
+    try {
+      const res = await fetch(apiPath(`/api/roster/${encodeURIComponent(charName)}`), {
+        method: 'DELETE', credentials: 'include',
+      });
+      if (!res.ok) throw new Error(res.status);
+      setRoster(prev => prev.filter(c => c.charName !== charName));
+      if (selectedChar === charName) setSelectedChar(null);
+    } catch {
+      // leave roster unchanged on failure
+    } finally {
+      setDeleting(null);
+      setDeleteConfirmChar(null);
+    }
+  };
+
   return (
     <div className="roster-page">
       <div className="page-header">
@@ -710,6 +729,7 @@ export default function RosterPage() {
                     <th>Role</th>
                     <th>Player</th>
                     <th></th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -717,7 +737,7 @@ export default function RosterPage() {
                     const role = displayRole(char.role, char.spec);
                     const prevRole = i > 0 ? displayRole(arr[i - 1].role, arr[i - 1].spec) : null;
                     const sep = i > 0 && role !== prevRole
-                      ? [<tr key={`sep-${role}`} className="roster-role-sep"><td colSpan={6} /></tr>]
+                      ? [<tr key={`sep-${role}`} className="roster-role-sep"><td colSpan={7} /></tr>]
                       : [];
                     const row = (
               <tr
@@ -873,6 +893,13 @@ export default function RosterPage() {
                     </>
                   )}
                 </td>
+                <td className="roster-col-delete" onClick={e => e.stopPropagation()}>
+                  <button
+                    className="roster-delete-btn"
+                    title="Delete character"
+                    onClick={e => { e.stopPropagation(); setDeleteConfirmChar(char.charName); }}
+                  >✕</button>
+                </td>
               </tr>
                     );
                     return [...sep, row];
@@ -890,6 +917,32 @@ export default function RosterPage() {
           charName={selectedChar}
           onClose={() => setSelectedChar(null)}
         />
+      )}
+
+      {deleteConfirmChar && (
+        <div className="modal-backdrop" onClick={() => setDeleteConfirmChar(null)}>
+          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+            <h3 className="modal-title">Delete Character</h3>
+            <p className="modal-body">
+              Permanently remove <strong>{deleteConfirmChar}</strong> from the roster?
+              This cannot be undone. All BIS submissions and loot history for this
+              character will remain in the sheet but the character will no longer
+              appear in the app.
+            </p>
+            <div className="modal-actions">
+              <button
+                className="btn-danger"
+                onClick={() => handleDeleteChar(deleteConfirmChar)}
+                disabled={deleting === deleteConfirmChar}
+              >
+                {deleting === deleteConfirmChar ? 'Deleting…' : 'Delete'}
+              </button>
+              <button className="btn-secondary" onClick={() => setDeleteConfirmChar(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
