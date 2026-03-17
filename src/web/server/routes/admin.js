@@ -13,8 +13,8 @@
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
-  getDefaultBis, getItemDb, getSpecBisConfig, setSpecBisSource,
-  applyRaidBisInference, updateDefaultBisRaidBis, getBisSubmissions,
+  getDefaultBis, getDefaultBisOverrides, getItemDb, getSpecBisConfig, setSpecBisSource,
+  applyRaidBisInference, updateDefaultBisOverrides, getBisSubmissions,
   approveBisSubmission, rejectBisSubmission,
 } from '../../../lib/sheets.js';
 import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand } from '../../../lib/specs.js';
@@ -23,12 +23,12 @@ const TIER_SLOTS     = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
 const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 const DIFF_ORDER     = { Mythic: 0, Heroic: 1, Normal: 2 };
 
-function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '') {
+function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '', raidOnly = true) {
   let dbSlot = slot.replace(/ [12]$/, '');
   if (dbSlot === 'Off-Hand' && canonSpec && canDualWield(canonSpec)) dbSlot = 'Weapon';
   return itemDb
     .filter(item => {
-      if (item.sourceType !== 'Raid') return false;
+      if (raidOnly && item.sourceType !== 'Raid') return false;
       if (item.slot !== dbSlot)       return false;
       if (item.isTierToken)           return false;
       if (item.armorType === 'Accessory') {
@@ -42,6 +42,7 @@ function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '') {
       name:       item.name,
       difficulty: item.difficulty ?? '',
       source:     item.sourceName ?? '',
+      sourceType: item.sourceType ?? '',
     }))
     .sort((a, b) => {
       const da = DIFF_ORDER[a.difficulty] ?? 9;
@@ -76,8 +77,8 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
   if (!teamSheetId) return c.json({ error: 'No team sheet configured' }, 400);
 
   try {
-    const [allRows, itemDb, specConfig] = await Promise.all([
-      getDefaultBis(), getItemDb(), getSpecBisConfig(),
+    const [allRows, overrideRows, itemDb, specConfig] = await Promise.all([
+      getDefaultBis(), getDefaultBisOverrides(), getItemDb(), getSpecBisConfig(),
     ]);
 
     const canonicalSpec    = toCanonical(spec);
@@ -87,17 +88,36 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
     const displaySource    = (requestedSource && availableSources.includes(requestedSource))
       ? requestedSource : preferredSource;
 
-    const rows          = specRows.filter(r => r.source === displaySource);
+    // Seed rows for this source (unchanged guide data — used for ★ indicator)
+    const seedRows = specRows.filter(r => r.source === displaySource);
+
+    // Merge officer overrides on top of seed rows before inference
+    const rows = seedRows.map(r => {
+      const ovr = overrideRows.find(
+        o => o.spec === canonicalSpec && o.slot === r.slot && o.source === r.source
+      );
+      return ovr ? {
+        ...r,
+        trueBis:       ovr.trueBis       || r.trueBis,
+        trueBisItemId: ovr.trueBisItemId || r.trueBisItemId,
+        raidBis:       ovr.raidBis       || r.raidBis,
+        raidBisItemId: ovr.raidBisItemId || r.raidBisItemId,
+      } : r;
+    });
+
     const withInference = applyRaidBisInference(rows, itemDb);
     const armorType     = getArmorType(canonicalSpec);
 
     const withOptions = withInference.map(row => {
-      if (row.raidBisAuto) return { ...row, options: [], hasTier: false, hasCatalyst: false };
+      const seed = seedRows.find(s => s.slot === row.slot);
       return {
         ...row,
-        options:     itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec),
-        hasTier:     TIER_SLOTS.has(row.slot),
-        hasCatalyst: CATALYST_SLOTS.has(row.slot),
+        trueBisSeed:    seed?.trueBis  ?? '',
+        raidBisSeed:    seed?.raidBis  ?? '',
+        options:        itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, true),
+        overallOptions: itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, false),
+        hasTier:        TIER_SLOTS.has(row.slot),
+        hasCatalyst:    CATALYST_SLOTS.has(row.slot),
       };
     });
 
@@ -108,8 +128,10 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
       withOptions.push({
         slot: 'Off-Hand', source: displaySource,
         trueBis: '', trueBisItemId: '', raidBis: '', raidBisItemId: '',
+        trueBisSeed: '', raidBisSeed: '',
         raidBisAuto: false,
-        options:     itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec),
+        options:        itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, true),
+        overallOptions: itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, false),
         hasTier: false, hasCatalyst: false,
       });
     }
@@ -134,9 +156,11 @@ router.post('/default-bis', requireGlobalOfficer, async (c) => {
     const canonicalSpec = toCanonical(spec);
     const writes = updates.map(u => ({
       spec: canonicalSpec, source,
-      slot: u.slot, raidBis: u.raidBis ?? '', raidBisItemId: u.raidBisItemId ?? '',
+      slot:          u.slot,
+      raidBis:       u.raidBis,       raidBisItemId: u.raidBisItemId,
+      trueBis:       u.trueBis,       trueBisItemId: u.trueBisItemId,
     }));
-    await updateDefaultBisRaidBis(writes);
+    await updateDefaultBisOverrides(writes);
     return c.json({ ok: true, updated: writes.length });
   } catch (err) {
     console.error('[ADMIN] default-bis POST error:', err);

@@ -984,7 +984,8 @@ export async function writeDefaultBis(entries, { replace = false } = {}) {
 // ── Spec BIS Config ───────────────────────────────────────────────────────────
 // Lives in the master sheet. All functions here have no sheetId parameter.
 
-const SPEC_BIS_CONFIG_TAB = 'Spec BIS Config';
+const SPEC_BIS_CONFIG_TAB      = 'Spec BIS Config';
+const DEFAULT_BIS_OVERRIDES_TAB = 'Default BIS Overrides';
 
 /**
  * Create the Spec BIS Config tab in the master sheet if it doesn't already exist.
@@ -1083,8 +1084,9 @@ export async function getEffectiveDefaultBis() {
   log.verbose('[sheets] getEffectiveDefaultBis');
   const sheetId = getMasterSheetId();
   return cachedRead(sheetId, 'effectiveBis', async () => {
-    const [all, config] = await Promise.all([
+    const [all, overrides, config] = await Promise.all([
       getDefaultBis(),
+      getDefaultBisOverrides(),
       getSpecBisConfig(),
     ]);
 
@@ -1109,7 +1111,19 @@ export async function getEffectiveDefaultBis() {
           if (row) break;
         }
       }
-      if (row) result.push(row);
+      if (!row) continue;
+
+      // Merge officer overrides on top of the seed row (override non-empty field wins)
+      const ovr = overrides.find(o =>
+        o.spec === row.spec && o.slot === row.slot && o.source === row.source
+      );
+      result.push(ovr ? {
+        ...row,
+        trueBis:       ovr.trueBis       || row.trueBis,
+        trueBisItemId: ovr.trueBisItemId || row.trueBisItemId,
+        raidBis:       ovr.raidBis       || row.raidBis,
+        raidBisItemId: ovr.raidBisItemId || row.raidBisItemId,
+      } : row);
     }
 
     return result;
@@ -1175,8 +1189,12 @@ export function applyRaidBisInference(rows, itemDb) {
   return rows.map(row => {
     const inferred = inferRaidBis(row, byName);
     if (inferred === null) {
-      // raidBis was already set — mark as manually set
-      return { ...row, raidBisAuto: false };
+      // raidBis was already set — check if it matches what inference would produce.
+      // If so, treat it as auto (e.g. an officer override that saved a raid item as
+      // both Overall BIS and Raid BIS should still show the Auto badge).
+      const hypothetical = inferRaidBis({ ...row, raidBis: '' }, byName);
+      const isAutoDerivable = hypothetical?.auto === true && hypothetical.raidBis === row.raidBis;
+      return { ...row, raidBisAuto: isAutoDerivable };
     }
     return { ...row, raidBis: inferred.raidBis, raidBisItemId: inferred.raidBisItemId, raidBisAuto: inferred.auto };
   });
@@ -1237,10 +1255,18 @@ export async function updateDefaultBisRaidBis(updates) {
     }
 
     const rowNum = idx + 2; // +1 for 1-indexed, +1 for header row
-    batchData.push({
-      range: `Default BIS!E${rowNum}:F${rowNum}`,
-      values: [[upd.raidBis ?? '', itemIdCell(upd.raidBisItemId ?? '')]],
-    });
+    if (upd.raidBis !== undefined) {
+      batchData.push({
+        range:  `Default BIS!E${rowNum}:F${rowNum}`,
+        values: [[upd.raidBis, itemIdCell(upd.raidBisItemId ?? '')]],
+      });
+    }
+    if (upd.trueBis !== undefined) {
+      batchData.push({
+        range:  `Default BIS!C${rowNum}:D${rowNum}`,
+        values: [[upd.trueBis, itemIdCell(upd.trueBisItemId ?? '')]],
+      });
+    }
   }
 
   if (newRows.length) await appendRows(sheetId, 'Default BIS!A:G', newRows);
@@ -1252,6 +1278,145 @@ export async function updateDefaultBisRaidBis(updates) {
     data: batchData,
   }));
   cacheInvalidate(sheetId, 'defaultBis', 'effectiveBis');
+}
+
+// ── Default BIS Overrides ─────────────────────────────────────────────────────
+
+/**
+ * Create the Default BIS Overrides tab in the master sheet if it doesn't exist.
+ * Safe to call repeatedly — a no-op if the tab is present.
+ */
+async function ensureDefaultBisOverridesTab() {
+  const sheetId = getMasterSheetId();
+  try {
+    await readRange(sheetId, `${DEFAULT_BIS_OVERRIDES_TAB}!A1:A1`);
+    return;
+  } catch {
+    // Tab not found — fall through to create it.
+  }
+  const url = `${SHEETS_BASE}/${sheetId}:batchUpdate`;
+  await withRetry(() => sheetsRequest('POST', url, {
+    requests: [{ addSheet: { properties: { title: DEFAULT_BIS_OVERRIDES_TAB } } }],
+  }));
+  await writeRange(sheetId, `${DEFAULT_BIS_OVERRIDES_TAB}!A1:G1`, [[
+    'Spec', 'Slot', 'TrueBIS', 'TrueBISItemId', 'RaidBIS', 'RaidBISItemId', 'Source',
+  ]]);
+  console.log(`[sheets] Created tab "${DEFAULT_BIS_OVERRIDES_TAB}"`);
+}
+
+/**
+ * Read all officer overrides from the Default BIS Overrides tab.
+ * Returns [] if the tab doesn't exist yet.
+ *
+ * @returns {object[]}
+ */
+export async function getDefaultBisOverrides() {
+  log.verbose('[sheets] getDefaultBisOverrides');
+  const sheetId = getMasterSheetId();
+  return cachedRead(sheetId, 'defaultBisOverrides', async () => {
+    try {
+      const rows = await readRange(sheetId, `${DEFAULT_BIS_OVERRIDES_TAB}!A1:G`);
+      return rows
+        .filter(r => r[0] && r[0] !== 'Spec') // skip header row if present
+        .map(r => ({
+          spec:          r[0] ?? '',
+          slot:          r[1] ?? '',
+          trueBis:       r[2] ?? '',
+          trueBisItemId: r[3] ?? '',
+          raidBis:       r[4] ?? '',
+          raidBisItemId: r[5] ?? '',
+          source:        r[6] ?? '',
+        }));
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * Write officer overrides to the Default BIS Overrides tab.
+ * Never touches the seed Default BIS tab.
+ * Creates the overrides tab if it doesn't exist yet.
+ *
+ * Each update object: { spec, slot, source, trueBis?, trueBisItemId?, raidBis?, raidBisItemId? }
+ * Fields left undefined are not written.
+ *
+ * @param {object[]} updates
+ */
+export async function updateDefaultBisOverrides(updates) {
+  const sheetId = getMasterSheetId();
+  if (!updates.length) return;
+
+  await ensureDefaultBisOverridesTab();
+  // Read from A1 so we find data even if it landed at row 1 (no header).
+  // Track actual sheet row numbers alongside each raw row array.
+  const allRows = await readRange(sheetId, `${DEFAULT_BIS_OVERRIDES_TAB}!A1:G`);
+  const dataRows = allRows
+    .map((r, i) => ({ r, sheetRowNum: i + 1 }))
+    .filter(({ r }) => r[0] && r[0] !== 'Spec'); // skip empty + header
+
+  const batchData = [];
+  const newRows   = [];
+
+  for (const upd of updates) {
+    const match = dataRows.find(({ r }) =>
+      (r[0] ?? '') === upd.spec &&
+      (r[1] ?? '') === upd.slot &&
+      (r[6] ?? '') === upd.source
+    );
+    if (!match) {
+      newRows.push([
+        upd.spec, upd.slot,
+        upd.trueBis  ?? '', itemIdCell(upd.trueBisItemId  ?? ''),
+        upd.raidBis  ?? '', itemIdCell(upd.raidBisItemId  ?? ''),
+        upd.source,
+      ]);
+      continue;
+    }
+
+    const { sheetRowNum: rowNum } = match;
+    if (upd.trueBis !== undefined) {
+      batchData.push({
+        range:  `${DEFAULT_BIS_OVERRIDES_TAB}!C${rowNum}:D${rowNum}`,
+        values: [[upd.trueBis, itemIdCell(upd.trueBisItemId ?? '')]],
+      });
+    }
+    if (upd.raidBis !== undefined) {
+      batchData.push({
+        range:  `${DEFAULT_BIS_OVERRIDES_TAB}!E${rowNum}:F${rowNum}`,
+        values: [[upd.raidBis, itemIdCell(upd.raidBisItemId ?? '')]],
+      });
+    }
+  }
+
+  if (newRows.length) {
+    // If tab is empty (no header yet), write the header first as part of the batch.
+    // Use explicit row numbers instead of appendRows to avoid Sheets API table-detection
+    // issues where data can land at row 1 even when a header is expected.
+    let nextRow = allRows.length + 1;
+    if (allRows.length === 0) {
+      batchData.push({
+        range:  `${DEFAULT_BIS_OVERRIDES_TAB}!A1:G1`,
+        values: [['Spec', 'Slot', 'TrueBIS', 'TrueBISItemId', 'RaidBIS', 'RaidBISItemId', 'Source']],
+      });
+      nextRow = 2;
+    }
+    for (const row of newRows) {
+      batchData.push({
+        range:  `${DEFAULT_BIS_OVERRIDES_TAB}!A${nextRow}:G${nextRow}`,
+        values: [row],
+      });
+      nextRow++;
+    }
+  }
+  if (batchData.length) {
+    const url = `${SHEETS_BASE}/${sheetId}/values:batchUpdate`;
+    await withRetry(() => sheetsRequest('POST', url, {
+      valueInputOption: 'USER_ENTERED',
+      data: batchData,
+    }));
+  }
+  cacheInvalidate(sheetId, 'defaultBisOverrides', 'effectiveBis');
 }
 
 // ── Master sheet — registry and global config ─────────────────────────────────
