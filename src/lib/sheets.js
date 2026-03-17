@@ -782,6 +782,56 @@ export async function clearPendingBisSubmission(sheetId, charName, slot) {
 }
 
 /**
+ * Reset only the Raid BIS field of a submission to empty, without touching
+ * the submission status or any other fields. The slot reverts to the spec
+ * default for Raid BIS while keeping the Overall BIS personal override and
+ * its approval status.
+ *
+ * @param {string} sheetId
+ * @param {string} charName
+ * @param {string} slot
+ * @returns {boolean} true if a row was found and updated
+ */
+export async function resetBisRaidBisField(sheetId, charName, slot) {
+  const rows = await readRange(sheetId, 'BIS Submissions!A2:M');
+  const idx  = rows.findIndex(
+    r => (r[1] ?? '') === charName && (r[3] ?? '') === slot
+  );
+  if (idx < 0) return false;
+
+  const rowNum = idx + 2;
+  // Clear F (RaidBIS) and M (RaidBISItemId) only — status and approvals untouched.
+  await batchWriteRanges(sheetId, [
+    { range: `BIS Submissions!F${rowNum}`, values: [['']] },
+    { range: `BIS Submissions!M${rowNum}`, values: [['']] },
+  ]);
+  cacheInvalidate(sheetId, 'bisSubmissions');
+  return true;
+}
+
+/**
+ * Clear a BIS submission for any status (Pending, Approved, or Rejected),
+ * reverting the slot to the spec default. Is a no-op if no row exists.
+ *
+ * @param {string} sheetId
+ * @param {string} charName
+ * @param {string} slot
+ * @returns {boolean} true if a row was found and cleared
+ */
+export async function clearBisSubmission(sheetId, charName, slot) {
+  const rows = await readRange(sheetId, 'BIS Submissions!A2:M');
+  const idx  = rows.findIndex(
+    r => (r[1] ?? '') === charName && (r[3] ?? '') === slot
+  );
+  if (idx < 0) return false;
+
+  const rowNum = idx + 2;
+  await clearRange(sheetId, `BIS Submissions!A${rowNum}:M${rowNum}`);
+  cacheInvalidate(sheetId, 'bisSubmissions');
+  return true;
+}
+
+/**
  * Acknowledge a Rejected BIS submission, wiping the row so the slot reverts
  * to the spec default. Is a no-op if no Rejected row exists for the slot.
  *

@@ -10,6 +10,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getBisSubmissions, getItemDb, getEffectiveDefaultBis, applyRaidBisInference,
   batchUpsertBisSubmissions, clearPendingBisSubmission, clearRejectedBisSubmission,
+  clearBisSubmission, resetBisRaidBisField,
 } from '../../../lib/sheets.js';
 import { toCanonical, getArmorType, canUseWeapon, canDualWield } from '../../../lib/specs.js';
 
@@ -135,7 +136,7 @@ router.post('/', async (c) => {
   const validSlots = new Set(ALL_SLOTS);
 
   const validUpdates = updates.filter(u =>
-    validSlots.has(u.slot) && (u.clearPending || u.clearRejected || u.trueBis)
+    validSlots.has(u.slot) && (u.clearPending || u.clearRejected || u.clearSlot || u.resetRaidBis || u.trueBis)
   );
 
   if (!validUpdates.length) {
@@ -154,8 +155,16 @@ router.post('/', async (c) => {
       await clearPendingBisSubmission(teamSheetId, charName, u.slot);
       cleared++;
     }
+    for (const u of validUpdates.filter(u => u.clearSlot)) {
+      await clearBisSubmission(teamSheetId, charName, u.slot);
+      cleared++;
+    }
+    for (const u of validUpdates.filter(u => u.resetRaidBis)) {
+      await resetBisRaidBisField(teamSheetId, charName, u.slot);
+      cleared++;
+    }
 
-    const saveUpdates = validUpdates.filter(u => !u.clearPending && !u.clearRejected);
+    const saveUpdates = validUpdates.filter(u => !u.clearPending && !u.clearRejected && !u.clearSlot && !u.resetRaidBis);
     if (saveUpdates.length) {
       await batchUpsertBisSubmissions(teamSheetId, saveUpdates.map(u => ({
         charName,
@@ -172,7 +181,7 @@ router.post('/', async (c) => {
 
     const parts = [];
     if (saved)   parts.push(`${saved} slot${saved   !== 1 ? 's' : ''} saved`);
-    if (cleared) parts.push(`${cleared} pending submission${cleared !== 1 ? 's' : ''} cleared`);
+    if (cleared) parts.push(`${cleared} slot${cleared !== 1 ? 's' : ''} cleared`);
     return c.json({ ok: true, saved, cleared, message: parts.join(', ') });
   } catch (err) {
     console.error('[BIS] POST error:', err);
