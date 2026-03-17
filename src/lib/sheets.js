@@ -292,7 +292,7 @@ export async function getRoster(sheetId) {
         ownerId:   r[5] ?? '',
         ownerNick: r[6] ?? '',
       }))
-      .filter(c => c.charName);
+      .filter(c => c.charName && c.status !== 'Deleted');
   });
 }
 
@@ -373,6 +373,27 @@ export async function setRosterStatus(sheetId, charName, status) {
 export async function addRosterChar(sheetId, charName, cls, spec, role, status) {
   log.verbose(`[sheets] addRosterChar char="${charName}" class="${cls}" spec="${spec}" role="${role}" status="${status}" (sheet ${sheetId.slice(-6)})`);
   await appendRows(sheetId, 'Roster!A:G', [[charName, cls, spec, role, status, '', '']]);
+  cacheInvalidate(sheetId, 'roster');
+}
+
+/**
+ * Soft-delete a character from the Roster tab.
+ * Renames charName → "<name>-DELETED" (avoids future name conflicts) and sets
+ * Status → "Deleted" so getRoster filters it out.
+ *
+ * @param {string} sheetId
+ * @param {string} charName
+ */
+export async function deleteRosterChar(sheetId, charName) {
+  log.verbose(`[sheets] deleteRosterChar char="${charName}" (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:E');
+  const idx  = rows.findIndex(r => (r[0] ?? '') === charName);
+  if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
+  const rowNum = idx + 2;
+  await batchWriteRanges(sheetId, [
+    { range: `Roster!A${rowNum}`, values: [[`${charName}-DELETED`]] },
+    { range: `Roster!E${rowNum}`, values: [['Deleted']] },
+  ]);
   cacheInvalidate(sheetId, 'roster');
 }
 
@@ -1197,6 +1218,7 @@ export async function updateDefaultBisRaidBis(updates) {
 
   const rows = await readRange(sheetId, 'Default BIS!A2:G');
   const batchData = [];
+  const newRows   = [];
 
   for (const upd of updates) {
     const idx = rows.findIndex(r =>
@@ -1204,7 +1226,15 @@ export async function updateDefaultBisRaidBis(updates) {
       (r[1] ?? '') === upd.slot &&
       (r[6] ?? '') === upd.source
     );
-    if (idx < 0) continue;
+    if (idx < 0) {
+      // Row doesn't exist yet — create it (e.g. Off-Hand for a dual-wield spec
+      // whose default BIS was seeded from a 2H guide).
+      newRows.push([
+        upd.spec, upd.slot, upd.trueBis ?? '', itemIdCell(upd.trueBisItemId ?? ''),
+        upd.raidBis ?? '', itemIdCell(upd.raidBisItemId ?? ''), upd.source,
+      ]);
+      continue;
+    }
 
     const rowNum = idx + 2; // +1 for 1-indexed, +1 for header row
     batchData.push({
@@ -1213,6 +1243,7 @@ export async function updateDefaultBisRaidBis(updates) {
     });
   }
 
+  if (newRows.length) await appendRows(sheetId, 'Default BIS!A:G', newRows);
   if (!batchData.length) return;
 
   const url = `${SHEETS_BASE}/${sheetId}/values:batchUpdate`;

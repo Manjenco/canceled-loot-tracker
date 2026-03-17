@@ -17,14 +17,15 @@ import {
   applyRaidBisInference, updateDefaultBisRaidBis, getBisSubmissions,
   approveBisSubmission, rejectBisSubmission,
 } from '../../../lib/sheets.js';
-import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon } from '../../../lib/specs.js';
+import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand } from '../../../lib/specs.js';
 
 const TIER_SLOTS     = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
 const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 const DIFF_ORDER     = { Mythic: 0, Heroic: 1, Normal: 2 };
 
 function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '') {
-  const dbSlot = slot.replace(/ [12]$/, '');
+  let dbSlot = slot.replace(/ [12]$/, '');
+  if (dbSlot === 'Off-Hand' && canonSpec && canDualWield(canonSpec)) dbSlot = 'Weapon';
   return itemDb
     .filter(item => {
       if (item.sourceType !== 'Raid') return false;
@@ -99,6 +100,19 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
         hasCatalyst: CATALYST_SLOTS.has(row.slot),
       };
     });
+
+    // For dual-wield specs whose default BIS was seeded from a 2H guide, the
+    // Off-Hand slot may be absent. Inject a synthetic editable row so officers
+    // can set the Raid BIS without needing to re-seed.
+    if (canHaveOffHand(canonicalSpec) && !withOptions.some(r => r.slot === 'Off-Hand')) {
+      withOptions.push({
+        slot: 'Off-Hand', source: displaySource,
+        trueBis: '', trueBisItemId: '', raidBis: '', raidBisItemId: '',
+        raidBisAuto: false,
+        options:     itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec),
+        hasTier: false, hasCatalyst: false,
+      });
+    }
 
     return c.json({ spec, source: displaySource, availableSources, preferredSource, rows: withOptions });
   } catch (err) {
