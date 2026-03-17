@@ -69,13 +69,15 @@ function FieldIndicator({ isDefault, isDirty }) {
 
 // ── Slot row ────────────────────────────────────────────────────────────────────
 
-function SlotRow({ slotData, edit, onEdit, onAcknowledge, onResubmit }) {
+function SlotRow({ slotData, edit, onEdit, onAcknowledge, onResubmit, onReset }) {
   const { slot, submission, lastApproved, specDefault, sentinels, overallOptions, raidOptions } = slotData;
 
   // Display priority: edit → saved submission → spec default → ''
+  // Raid BIS uses || so that an empty saved raidBis (post-reset) falls through to
+  // the spec default, keeping it dynamically linked after a reset.
   const trueBis        = edit?.trueBis        ?? submission?.trueBis        ?? specDefault?.trueBis        ?? '';
   const trueBisItemId  = edit?.trueBisItemId  ?? submission?.trueBisItemId  ?? specDefault?.trueBisItemId  ?? '';
-  const raidBis        = edit?.raidBis        ?? submission?.raidBis        ?? specDefault?.raidBis        ?? '';
+  const raidBis        = edit?.raidBis        ?? (submission?.raidBis        || specDefault?.raidBis)       ?? '';
   const raidBisItemId  = edit?.raidBisItemId  ?? submission?.raidBisItemId  ?? specDefault?.raidBisItemId  ?? '';
   const rationale      = edit?.rationale      ?? submission?.rationale      ?? '';
 
@@ -98,11 +100,6 @@ function SlotRow({ slotData, edit, onEdit, onAcknowledge, onResubmit }) {
 
   // Per-field dirty: the user's edit differs from the pre-edit display baseline
   // (submission value → spec default → '').
-  // Using the display baseline (not just the raw submission) prevents the dot
-  // appearing on fields the user never touched: e.g. changing Overall BIS fires
-  // onChange with the current displayed Raid BIS (which may be the spec default),
-  // and without this fix that spec-default value would look dirty against an
-  // empty submission.
   const baselineTrueBis   = submission?.trueBis   ?? specDefault?.trueBis   ?? '';
   const baselineRaidBis   = submission?.raidBis   ?? specDefault?.raidBis   ?? '';
   const baselineRationale = submission?.rationale ?? '';
@@ -179,6 +176,14 @@ function SlotRow({ slotData, edit, onEdit, onAcknowledge, onResubmit }) {
               onChange={(name, itemId) => onEdit(slot, { trueBis: name, trueBisItemId: itemId, raidBis, raidBisItemId, rationale })}
             />
             <FieldIndicator isDefault={trueBisIsDefault} isDirty={trueBisDirty} />
+            {submission && (
+              <button
+                type="button"
+                className="bis-reset-field-btn"
+                title="Reset to spec default"
+                onClick={() => onReset(slot, 'trueBis')}
+              >↺</button>
+            )}
           </div>
         </td>
 
@@ -209,6 +214,14 @@ function SlotRow({ slotData, edit, onEdit, onAcknowledge, onResubmit }) {
               onChange={(name, itemId) => onEdit(slot, { trueBis, trueBisItemId, raidBis: name, raidBisItemId: itemId, rationale })}
             />
             <FieldIndicator isDefault={raidBisIsDefault} isDirty={raidBisDirty} />
+            {submission?.raidBis && (
+              <button
+                type="button"
+                className="bis-reset-field-btn"
+                title="Reset Raid BIS to spec default"
+                onClick={() => onReset(slot, 'raidBis')}
+              >↺</button>
+            )}
           </div>
         </td>
 
@@ -330,7 +343,7 @@ export default function Bis() {
   useEffect(() => { loadBis(); }, [loadBis]);
   useEffect(() => { if (slots.length) window.$WowheadPower?.refreshLinks(); }, [slots]);
 
-  const handleEdit = (slot, values) => {
+  const handleEdit = useCallback((slot, values) => {
     const slotData     = slots.find(s => s.slot === slot);
     const submission   = slotData?.submission;
     const specDefault  = slotData?.specDefault;
@@ -363,13 +376,13 @@ export default function Bis() {
       return next;
     });
     setSaveMsg(null);
-  };
+  }, [slots]);
 
   const handleSave = async () => {
     const dirtySlots = Object.keys(edits);
     if (!dirtySlots.length) return;
 
-    // clearPending updates don't need trueBis; regular updates do
+    // clearPending doesn't need trueBis; regular updates do
     const updates = dirtySlots
       .map(slot => ({ slot, ...edits[slot] }))
       .filter(u => u.clearPending || u.trueBis);
@@ -392,7 +405,7 @@ export default function Bis() {
       const { saved, cleared, message } = await res.json();
       const parts = [];
       if (saved)   parts.push(`${saved} slot${saved !== 1 ? 's' : ''} saved. Pending officer review.`);
-      if (cleared) parts.push(`${cleared} pending submission${cleared !== 1 ? 's' : ''} cleared.`);
+      if (cleared) parts.push(`${cleared} slot${cleared !== 1 ? 's' : ''} reset to spec default.`);
       setSaveMsg(parts.join(' ') || message || 'Done.');
       loadBis();
     } catch {
@@ -410,6 +423,21 @@ export default function Bis() {
       credentials: 'include',
       headers:     { 'Content-Type': 'application/json' },
       body:        JSON.stringify({ updates: [{ slot, clearRejected: true }] }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    loadBis();
+  }, [loadBis]);
+
+  // Immediate resets — no approval needed (removing an override, not adding one).
+  // Overall BIS reset: deletes the whole submission row.
+  // Raid BIS reset:    blanks only the raidBis cells, status untouched.
+  const handleReset = useCallback(async (slot, field) => {
+    const action = field === 'trueBis' ? { clearSlot: true } : { resetRaidBis: true };
+    const res = await fetch(apiPath('/api/bis'), {
+      method:      'POST',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ updates: [{ slot, ...action }] }),
     });
     if (!res.ok) throw new Error(res.status);
     loadBis();
@@ -498,6 +526,7 @@ export default function Bis() {
                 onEdit={handleEdit}
                 onAcknowledge={() => handleAcknowledge(slotData.slot)}
                 onResubmit={(note) => handleResubmit(slotData.slot, note)}
+                onReset={handleReset}
               />
             ))}
           </tbody>
