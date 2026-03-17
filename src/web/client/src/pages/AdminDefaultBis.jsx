@@ -1,9 +1,11 @@
 /**
  * AdminDefaultBis — Officer page for editing Default Raid BIS.
  *
- * Shows all 16 slots for the selected spec and source. Slots where Raid BIS
- * can be auto-inferred (tier, catalyst, raid-sourced items) are read-only.
- * Slots that need officer input (Mythic+, crafted, unknown) show a dropdown.
+ * Shows all 16 slots for the selected spec and source. Officers can override
+ * both Overall BIS and Raid BIS per slot independently on top of the seeded source.
+ *
+ * Auto-inferred Raid BIS slots (tier, catalyst, raid-sourced items) show a locked
+ * badge by default. Editing Overall BIS on such a slot unlocks the Raid BIS field.
  *
  * The source bar lets officers switch between available BIS sources to compare
  * lists, and set one as the preferred default for the spec.
@@ -27,7 +29,8 @@ export default function AdminDefaultBis() {
   const [availableSources, setAvailable]    = useState([]);
   const [preferredSource, setPreferred]     = useState('');
   const [selectedSource, setSelectedSource] = useState('');
-  const [edits, setEdits]                   = useState({});   // slot → { raidBis, raidBisItemId }
+  const [edits, setEdits]                   = useState({});   // slot → { raidBis?, raidBisItemId?, trueBis?, trueBisItemId? }
+  const [unlockedAutoSlots, setUnlockedAutoSlots] = useState(new Set()); // auto slots unlocked by Overall BIS edit
   const [loadingSpec, setLoadingSpec]       = useState(false);
   const [saving, setSaving]                 = useState(false);
   const [savingSource, setSavingSource]     = useState(false);
@@ -47,6 +50,7 @@ export default function AdminDefaultBis() {
     if (!spec) return;
     setLoadingSpec(true);
     setEdits({});
+    setUnlockedAutoSlots(new Set());
     setSaveMsg(null);
     setError(null);
     try {
@@ -104,8 +108,40 @@ export default function AdminDefaultBis() {
     }
   };
 
-  const handleEdit = (slot, raidBis, raidBisItemId = '') => {
-    setEdits(prev => ({ ...prev, [slot]: { raidBis, raidBisItemId } }));
+  const handleEditOverall = (slot, trueBis, trueBisItemId = '') => {
+    const row = rowBySlot[slot];
+    const isSentinel   = trueBis === '<Tier>' || trueBis === '<Catalyst>';
+    const overallItem  = (row?.overallOptions ?? []).find(o => o.name === trueBis);
+    const wouldAutoInfer = isSentinel || overallItem?.sourceType === 'Raid';
+
+    setEdits(prev => {
+      const prevSlot = { ...prev[slot] };
+      prevSlot.trueBis      = trueBis;
+      prevSlot.trueBisItemId = trueBisItemId;
+      if (wouldAutoInfer) {
+        prevSlot.raidBis        = trueBis;
+        prevSlot.raidBisItemId  = trueBisItemId;
+        prevSlot.raidBisIsAuto  = true;
+      } else if (prevSlot.raidBisIsAuto) {
+        delete prevSlot.raidBis;
+        delete prevSlot.raidBisItemId;
+        delete prevSlot.raidBisIsAuto;
+      }
+      return { ...prev, [slot]: prevSlot };
+    });
+
+    if (wouldAutoInfer) {
+      // Keep this slot showing Auto (clear from unlocked set)
+      setUnlockedAutoSlots(prev => { const next = new Set(prev); next.delete(slot); return next; });
+    } else if (row?.raidBisAuto) {
+      // Non-raid Overall BIS on a previously-auto Raid BIS slot → unlock it
+      setUnlockedAutoSlots(prev => new Set([...prev, slot]));
+    }
+    setSaveMsg(null);
+  };
+
+  const handleEditRaid = (slot, raidBis, raidBisItemId = '') => {
+    setEdits(prev => ({ ...prev, [slot]: { ...prev[slot], raidBis, raidBisItemId } }));
     setSaveMsg(null);
   };
 
@@ -114,7 +150,11 @@ export default function AdminDefaultBis() {
 
     const updates = Object.entries(edits)
       .filter(([, v]) => v !== undefined)
-      .map(([slot, { raidBis, raidBisItemId }]) => ({ slot, raidBis, raidBisItemId }));
+      .map(([slot, v]) => ({
+        slot,
+        ...(v.raidBis !== undefined ? { raidBis: v.raidBis, raidBisItemId: v.raidBisItemId ?? '' } : {}),
+        ...(v.trueBis !== undefined ? { trueBis: v.trueBis, trueBisItemId: v.trueBisItemId ?? '' } : {}),
+      }));
 
     if (!updates.length) { setSaveMsg('No changes to save.'); return; }
 
@@ -139,7 +179,7 @@ export default function AdminDefaultBis() {
   };
 
   const rowBySlot  = Object.fromEntries((rows ?? []).map(r => [r.slot, r]));
-  const dirtyCount = Object.keys(edits).length;
+  const dirtyCount = Object.values(edits).filter(v => v !== undefined).length;
   const isDefault  = selectedSource === preferredSource;
 
   return (
@@ -147,9 +187,8 @@ export default function AdminDefaultBis() {
       <div className="page-header">
         <h2 className="page-title">Default Raid BIS</h2>
         <p className="page-sub">
-          Set the best raid-obtainable item for each slot. Auto-filled slots
-          (tier, catalyst, raid drops) are locked. Slots with Mythic+ or crafted
-          Overall BIS need officer input.
+          Select a source as the base, then override individual slots as needed.
+          Editing Overall BIS on an auto-inferred slot also unlocks Raid BIS for that slot.
         </p>
       </div>
 
@@ -227,35 +266,60 @@ export default function AdminDefaultBis() {
                     </tr>
                   );
 
-                  const isAuto     = row.raidBisAuto === true;
-                  const editVal    = edits[slot];
-                  const currentVal = editVal !== undefined ? editVal.raidBis : (row.raidBis ?? '');
-                  const isDirty    = editVal !== undefined && editVal.raidBis !== row.raidBis;
-                  const options    = row.options ?? [];
+                  const isAuto        = row.raidBisAuto === true;
+                  const isAutoUnlocked = unlockedAutoSlots.has(slot);
+                  const editVal       = edits[slot];
+                  const currentOverall = editVal?.trueBis !== undefined ? editVal.trueBis : (row.trueBis ?? '');
+                  const currentRaid    = editVal?.raidBis !== undefined ? editVal.raidBis : (row.raidBis ?? '');
+                  const options        = row.options ?? [];
+
+                  const isDirty = editVal !== undefined && (
+                    (editVal.trueBis !== undefined && editVal.trueBis !== row.trueBis) ||
+                    (editVal.raidBis !== undefined && editVal.raidBis !== row.raidBis)
+                  );
 
                   return (
                     <tr key={slot} className={isDirty ? 'bis-row-dirty' : ''}>
                       <td className="bis-slot">{slot}</td>
                       <td>
-                        <ItemLink name={row.trueBis || '—'} itemId={row.trueBisItemId} />
+                        <ItemSelect
+                          value={currentOverall}
+                          options={row.overallOptions ?? []}
+                          sentinels={[
+                            ...(row.hasTier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
+                            ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
+                            { value: '<Crafted>', label: '<Crafted>' },
+                          ]}
+                          defaultValue={row.trueBisSeed ?? ''}
+                          pendingValue={currentOverall !== (row.trueBisSeed ?? '') ? currentOverall : ''}
+                          empty={!currentOverall}
+                          onChange={(name, itemId) => handleEditOverall(slot, name, itemId)}
+                        />
                       </td>
                       <td>
-                        {isAuto ? (
-                          <span className="raid-bis-auto">
-                            <ItemLink name={row.raidBis} itemId={row.raidBisItemId} />
-                            <span className="badge badge-auto">Auto</span>
-                          </span>
-                        ) : (
-                          <ItemSelect
-                            value={currentVal}
-                            options={options}
-                            sentinels={[
-                              ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
-                            ]}
-                            empty={!currentVal}
-                            onChange={(name, itemId) => handleEdit(slot, name, itemId)}
-                          />
-                        )}
+                        {(() => {
+                          const showAuto = editVal?.raidBisIsAuto === true || (isAuto && !isAutoUnlocked);
+                          const autoName   = editVal?.raidBisIsAuto ? editVal.raidBis        : row.raidBis;
+                          const autoItemId = editVal?.raidBisIsAuto ? editVal.raidBisItemId  : row.raidBisItemId;
+                          return showAuto ? (
+                            <span className="raid-bis-auto">
+                              <ItemLink name={autoName} itemId={autoItemId} />
+                              <span className="badge badge-auto">Auto</span>
+                            </span>
+                          ) : (
+                            <ItemSelect
+                              value={currentRaid}
+                              options={options}
+                              sentinels={[
+                                ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
+                              ]}
+                              defaultValue={row.raidBisSeed ?? ''}
+                              pendingValue={currentRaid !== (row.raidBisSeed ?? '') ? currentRaid : ''}
+                              empty={!currentRaid}
+                              onChange={(name, itemId) => handleEditRaid(slot, name, itemId)}
+                            />
+                          );
+                        })()}
                       </td>
                       <td className="admin-source-col text-muted">{row.source}</td>
                     </tr>
