@@ -166,6 +166,7 @@ const DUAL_WIELD_SPECS = new Set([
   'Windwalker Monk', 'Brewmaster Monk',
   'Frost Death Knight',
   'Fury Warrior',
+  'Survival Hunter'
 ]);
 
 /**
