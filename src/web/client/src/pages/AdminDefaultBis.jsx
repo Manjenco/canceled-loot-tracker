@@ -311,6 +311,7 @@ export default function AdminDefaultBis() {
                               value={currentRaid}
                               options={options}
                               sentinels={[
+                                ...(row.hasTier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
                                 ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
                               ]}
                               defaultValue={row.raidBisSeed ?? ''}
