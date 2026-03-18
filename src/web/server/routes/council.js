@@ -1,5 +1,5 @@
 /**
- * council.js — Officer loot council routes.
+ * council.js — Loot council routes (all team members).
  *
  * GET /api/council/items
  * GET /api/council/candidates?itemId=<id>
@@ -17,10 +17,6 @@ import { log } from '../../../lib/logger.js';
 
 const router = new Hono();
 router.use('*', requireAuth);
-router.use('*', async (c, next) => {
-  if (!c.get('session').user?.isOfficer) return c.json({ error: 'Officer only' }, 403);
-  await next();
-});
 
 function matchesBis(bisValue, bisItemId, item, charArmorType, slot) {
   if (!bisValue) return false;
