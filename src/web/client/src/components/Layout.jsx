@@ -46,7 +46,7 @@ export default function Layout({ children }) {
         </div>
 
         <nav className="nav-tabs">
-          <NavLink to="/bis" className="nav-tab">Edit BIS</NavLink>
+          <NavLink to="/" className="nav-tab">Character Summary</NavLink>
           {user?.isOfficer && (
             <NavLink to="/bis/review" className="nav-tab">BIS Review</NavLink>
           )}
