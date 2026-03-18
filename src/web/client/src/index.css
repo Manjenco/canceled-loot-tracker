@@ -1420,6 +1420,21 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .council-page { display: flex; flex-direction: column; gap: 0; }
 
 /* Instance tabs (multi-instance) */
+.council-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.council-selector-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .council-top-row {
   display: flex;
   align-items: flex-start;
@@ -1478,11 +1493,19 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 }
 
 /* Boss selector */
+.council-boss-card {
+  margin-bottom: 12px;
+  padding: 10px 16px;
+}
+
 .council-boss-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 4px;
+}
+.council-boss-selector-row {
+  margin-bottom: 16px;
 }
 .council-boss-btn {
   padding: 5px 12px;
@@ -1503,25 +1526,62 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 /* Item chips */
 .council-item-grid {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
+}
+.council-item-group {
+  margin-bottom: 8px;
+}
+.council-item-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 4px 4px 4px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  width: 100%;
+  display: block;
 }
 .council-item-chip {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
-  padding: 6px 12px;
+  padding: 5px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--surface2);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
   text-align: left;
+  overflow: hidden;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+
+  position: relative;
+}
+.council-item-chip-tier {
+  color: #ffb900;
+  background: rgba(255, 185, 0, 0.05);
+}
+
+.council-item-chip-tier:hover {
+  color: #ffb900;
+  background: rgba(255, 185, 0, 0.08);
 }
 .council-item-chip:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.15); }
 .council-item-chip.active { background: rgba(204,16,16,0.12); border-color: var(--primary); }
-.council-item-name { font-size: 13px; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.council-item-name {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  display: block;
+}
 .council-item-meta { font-size: 11px; color: var(--text-muted); }
 .council-tier-tag {
   display: inline-block;
@@ -1537,8 +1597,48 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
   line-height: 16px;
   flex-shrink: 0;
 }
+.council-tier-star {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  color: #ffb900;
+  font-size: 10px;
+  line-height: 1;
+}
 
 /* Candidate section */
+.council-split {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.council-split-left {
+  width: 220px;
+  min-width: 220px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.council-split-left.card {
+  padding: 8px;
+}
+
+.council-split-right {
+  flex: 1;
+  min-width: 0;
+}
+
+.council-split-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: var(--text-muted);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
 .council-candidates { display: flex; flex-direction: column; gap: 12px; }
 
 .council-item-header {
@@ -1600,11 +1700,16 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .council-table tr:last-child td { border-bottom: none; }
 .council-table tr:hover td { background: var(--surface2); }
 
-.council-col-char  { min-width: 100px; font-weight: 600; }
-.council-col-spec  { min-width: 120px; color: var(--text-muted); }
-.council-col-stats { min-width: 90px; white-space: nowrap; }
-.council-col-num   { min-width: 50px; text-align: center; color: var(--text-muted); }
-.council-col-bis   { min-width: 80px; text-align: center; }
+.council-col-char  { min-width: 90px; }
+.council-col-spec  { min-width: 80px; }
+.council-col-stats { min-width: 50px; text-align: center; }
+.council-col-num   { min-width: 40px; text-align: center; }
+.council-col-bis   { min-width: 50px; text-align: center; }
+
+.council-table {
+  font-size: 12px;
+  width: 100%;
+}
 
 .council-stat-bis    { color: var(--bis);    font-weight: 600; }
 .council-stat-nonbis { color: var(--nonbis); font-weight: 600; }

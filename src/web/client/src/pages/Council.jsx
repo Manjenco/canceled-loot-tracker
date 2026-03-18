@@ -20,10 +20,6 @@ function itemMeta(item) {
   return item.slot;
 }
 
-function TierTag() {
-  return <span className="council-tier-tag">Tier</span>;
-}
-
 // ── Sort helpers ──────────────────────────────────────────────────────────────
 
 function sortCandidates(candidates) {
@@ -149,36 +145,54 @@ function CurioCandidateTable({ curioItemId }) {
 function BossSelector({ bosses, selectedBoss, onSelect }) {
   if (!bosses.length) return null;
   return (
-    <div className="council-boss-row">
-      {bosses.map(b => (
-        <button
-          key={b.name}
-          className={`council-boss-btn${selectedBoss === b.name ? ' active' : ''}`}
-          onClick={() => onSelect(b.name)}
-        >
-          {b.name}
-        </button>
-      ))}
+    <div className="council-selector-row">
+      <span className="council-selector-label">Boss</span>
+      <div className="council-instance-tabs">
+        {bosses.map(b => (
+          <button
+            key={b.name}
+            className={`council-instance-tab${selectedBoss === b.name ? ' active' : ''}`}
+            onClick={() => onSelect(b.name)}
+          >
+            {b.name}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
+const ITEM_GROUPS = [
+  { label: 'Armor',       filter: item => ARMOR_TYPES.has(item.armorType) && !item.weaponType },
+  { label: 'Accessories', filter: item => !item.isTierToken && item.armorType === 'Accessory' && !item.weaponType },
+  { label: 'Weapons',     filter: item => !!item.weaponType },
+];
+
 function ItemGrid({ items, selectedItemId, onSelect }) {
   if (!items.length) return <p className="empty">No items for this boss.</p>;
+
   return (
     <div className="council-item-grid">
-      {items.map(item => (
-        <button
-          key={item.itemId}
-          className={`council-item-chip${String(item.itemId) === String(selectedItemId) ? ' active' : ''}`}
-          onClick={() => onSelect(item.itemId)}
-        >
-          <span className="council-item-name">
-            {item.name}{item.isTierToken && <TierTag />}
-          </span>
-          <span className="council-item-meta">{itemMeta(item)}</span>
-        </button>
-      ))}
+      {ITEM_GROUPS.map(group => {
+        const groupItems = items.filter(group.filter);
+        if (!groupItems.length) return null;
+        return (
+          <div key={group.label} className="council-item-group">
+            <div className="council-item-group-label">{group.label}</div>
+            {groupItems.map(item => (
+              <button
+                key={item.itemId}
+                className={`council-item-chip${String(item.itemId) === String(selectedItemId) ? ' active' : ''}${item.isTierToken ? ' council-item-chip-tier' : ''}`}
+                onClick={() => onSelect(item.itemId)}
+              >
+                <span className="council-item-name">{item.name}</span>
+                <span className="council-item-meta">{itemMeta(item)}</span>
+                {item.isTierToken && <span className="council-tier-star">✦</span>}
+              </button>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -255,7 +269,7 @@ function CandidateTable({ itemId, showAll, onToggle }) {
           href={`https://www.wowhead.com/item=${item.itemId}`}
           target="_blank"
           rel="noreferrer"
-        >{item.name}{item.isTierToken && <TierTag />}</a>
+        >{item.name}</a>
         <span className="council-item-subtitle">
           {itemMeta(item)}{item.difficulty ? ` · ${item.difficulty}` : ''}
         </span>
@@ -300,13 +314,13 @@ function CandidateTable({ itemId, showAll, onToggle }) {
               <tr>
                 <th className="council-col-char">Character</th>
                 <th className="council-col-spec">Spec</th>
-                <th className="council-col-stats">BIS H/M</th>
-                <th className="council-col-stats">Non-BIS H/M</th>
-                <th className="council-col-stats" title="Account total across all characters">Acct BIS H/M</th>
-                <th className="council-col-stats" title="Account total across all characters">Acct Non-BIS H/M</th>
-                <th className="council-col-num">Raids</th>
-                <th className="council-col-bis">Overall BIS</th>
-                <th className="council-col-bis">Raid BIS</th>
+                <th className="council-col-stats" title="BIS drops (Heroic/Mythic)">BIS</th>
+                <th className="council-col-stats" title="Non-BIS drops (Heroic/Mythic)">Non-BIS</th>
+                <th className="council-col-stats" title="Account BIS drops (Heroic/Mythic)">Acct BIS</th>
+                <th className="council-col-stats" title="Account Non-BIS drops (Heroic/Mythic)">Acct NB</th>
+                <th className="council-col-num" title="Raids attended">Raids</th>
+                <th className="council-col-bis">OvBIS</th>
+                <th className="council-col-bis">RaidBIS</th>
               </tr>
             </thead>
             <tbody>
@@ -387,16 +401,19 @@ export default function Council() {
 
       <div className="council-top-row">
         {instances.length > 1 && (
-          <div className="council-instance-tabs">
-            {instances.map(inst => (
-              <button
-                key={inst.instance}
-                className={`council-instance-tab${inst.instance === currentInstance && !showCurio ? ' active' : ''}`}
-                onClick={() => handleInstanceSelect(inst.instance)}
-              >
-                {inst.instance}
-              </button>
-            ))}
+          <div className="council-selector-row">
+            <span className="council-selector-label">Raid</span>
+            <div className="council-instance-tabs">
+              {instances.map(inst => (
+                <button
+                  key={inst.instance}
+                  className={`council-instance-tab${inst.instance === currentInstance && !showCurio ? ' active' : ''}`}
+                  onClick={() => handleInstanceSelect(inst.instance)}
+                >
+                  {inst.instance}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {curioItemId && (
@@ -411,29 +428,39 @@ export default function Council() {
 
       {!showCurio ? (
         <>
-          <div className="card">
+          <div className="council-selector-row council-boss-selector-row">
             <BossSelector
               bosses={bosses}
               selectedBoss={selectedBoss}
               onSelect={handleBossSelect}
             />
-            <div className="council-boss-divider" />
-            <ItemGrid
-              items={bossItems}
-              selectedItemId={selectedItemId}
-              onSelect={handleItemSelect}
-            />
           </div>
 
-          {selectedItemId && (
-            <div className="card">
-              <CandidateTable
-                itemId={selectedItemId}
-                showAll={showAll}
-                onToggle={setShowAll}
+          <div className="council-split">
+            <div className="card council-split-left">
+              <ItemGrid
+                items={bossItems}
+                selectedItemId={selectedItemId}
+                onSelect={handleItemSelect}
               />
             </div>
-          )}
+
+            <div className="council-split-right">
+              {selectedItemId ? (
+                <div className="card">
+                  <CandidateTable
+                    itemId={selectedItemId}
+                    showAll={showAll}
+                    onToggle={setShowAll}
+                  />
+                </div>
+              ) : (
+                <div className="council-split-empty">
+                  <span>Select an item to see candidates</span>
+                </div>
+              )}
+            </div>
+          </div>
         </>
       ) : (
         <div className="card">
