@@ -50,9 +50,7 @@ export default function Layout({ children }) {
           {user?.isOfficer && (
             <NavLink to="/bis/review" className="nav-tab">BIS Review</NavLink>
           )}
-          {user?.isOfficer && (
-            <NavLink to="/council" className="nav-tab">Council</NavLink>
-          )}
+          <NavLink to="/council" className="nav-tab">Council</NavLink>
           {user?.isOfficer && (
             <NavLink to="/roster" className="nav-tab">Roster</NavLink>
           )}

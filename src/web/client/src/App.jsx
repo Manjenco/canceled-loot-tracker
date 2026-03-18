@@ -58,9 +58,9 @@ export default function App() {
         </OfficerRoute>
       } />
       <Route path="/council" element={
-        <OfficerRoute>
+        <ProtectedRoute>
           <Layout><Council /></Layout>
-        </OfficerRoute>
+        </ProtectedRoute>
       } />
       <Route path="/import" element={
         <OfficerRoute>
