@@ -142,9 +142,6 @@ export function buildLootEntries(rows, roster, responseMap, existingKeys) {
 
     if (!charName || !itemName) continue;
 
-    // Skip rows where response indicates the item wasn't awarded as loot
-    // (handled by response map — unmapped = warn + Non-BIS, not skip)
-
     // Dedup
     const dedupKey = `${charName.toLowerCase()}|${itemName.toLowerCase()}|${dateIso}`;
     if (existingKeys.has(dedupKey)) {
@@ -161,21 +158,23 @@ export function buildLootEntries(rows, roster, responseMap, existingKeys) {
       warnings.push(`Unknown response "${responseLabel}" for ${charName} / ${itemName} — defaulted to Non-BIS`);
     }
 
-    // Look up Discord user ID from roster (best-effort)
-    const rosterEntry = rosterByChar.get(charName.toLowerCase());
-    const recipientId = rosterEntry?.ownerId ?? '';
+    // Look up Discord user ID and stable charId from roster (best-effort)
+    const rosterEntry    = rosterByChar.get(charName.toLowerCase());
+    const recipientId    = rosterEntry?.ownerId ?? '';
+    const recipientCharId = rosterEntry?.charId  ?? '';
 
     entries.push({
-      id:            randomUUID(),
-      raidId:        '',
-      date:          dateIso,
+      id:              randomUUID(),
+      raidId:          '',
+      date:            dateIso,
       boss,
       itemName,
       difficulty,
       recipientId,
-      recipientChar: charName,
+      recipientChar:   charName,
       upgradeType,
-      notes:         responseLabel,
+      notes:           responseLabel,
+      recipientCharId,
     });
 
     existingKeys.add(dedupKey);

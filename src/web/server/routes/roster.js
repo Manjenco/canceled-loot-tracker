@@ -17,6 +17,7 @@ import {
   getRoster, getLootLog, getBisSubmissions,
   getEffectiveDefaultBis, getItemDb, applyRaidBisInference,
   setRosterStatus, setOwnerNick, setRosterOwner, addRosterChar, deleteRosterChar,
+  renameRosterChar,
 } from '../../../lib/sheets.js';
 import { toCanonical, CLASS_SPECS } from '../../../lib/specs.js';
 
@@ -128,7 +129,9 @@ router.get('/:charName', async (c) => {
       : [charName];
 
     const loot = lootLog
-      .filter(e => (e.recipientChar ?? '').toLowerCase() === charName.toLowerCase())
+      .filter(e => rosterChar.charId && e.recipientCharId
+        ? e.recipientCharId === rosterChar.charId
+        : (e.recipientChar ?? '').toLowerCase() === charName.toLowerCase())
       .sort((a, b) => new Date(b.date) - new Date(a.date))
       .map(e => ({ ...e, itemId: itemIdByName.get((e.itemName ?? '').toLowerCase()) ?? '' }));
 
@@ -139,7 +142,10 @@ router.get('/:charName', async (c) => {
           .map(e => ({ ...e, itemId: itemIdByName.get((e.itemName ?? '').toLowerCase()) ?? '' }))
       : [];
 
-    const approvedBis   = bisSubmissions.filter(s => s.charName.toLowerCase() === charName.toLowerCase() && s.status === 'Approved');
+    const approvedBis   = bisSubmissions.filter(s =>
+      s.status === 'Approved' &&
+      (rosterChar.charId && s.charId ? s.charId === rosterChar.charId : s.charName.toLowerCase() === charName.toLowerCase())
+    );
     const canonicalSpec = toCanonical(rosterChar.spec);
     const specRows      = effectiveBis.filter(d => d.spec === canonicalSpec);
     const specDefaults  = applyRaidBisInference(specRows, itemDb);
@@ -192,6 +198,26 @@ router.post('/:charName/status', async (c) => {
   } catch (err) {
     console.error('[ROSTER] Status update error:', err);
     return c.json({ error: 'Failed to update status' }, 500);
+  }
+});
+
+router.post('/:charName/rename', async (c) => {
+  const { teamSheetId } = c.get('session').user;
+  const charName        = c.req.param('charName');
+  const { newName }     = await c.req.json();
+  if (!newName?.trim()) return c.json({ error: 'newName is required' }, 400);
+  try {
+    const roster = await getRoster(teamSheetId);
+    const target = roster.find(r => r.charName.toLowerCase() === charName.toLowerCase());
+    if (!target) return c.json({ error: 'Character not found' }, 404);
+    if (!target.charId) return c.json({ error: 'Character has no charId — run the migration script first' }, 409);
+    const conflict = roster.find(r => r.charName.toLowerCase() === newName.trim().toLowerCase() && r.charId !== target.charId);
+    if (conflict) return c.json({ error: 'A character with that name already exists on this roster' }, 409);
+    await renameRosterChar(teamSheetId, target.charId, newName.trim());
+    return c.json({ ok: true, charId: target.charId, oldName: charName, newName: newName.trim() });
+  } catch (err) {
+    console.error('[ROSTER] Rename error:', err);
+    return c.json({ error: 'Failed to rename character' }, 500);
   }
 });
 
