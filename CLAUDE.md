@@ -118,9 +118,13 @@ The web app checks the role resolved from the Roster sheet after OAuth login.
 ## Google Sheets schema
 Column order is the source of truth. Tabs marked **[master]** live in the master sheet; all others live in each team's sheet.
 
-### Roster (A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId)
+### Roster (A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId I=Server)
 - CharId (col H) = stable UUID generated when the character is added. Never changes on rename.
   Cols A–G are unchanged from the original schema; old code reading A:G is unaffected.
+- Server (col I) = optional realm name (e.g. "Area 52"). Normally empty. Only populated when two
+  characters on the roster share the same name (different real-world servers). The UI forces both
+  entries to be given a server name when the conflict arises; RCLC imports use server+name to
+  disambiguate when the roster entry has a server set, and name-only when it is empty.
 - Realm column removed — not needed
 - Class and Spec are dropdown-validated in the sheet
 - Role is auto-filled by onEdit trigger when Spec is selected — do not write to it directly

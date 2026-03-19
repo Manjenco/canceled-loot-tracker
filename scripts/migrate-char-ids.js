@@ -16,26 +16,45 @@
  *      Rows already having a charId in col K are skipped.
  *
  * Usage:
+ *   # Migrate all teams (reads team list from master sheet):
+ *   node --env-file=.env scripts/migrate-char-ids.js
+ *
+ *   # Migrate a single team sheet:
  *   node --env-file=.env scripts/migrate-char-ids.js <teamSheetId>
  *
- * Run once per team sheet. Safe to re-run — skips already-migrated rows.
- *
- * Example (migrate your Mythic team):
- *   node --env-file=.env scripts/migrate-char-ids.js $TEAM_MYTHIC_SHEET_ID
+ * Safe to re-run — skips already-migrated rows.
  */
 
 import { randomUUID } from 'node:crypto';
-import { readRange, writeRange, batchWriteRanges } from '../src/lib/sheets.js';
+import { readRange, batchWriteRanges } from '../src/lib/sheets.js';
 
-// ── CLI arg ────────────────────────────────────────────────────────────────────
+// ── Resolve team sheet IDs ─────────────────────────────────────────────────────
 
-const sheetId = process.argv[2] ?? process.env.TEAM_MYTHIC_SHEET_ID;
-if (!sheetId) {
-  console.error('Usage: node --env-file=.env scripts/migrate-char-ids.js <teamSheetId>');
+const masterSheetId = process.env.MASTER_SHEET_ID;
+const argSheetId    = process.argv[2];
+
+let teamSheetIds;
+
+if (argSheetId) {
+  // Single team passed explicitly — no name available
+  teamSheetIds = [{ name: '', sheetId: argSheetId }];
+} else if (masterSheetId) {
+  // Read all teams from master sheet Teams tab (A=TeamName, B=SheetId)
+  console.log(`Reading team list from master sheet ${masterSheetId.slice(-6)}…`);
+  const teamRows = await readRange(masterSheetId, 'Teams!A2:B');
+  teamSheetIds = teamRows
+    .map(r => ({ name: String(r[0] ?? '').trim(), sheetId: String(r[1] ?? '').trim() }))
+    .filter(t => t.sheetId);
+  if (!teamSheetIds.length) {
+    console.error('No teams found in master sheet Teams tab.');
+    process.exit(1);
+  }
+  console.log(`Found ${teamSheetIds.length} team(s): ${teamSheetIds.map(t => t.name).join(', ')}\n`);
+} else {
+  console.error('Usage: node --env-file=.env scripts/migrate-char-ids.js [teamSheetId]');
+  console.error('       MASTER_SHEET_ID env var must be set if no teamSheetId is provided.');
   process.exit(1);
 }
-
-console.log(`\n=== Migrating char IDs for sheet ${sheetId} ===\n`);
 
 // ── Helper: batch write in chunks to avoid hitting the API limits ──────────────
 
@@ -49,110 +68,143 @@ async function batchWriteChunked(sheetId, updates, label, chunkSize = 50) {
   console.log(`  ${label}: ✓ ${updates.length} cells written                    `);
 }
 
-// ── Step 1: Roster — generate charId for every row missing one ────────────────
+// ── Per-team migration ─────────────────────────────────────────────────────────
 
-console.log('Step 1: Roster — generating charIds for un-migrated rows…');
+async function migrateTeam(sheetId, teamName = '') {
+  const label = teamName ? `${teamName} (${sheetId.slice(-6)})` : sheetId;
+  console.log(`=== Migrating char IDs for ${label} ===\n`);
 
-// Schema (new): A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId
-const rosterRows = await readRange(sheetId, 'Roster!A2:H');
+  // ── Step 1: Roster — generate charId for every row missing one ──────────────
 
-const charIdByName = new Map();  // charName.toLowerCase() → charId
-const rosterUpdates = [];
+  console.log('Step 1: Roster — generating charIds for un-migrated rows…');
 
-for (let i = 0; i < rosterRows.length; i++) {
-  const r        = rosterRows[i];
-  const charName = String(r[0] ?? '').trim();
-  const status   = String(r[4] ?? '').trim().toLowerCase();
-  const existing = String(r[7] ?? '').trim(); // col H
+  // Schema (new): A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId
+  const rosterRows   = await readRange(sheetId, 'Roster!A2:H');
+  const charIdByName = new Map();  // charName.toLowerCase() → charId
+  const rosterUpdates = [];
 
-  if (!charName || status === 'deleted') continue;
+  for (let i = 0; i < rosterRows.length; i++) {
+    const r        = rosterRows[i];
+    const charName = String(r[0] ?? '').trim();
+    const status   = String(r[4] ?? '').trim().toLowerCase();
+    const existing = String(r[7] ?? '').trim(); // col H
 
-  if (existing) {
-    // Already has a charId — just record it for downstream steps
-    charIdByName.set(charName.toLowerCase(), existing);
-    continue;
+    if (!charName || status === 'deleted') continue;
+
+    if (existing) {
+      // Already has a charId — just record it for downstream steps
+      charIdByName.set(charName.toLowerCase(), existing);
+      continue;
+    }
+
+    const charId = randomUUID();
+    charIdByName.set(charName.toLowerCase(), charId);
+    rosterUpdates.push({ range: `Roster!H${i + 2}`, values: [[charId]] });
   }
 
-  const charId = randomUUID();
-  charIdByName.set(charName.toLowerCase(), charId);
-  rosterUpdates.push({ range: `Roster!H${i + 2}`, values: [[charId]] });
-}
+  await batchWriteChunked(sheetId, rosterUpdates, 'Roster!H (charId)');
+  console.log(`  Roster: ${charIdByName.size} characters mapped (${rosterUpdates.length} new IDs generated)\n`);
 
-await batchWriteChunked(sheetId, rosterUpdates, 'Roster!H (charId)');
-console.log(`  Roster: ${charIdByName.size} characters mapped (${rosterUpdates.length} new IDs generated)\n`);
+  // ── Step 2: BIS Submissions — fill col N from charName lookup ───────────────
 
-// ── Step 2: BIS Submissions — fill col N from charName lookup ─────────────────
+  console.log('Step 2: BIS Submissions — writing charId to col N…');
 
-console.log('Step 2: BIS Submissions — writing charId to col N…');
+  // Schema (new): A=Id B=CharName C=Spec D=Slot … M=RaidBISItemId N=CharId
+  const bisRows    = await readRange(sheetId, 'BIS Submissions!A2:N');
+  const bisUpdates  = [];
+  const bisMissing  = new Set(); // charNames that couldn't be linked
 
-// Schema (new): A=Id B=CharName C=Spec D=Slot … M=RaidBISItemId N=CharId
-const bisRows = await readRange(sheetId, 'BIS Submissions!A2:N');
+  for (let i = 0; i < bisRows.length; i++) {
+    const r        = bisRows[i];
+    const id       = String(r[0]  ?? '').trim();
+    const charName = String(r[1]  ?? '').trim();
+    const existing = String(r[13] ?? '').trim(); // col N
 
-const bisUpdates = [];
-let bisMissing   = 0;
+    if (!id || !charName || existing) continue;  // blank row or already migrated
 
-for (let i = 0; i < bisRows.length; i++) {
-  const r        = bisRows[i];
-  const id       = String(r[0]  ?? '').trim();
-  const charName = String(r[1]  ?? '').trim();
-  const existing = String(r[13] ?? '').trim(); // col N
+    const charId = charIdByName.get(charName.toLowerCase());
+    if (!charId) {
+      bisMissing.add(charName);
+      continue;
+    }
 
-  if (!id || !charName || existing) continue;  // blank row or already migrated
-
-  const charId = charIdByName.get(charName.toLowerCase());
-  if (!charId) {
-    console.warn(`  ⚠  BIS row ${i + 2}: charName "${charName}" not found in roster — skipped`);
-    bisMissing++;
-    continue;
+    bisUpdates.push({ range: `BIS Submissions!N${i + 2}`, values: [[charId]] });
   }
 
-  bisUpdates.push({ range: `BIS Submissions!N${i + 2}`, values: [[charId]] });
-}
+  await batchWriteChunked(sheetId, bisUpdates, 'BIS Submissions!N (charId)');
+  if (bisMissing.size) console.warn(`  ⚠  ${bisMissing.size} BIS rows could not be linked (char not in roster): ${[...bisMissing].sort().join(', ')}`);
+  console.log();
 
-await batchWriteChunked(sheetId, bisUpdates, 'BIS Submissions!N (charId)');
-if (bisMissing) console.warn(`  ⚠  ${bisMissing} BIS rows could not be linked (char not in roster)`);
-console.log();
+  // ── Step 3: Loot Log — fill col K from recipientChar lookup ─────────────────
 
-// ── Step 3: Loot Log — fill col K from recipientChar lookup ───────────────────
+  console.log('Step 3: Loot Log — writing recipientCharId to col K…');
 
-console.log('Step 3: Loot Log — writing recipientCharId to col K…');
+  // Schema (new): A=Id … H=RecipientChar … J=Notes K=RecipientCharId
+  const lootRows    = await readRange(sheetId, 'Loot Log!A2:K');
+  const lootUpdates  = [];
+  const lootMissing  = new Set(); // charNames that couldn't be linked
 
-// Schema (new): A=Id … H=RecipientChar … J=Notes K=RecipientCharId
-const lootRows = await readRange(sheetId, 'Loot Log!A2:K');
+  for (let i = 0; i < lootRows.length; i++) {
+    const r             = lootRows[i];
+    const id            = String(r[0]  ?? '').trim();
+    const recipientChar = String(r[7]  ?? '').trim(); // col H
+    const existing      = String(r[10] ?? '').trim(); // col K
 
-const lootUpdates = [];
-let lootMissing   = 0;
+    if (!id || !recipientChar || existing) continue;
 
-for (let i = 0; i < lootRows.length; i++) {
-  const r             = lootRows[i];
-  const id            = String(r[0]  ?? '').trim();
-  const recipientChar = String(r[7]  ?? '').trim(); // col H
-  const existing      = String(r[10] ?? '').trim(); // col K
+    const charId = charIdByName.get(recipientChar.toLowerCase());
+    if (!charId) {
+      lootMissing.add(recipientChar);
+      continue;
+    }
 
-  if (!id || !recipientChar || existing) continue;
-
-  const charId = charIdByName.get(recipientChar.toLowerCase());
-  if (!charId) {
-    console.warn(`  ⚠  Loot row ${i + 2}: recipientChar "${recipientChar}" not found in roster — skipped`);
-    lootMissing++;
-    continue;
+    lootUpdates.push({ range: `Loot Log!K${i + 2}`, values: [[charId]] });
   }
 
-  lootUpdates.push({ range: `Loot Log!K${i + 2}`, values: [[charId]] });
+  await batchWriteChunked(sheetId, lootUpdates, 'Loot Log!K (recipientCharId)');
+  if (lootMissing.size) console.warn(`  ⚠  ${lootMissing.size} loot rows could not be linked (char not in roster): ${[...lootMissing].sort().join(', ')}`);
+  console.log();
+
+  // ── Summary ─────────────────────────────────────────────────────────────────
+
+  console.log(`--- ${teamName || sheetId.slice(-6)} complete ---`);
+  console.log(`  Roster charIds written:     ${rosterUpdates.length}`);
+  console.log(`  BIS charIds written:        ${bisUpdates.length}`);
+  console.log(`  Loot log charIds written:   ${lootUpdates.length}`);
+
+  const allMissing = new Set([...bisMissing, ...lootMissing]);
+  if (allMissing.size) {
+    console.warn(`\n  ⚠  The following character name(s) appear in linked data but have no matching`);
+    console.warn(`     active roster entry. These rows will fall back to name-based joins until`);
+    console.warn(`     you resolve the discrepancy and re-run the script:`);
+    for (const name of [...allMissing].sort()) {
+      const inBis  = bisMissing.has(name)  ? 'BIS'      : '';
+      const inLoot = lootMissing.has(name) ? 'Loot Log' : '';
+      const sources = [inBis, inLoot].filter(Boolean).join(', ');
+      console.warn(`       • ${name}  (${sources})`);
+    }
+  }
+  console.log();
+
+  return { rosterUpdates: rosterUpdates.length, bisUpdates: bisUpdates.length, lootUpdates: lootUpdates.length, bisMissing: allMissing.size, lootMissing: lootMissing.size };
 }
 
-await batchWriteChunked(sheetId, lootUpdates, 'Loot Log!K (recipientCharId)');
-if (lootMissing) console.warn(`  ⚠  ${lootMissing} loot rows could not be linked (char not in roster)`);
-console.log();
+// ── Run ────────────────────────────────────────────────────────────────────────
 
-// ── Done ──────────────────────────────────────────────────────────────────────
+let totalRoster = 0, totalBis = 0, totalLoot = 0;
 
-console.log('=== Migration complete ===');
-console.log(`  Roster charIds written:     ${rosterUpdates.length}`);
-console.log(`  BIS charIds written:        ${bisUpdates.length}`);
-console.log(`  Loot log charIds written:   ${lootUpdates.length}`);
-if (bisMissing || lootMissing) {
-  console.warn(`\n  ⚠  Some rows were skipped because the character name in the linked data`);
-  console.warn(`     does not match any active roster entry. These rows will fall back to`);
-  console.warn(`     name-based joins until you resolve the discrepancy and re-run the script.`);
+for (const { name, sheetId } of teamSheetIds) {
+  const result = await migrateTeam(sheetId, name);
+  totalRoster += result.rosterUpdates;
+  totalBis    += result.bisUpdates;
+  totalLoot   += result.lootUpdates;
+}
+
+if (teamSheetIds.length > 1) {
+  console.log('=== All teams migrated ===');
+  console.log(`  Total roster charIds written:     ${totalRoster}`);
+  console.log(`  Total BIS charIds written:        ${totalBis}`);
+  console.log(`  Total loot log charIds written:   ${totalLoot}`);
+} else {
+  console.log('=== Migration complete ===');
 }

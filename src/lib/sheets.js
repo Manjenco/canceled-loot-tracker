@@ -284,7 +284,7 @@ function normalizeSheetDate(val) {
 export async function getRoster(sheetId) {
   log.verbose(`[sheets] getRoster (sheet ${sheetId.slice(-6)})`);
   return cachedRead(sheetId, 'roster', async () => {
-    const rows = await readRange(sheetId, 'Roster!A2:H');
+    const rows = await readRange(sheetId, 'Roster!A2:I');
     return rows
       .map(r => ({
         charName:  String(r[0] ?? '').trim(),
@@ -295,6 +295,7 @@ export async function getRoster(sheetId) {
         ownerId:   String(r[5] ?? '').trim(),
         ownerNick: String(r[6] ?? '').trim(),
         charId:    String(r[7] ?? '').trim(), // col H — empty until migration runs
+        server:    String(r[8] ?? '').trim(), // col I — optional, for same-name disambiguation
       }))
       .filter(c => c.charName && c.status.toLowerCase() !== 'deleted');
   });
@@ -332,13 +333,15 @@ export async function setOwnerNick(sheetId, ownerId, ownerNick) {
  * @param {string} ownerId    Discord user ID snowflake
  * @param {string} ownerNick  Display name (may be empty string)
  */
-export async function setRosterOwner(sheetId, charName, ownerId, ownerNick) {
-  log.verbose(`[sheets] setRosterOwner char="${charName}" ownerId=${ownerId} (sheet ${sheetId.slice(-6)})`);
-  const rows = await readRange(sheetId, 'Roster!A2:G');
-  const idx  = rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
-  if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
+export async function setRosterOwner(sheetId, charName, ownerId, ownerNick, charId = null) {
+  log.verbose(`[sheets] setRosterOwner char="${charName}" charId=${charId} ownerId=${ownerId} (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:I');
+  const idx  = charId
+    ? rows.findIndex(r => String(r[7] ?? '') === charId)   // prefer stable charId (col H)
+    : rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
+  if (idx < 0) throw new Error(`Character "${charId ?? charName}" not found in roster`);
   const rowNum = idx + 2;
-  log.debug(`[sheets] setRosterOwner found "${charName}" at row ${rowNum}`);
+  log.debug(`[sheets] setRosterOwner found at row ${rowNum}`);
   await writeRange(sheetId, `Roster!F${rowNum}:G${rowNum}`, [[ownerId, ownerNick ?? '']]);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -351,13 +354,15 @@ export async function setRosterOwner(sheetId, charName, ownerId, ownerNick) {
  * @param {string} charName
  * @param {string} status
  */
-export async function setRosterStatus(sheetId, charName, status) {
-  log.verbose(`[sheets] setRosterStatus char="${charName}" status="${status}" (sheet ${sheetId.slice(-6)})`);
-  const rows = await readRange(sheetId, 'Roster!A2:E');
-  const idx  = rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
-  if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
+export async function setRosterStatus(sheetId, charName, status, charId = null) {
+  log.verbose(`[sheets] setRosterStatus char="${charName}" charId=${charId} status="${status}" (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:I');
+  const idx  = charId
+    ? rows.findIndex(r => String(r[7] ?? '') === charId)   // prefer stable charId (col H)
+    : rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
+  if (idx < 0) throw new Error(`Character "${charId ?? charName}" not found in roster`);
   const rowNum = idx + 2;
-  log.debug(`[sheets] setRosterStatus found "${charName}" at row ${rowNum}`);
+  log.debug(`[sheets] setRosterStatus found at row ${rowNum}`);
   await writeRange(sheetId, `Roster!E${rowNum}`, [[status]]);
   cacheInvalidate(sheetId, 'roster');
 }
@@ -376,10 +381,10 @@ export async function setRosterStatus(sheetId, charName, status) {
  * @param {string} status    "Active" | "Bench" | "Inactive"
  * @returns {string} The generated charId
  */
-export async function addRosterChar(sheetId, charName, cls, spec, role, status) {
+export async function addRosterChar(sheetId, charName, cls, spec, role, status, server = '') {
   const charId = randomUUID();
-  log.verbose(`[sheets] addRosterChar charId=${charId} char="${charName}" class="${cls}" spec="${spec}" role="${role}" status="${status}" (sheet ${sheetId.slice(-6)})`);
-  await appendRows(sheetId, 'Roster!A:H', [[charName, cls, spec, role, status, '', '', charId]]);
+  log.verbose(`[sheets] addRosterChar charId=${charId} char="${charName}" server="${server}" class="${cls}" spec="${spec}" role="${role}" status="${status}" (sheet ${sheetId.slice(-6)})`);
+  await appendRows(sheetId, 'Roster!A:I', [[charName, cls, spec, role, status, '', '', charId, server]]);
   cacheInvalidate(sheetId, 'roster');
   return charId;
 }
@@ -395,12 +400,31 @@ export async function addRosterChar(sheetId, charName, cls, spec, role, status) 
  */
 export async function renameRosterChar(sheetId, charId, newName) {
   log.verbose(`[sheets] renameRosterChar charId=${charId} newName="${newName}" (sheet ${sheetId.slice(-6)})`);
-  const rows = await readRange(sheetId, 'Roster!A2:H');
+  const rows = await readRange(sheetId, 'Roster!A2:I');
   const idx  = rows.findIndex(r => String(r[7] ?? '') === charId); // col H (index 7)
   if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
   const rowNum = idx + 2;
   log.debug(`[sheets] renameRosterChar found charId at row ${rowNum}, writing new name "${newName}"`);
   await writeRange(sheetId, `Roster!A${rowNum}`, [[newName]]); // col A
+  cacheInvalidate(sheetId, 'roster');
+}
+
+/**
+ * Set the Server (column I) for a specific character, identified by charId.
+ * Used when resolving a same-name conflict between two characters.
+ *
+ * @param {string} sheetId
+ * @param {string} charId   Stable UUID from col H
+ * @param {string} server   Server name (e.g. "Area52"), or '' to clear
+ */
+export async function setRosterServer(sheetId, charId, server) {
+  log.verbose(`[sheets] setRosterServer charId=${charId} server="${server}" (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:I');
+  const idx  = rows.findIndex(r => String(r[7] ?? '') === charId); // col H (index 7)
+  if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
+  const rowNum = idx + 2;
+  log.debug(`[sheets] setRosterServer found charId at row ${rowNum}, writing server "${server}"`);
+  await writeRange(sheetId, `Roster!I${rowNum}`, [[server]]); // col I
   cacheInvalidate(sheetId, 'roster');
 }
 
@@ -412,14 +436,17 @@ export async function renameRosterChar(sheetId, charId, newName) {
  * @param {string} sheetId
  * @param {string} charName
  */
-export async function deleteRosterChar(sheetId, charName) {
-  log.verbose(`[sheets] deleteRosterChar char="${charName}" (sheet ${sheetId.slice(-6)})`);
-  const rows = await readRange(sheetId, 'Roster!A2:E');
-  const idx  = rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
-  if (idx < 0) throw new Error(`Character "${charName}" not found in roster`);
-  const rowNum = idx + 2;
+export async function deleteRosterChar(sheetId, charName, charId = null) {
+  log.verbose(`[sheets] deleteRosterChar char="${charName}" charId=${charId} (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:I');
+  const idx  = charId
+    ? rows.findIndex(r => String(r[7] ?? '') === charId)   // prefer stable charId (col H)
+    : rows.findIndex(r => String(r[0] ?? '').toLowerCase() === charName.toLowerCase());
+  if (idx < 0) throw new Error(`Character "${charId ?? charName}" not found in roster`);
+  const rowNum    = idx + 2;
+  const actualName = String(rows[idx][0] ?? charName); // use name from the actual row
   await batchWriteRanges(sheetId, [
-    { range: `Roster!A${rowNum}`, values: [[`${charName}-DELETED`]] },
+    { range: `Roster!A${rowNum}`, values: [[`${actualName}-DELETED`]] },
     { range: `Roster!E${rowNum}`, values: [['Deleted']] },
   ]);
   cacheInvalidate(sheetId, 'roster');
@@ -653,7 +680,7 @@ export async function upsertBisSubmission(sheetId, {
  * @param {string} sheetId
  * @param {{ range: string, values: string[][] }[]} updates
  */
-async function batchWriteRanges(sheetId, updates) {
+export async function batchWriteRanges(sheetId, updates) {
   if (!updates.length) return;
   log.verbose(`[sheets] batchWriteRanges ${updates.length} ranges (sheet ${sheetId.slice(-6)})`);
   log.debug(`[sheets] batchWriteRanges ranges:`, updates.map(u => u.range).join(', '));
