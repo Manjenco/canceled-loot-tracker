@@ -260,15 +260,22 @@ async function main() {
           if (missing.length) {
             info(`  ⚠  Unrecognised IDs (not in wcl_zone_ids zones): ${missing.join(', ')}`);
             if (!validEncounterIds.size) {
-              // Zone IDs are probably wrong — look up the zone for the first encounter
-              info('  Attempting to auto-detect correct zone ID from first encounter...');
+              // Zone IDs are probably wrong — look up the zone for every encounter in the report
+              info('  Attempting to auto-detect correct zone ID(s) from report encounters...');
               try {
-                const enc = await getEncounterZone(bossEncounterIds[0], wcl_client_id, wcl_client_secret);
-                if (enc) {
-                  info(`  Encounter ${enc.encounterId} "${enc.encounterName}" belongs to zone ${enc.zoneId} "${enc.zoneName}"`);
-                  info(`  → Set wcl_zone_ids = ${enc.zoneId} in your Global Config sheet`);
+                const zoneMap = new Map(); // zoneId → zoneName
+                for (const encId of bossEncounterIds) {
+                  const enc = await getEncounterZone(encId, wcl_client_id, wcl_client_secret);
+                  if (enc?.zoneId) {
+                    zoneMap.set(enc.zoneId, enc.zoneName);
+                    info(`  Encounter ${enc.encounterId} "${enc.encounterName}" → zone ${enc.zoneId} "${enc.zoneName}"`);
+                  }
+                }
+                if (zoneMap.size) {
+                  const ids = [...zoneMap.keys()].join('|');
+                  info(`  → Set wcl_zone_ids = ${ids} in your Global Config sheet`);
                 } else {
-                  info(`  Could not resolve zone for encounter ${bossEncounterIds[0]}`);
+                  info('  Could not resolve any zones — check wcl_client_id is correct');
                 }
               } catch (e) {
                 info(`  Zone lookup failed: ${e.message}`);
