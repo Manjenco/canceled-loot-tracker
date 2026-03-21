@@ -69,11 +69,12 @@ import {
 // ── Upgrade track bonus ID map ─────────────────────────────────────────────────
 // Maps WCL/WoW bonus IDs to human-readable tier piece track names.
 // Update once per major patch when new bonus IDs are introduced.
+// Midnight Season 1 upgrade track bonus IDs
 const TRACK_BY_BONUS_ID = {
-  10387: 'Veteran',
-  10388: 'Champion',
-  10389: 'Hero',
-  10390: 'Mythic',
+  13326: 'Veteran',
+  13333: 'Champion',
+  13340: 'Hero',
+  13574: 'Mythic',
 };
 
 // WCL difficulty integer → human label

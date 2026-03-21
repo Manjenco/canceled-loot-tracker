@@ -45,8 +45,12 @@ function parseSheetDateMs(value) {
   return isNaN(ms) ? 0 : ms;
 }
 
+// Midnight Season 1 upgrade track bonus IDs
 const TRACK_BY_BONUS_ID = {
-  10387: 'Veteran', 10388: 'Champion', 10389: 'Hero', 10390: 'Mythic',
+  13326: 'Veteran',
+  13333: 'Champion',
+  13340: 'Hero',
+  13574: 'Mythic',
 };
 
 function buildRosterLookup(roster) {
