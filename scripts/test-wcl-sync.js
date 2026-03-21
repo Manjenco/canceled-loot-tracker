@@ -249,6 +249,16 @@ async function main() {
 
       if (!validFights.length) {
         info('  No valid boss fights — would skip this report');
+        // Show what encounter IDs were in the fights vs what we expected
+        const bossEncounterIds = [...new Set(fights.filter(f => f.encounterID !== 0).map(f => f.encounterID))];
+        if (bossEncounterIds.length) {
+          info(`  Fight encounter IDs in report: ${bossEncounterIds.join(', ')}`);
+          info(`  Valid encounter IDs from zone config: ${[...validEncounterIds].join(', ') || '(none)'}`);
+          const missing = bossEncounterIds.filter(id => !validEncounterIds.has(id));
+          if (missing.length) info(`  ⚠  Unrecognised IDs (not in wcl_zone_ids zones): ${missing.join(', ')}`);
+        } else {
+          info('  No boss fights at all (all fights are trash — encounterID === 0)');
+        }
         continue;
       }
 
