@@ -288,36 +288,37 @@ async function main() {
         continue;
       }
 
-      // Roster matching — report against all session actors for info only
-      const matched = actors.filter(a => resolveActor(a, rosterLookup));
-      const pugs    = actors.filter(a => !resolveActor(a, rosterLookup));
-      info(`  Session actors: ${actors.length} total, ${matched.length} roster matches, ${pugs.length} unmatched`);
-      info(`  (unmatched session actors are alts/bench/other-raid members — not used for attendance)`);
-      if (pugs.length) {
-        for (const p of pugs) info(`    unmatched: ${p.name}-${p.server ?? '?'}`);
-      }
-
-      // CombatantInfo / tier gear
+      // CombatantInfo / tier gear — source of truth for both snapshots and attendance
       const latestFight = fights.reduce((a, b) => b.id > a.id ? b : a);
       info(`  Fetching CombatantInfo from fight ${latestFight.id} (latest)…`);
       let combatantEvents;
       try {
         combatantEvents = await getCombatantInfo(report.code, latestFight.id, wcl_client_id, wcl_client_secret);
-        info(`  ${combatantEvents.length} CombatantInfo event(s)`);
       } catch (err) {
         fail(`  Failed to fetch CombatantInfo: ${err.message}`);
         combatantEvents = [];
       }
 
+      // Roster matching — keyed off CombatantInfo participants, not session actors
       const snapshotPreview = [];
+      const combatantPugs   = [];
       for (const event of combatantEvents) {
         const actor = actors.find(a => a.id === event.sourceID);
         if (!actor) continue;
         const char = resolveActor(actor, rosterLookup);
-        if (!char) continue;
+        if (!char) {
+          combatantPugs.push(`${actor.name}-${actor.server ?? '?'}`);
+          continue;
+        }
         const tierMap    = tierItemsByClass.get(actor.subType) ?? new Map();
         const tierPieces = findTierPieces(event.gear, tierMap);
         snapshotPreview.push({ name: char.charName, count: tierPieces.length, detail: tierPieces.map(p => `${p.slot}:${p.track}`).join('|') || 'none' });
+      }
+
+      const combatantTotal = snapshotPreview.length + combatantPugs.length;
+      info(`  Combatants: ${combatantTotal} total, ${snapshotPreview.length} roster match(es), ${combatantPugs.length} pug(s)`);
+      if (combatantPugs.length) {
+        for (const p of combatantPugs) info(`    pug: ${p}`);
       }
 
       if (snapshotPreview.length) {
