@@ -1,0 +1,308 @@
+/**
+ * test-wcl-sync.js — Dry-run the WCL sync pipeline end-to-end.
+ *
+ * Reads real config from your sheets, hits the real WCL API, does all the
+ * character matching and tier-piece detection — but prints results instead
+ * of writing anything to the sheet.
+ *
+ * Usage:
+ *   node --env-file=.env scripts/test-wcl-sync.js
+ *
+ * Flags:
+ *   --team <name>    Only process the named team (case-insensitive)
+ *   --report <code>  Only process a specific WCL report code
+ */
+
+import { getGlobalConfig, getConfig, getTeamRegistry, getRoster, getTierItems } from '../src/lib/sheets.js';
+import { getValidEncounterIds, getReportsForGuild, getReportFights, getCombatantInfo } from '../src/lib/wcl.js';
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+const args        = process.argv.slice(2);
+const filterTeam  = args[args.indexOf('--team')  + 1]?.toLowerCase();
+const filterReport = args[args.indexOf('--report') + 1];
+
+function pass(msg)  { console.log(`  ✓ ${msg}`); }
+function fail(msg)  { console.log(`  ✗ ${msg}`); }
+function info(msg)  { console.log(`    ${msg}`); }
+function section(msg) { console.log(`\n── ${msg}`); }
+
+const SLOT_MAP = {
+  HEAD: 'Head', SHOULDER: 'Shoulders', CHEST: 'Chest',
+  ROBE: 'Chest', HAND: 'Hands', LEGS: 'Legs',
+};
+
+const TRACK_BY_BONUS_ID = {
+  10387: 'Veteran', 10388: 'Champion', 10389: 'Hero', 10390: 'Mythic',
+};
+
+function buildRosterLookup(roster) {
+  const map = new Map();
+  for (const char of roster) {
+    const nameServer = `${char.charName.toLowerCase()}|${(char.server ?? '').toLowerCase()}`;
+    const nameOnly   = `${char.charName.toLowerCase()}|`;
+    map.set(nameServer, char);
+    if (!map.has(nameOnly)) map.set(nameOnly, char);
+  }
+  return map;
+}
+
+function resolveActor(actor, rosterLookup) {
+  const nameServer = `${actor.name.toLowerCase()}|${(actor.server ?? '').toLowerCase()}`;
+  const nameOnly   = `${actor.name.toLowerCase()}|`;
+  return rosterLookup.get(nameServer) ?? rosterLookup.get(nameOnly) ?? null;
+}
+
+function findTierPieces(gear, tierItemMap) {
+  const pieces = [];
+  for (const item of gear ?? []) {
+    const slot = tierItemMap.get(Number(item.id));
+    if (slot == null) continue;
+    let track = 'Unknown';
+    for (const bonusId of item.bonusIDs ?? []) {
+      if (TRACK_BY_BONUS_ID[bonusId]) { track = TRACK_BY_BONUS_ID[bonusId]; break; }
+    }
+    pieces.push({ slot, track });
+  }
+  return pieces;
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────────
+
+async function main() {
+  console.log('WCL Sync — Dry Run\n');
+
+  // ── Step 1: Global config ──────────────────────────────────────────────────
+  section('Step 1: Load global config');
+  const globalConfig = await getGlobalConfig();
+  const { wcl_client_id, wcl_zone_ids, season_start } = globalConfig;
+  const wcl_client_secret = process.env.WCL_CLIENT_SECRET;
+
+  wcl_client_id     ? pass(`wcl_client_id:     ${wcl_client_id}`)     : fail('wcl_client_id not set in Global Config');
+  wcl_client_secret ? pass('WCL_CLIENT_SECRET: (set in env)')          : fail('WCL_CLIENT_SECRET not set in env');
+  wcl_zone_ids      ? pass(`wcl_zone_ids:      ${wcl_zone_ids}`)       : fail('wcl_zone_ids not set in Global Config');
+  season_start      ? pass(`season_start:      ${season_start}`)       : fail('season_start not set in Global Config');
+
+  if (!wcl_client_id || !wcl_client_secret) {
+    console.error('\nCannot proceed without WCL credentials.');
+    process.exit(1);
+  }
+
+  const zoneIds       = (wcl_zone_ids ?? '').split('|').map(Number).filter(Boolean);
+  const seasonStartMs = season_start ? new Date(season_start).getTime() : 0;
+
+  // ── Step 2: WCL auth ───────────────────────────────────────────────────────
+  section('Step 2: WCL OAuth token');
+  try {
+    // Trigger token fetch by making a real API call
+    await getValidEncounterIds([], wcl_client_id, wcl_client_secret);
+    pass('Token acquired successfully');
+  } catch (err) {
+    fail(`Auth failed: ${err.message}`);
+    process.exit(1);
+  }
+
+  // ── Step 3: Zone encounter IDs ─────────────────────────────────────────────
+  section(`Step 3: Resolve encounter IDs for zone(s): ${zoneIds.join(', ')}`);
+  let validEncounterIds;
+  if (!zoneIds.length) {
+    fail('No zone IDs configured — skipping encounter resolution');
+    validEncounterIds = new Set();
+  } else {
+    try {
+      validEncounterIds = await getValidEncounterIds(zoneIds, wcl_client_id, wcl_client_secret);
+      pass(`${validEncounterIds.size} valid encounter ID(s) found`);
+      for (const id of validEncounterIds) info(`encounter ${id}`);
+    } catch (err) {
+      fail(`Failed: ${err.message}`);
+      validEncounterIds = new Set();
+    }
+  }
+
+  // ── Step 4: Tier items ─────────────────────────────────────────────────────
+  section('Step 4: Load Tier Items from master sheet');
+  const tierItemRows = await getTierItems();
+  if (tierItemRows.length) {
+    pass(`${tierItemRows.length} tier item row(s) loaded`);
+    const byClass = {};
+    for (const r of tierItemRows) {
+      if (!byClass[r.class]) byClass[r.class] = [];
+      byClass[r.class].push(r.slot);
+    }
+    for (const [cls, slots] of Object.entries(byClass).sort()) {
+      info(`${cls.padEnd(20)} ${slots.join(', ')}`);
+    }
+  } else {
+    fail('Tier Items tab is empty — run seed-tier-items.js first');
+  }
+
+  const tierItemsByClass = new Map();
+  for (const { class: cls, slot, itemId } of tierItemRows) {
+    if (!tierItemsByClass.has(cls)) tierItemsByClass.set(cls, new Map());
+    tierItemsByClass.get(cls).set(Number(itemId), slot);
+  }
+
+  // ── Step 5: Teams ──────────────────────────────────────────────────────────
+  section('Step 5: Load teams');
+  const registry = await getTeamRegistry();
+  const teams    = registry.filter(t => !filterTeam || t.name.toLowerCase() === filterTeam);
+
+  if (!teams.length) {
+    fail(filterTeam ? `No team named "${filterTeam}"` : 'No teams found in registry');
+    process.exit(1);
+  }
+  pass(`${teams.length} team(s) to process`);
+
+  // ── Step 6: Per-team ───────────────────────────────────────────────────────
+  for (const team of teams) {
+    console.log(`\n${'═'.repeat(60)}`);
+    console.log(`Team: ${team.name}  (sheet: ...${team.sheetId.slice(-6)})`);
+    console.log('═'.repeat(60));
+
+    const config     = await getConfig(team.sheetId);
+    const wclGuildId = config.wcl_guild_id ? Number(config.wcl_guild_id) : null;
+
+    if (!wclGuildId) {
+      fail('wcl_guild_id not set in team Config — skipping');
+      continue;
+    }
+    pass(`wcl_guild_id: ${wclGuildId}`);
+
+    const lastCheckMs = config.wcl_last_check ? Number(config.wcl_last_check) : seasonStartMs;
+    info(`Last check: ${lastCheckMs ? new Date(lastCheckMs).toISOString() : 'never (using season_start)'}`);
+
+    // Fetch reports
+    section('  Reports');
+    let reports;
+    try {
+      reports = await getReportsForGuild(wclGuildId, lastCheckMs, wcl_client_id, wcl_client_secret);
+      pass(`${reports.length} report(s) found`);
+    } catch (err) {
+      fail(`Failed to fetch reports: ${err.message}`);
+      continue;
+    }
+
+    if (!reports.length) {
+      info('No new reports since last check.');
+      continue;
+    }
+
+    // Apply season_start filter and show what we'd process
+    const relevant = reports.filter(r => r.startTime >= seasonStartMs);
+    info(`${relevant.length} report(s) after season_start filter`);
+
+    const toProcess = filterReport
+      ? relevant.filter(r => r.code === filterReport)
+      : relevant.slice(0, 3); // cap at 3 for the test run
+
+    if (filterReport && !toProcess.length) {
+      fail(`Report ${filterReport} not found in results`);
+      continue;
+    }
+    if (!filterReport && relevant.length > 3) {
+      info(`(showing first 3 — use --report <code> to test a specific one)`);
+    }
+
+    // Load roster
+    const roster       = await getRoster(team.sheetId);
+    const rosterLookup = buildRosterLookup(roster);
+    pass(`Roster: ${roster.length} character(s)`);
+
+    // Process each report
+    for (const report of toProcess) {
+      const status = report.endTime > 0 ? 'complete' : 'LIVE';
+      console.log(`\n  ── Report ${report.code}  [${status}]  ${report.zone?.name ?? '?'}  ${new Date(report.startTime).toISOString().split('T')[0]}`);
+
+      let reportData;
+      try {
+        reportData = await getReportFights(report.code, wcl_client_id, wcl_client_secret);
+      } catch (err) {
+        fail(`    Failed to fetch fights: ${err.message}`);
+        continue;
+      }
+
+      const { fights = [], masterData = {} } = reportData;
+      const actors = masterData.actors ?? [];
+
+      const validFights = fights.filter(
+        f => f.encounterID !== 0 && validEncounterIds.has(f.encounterID),
+      );
+
+      info(`  ${fights.length} total fight(s), ${validFights.length} valid boss fight(s) after zone filter`);
+
+      if (!validFights.length) {
+        info('  No valid boss fights — would skip this report');
+        continue;
+      }
+
+      // Roster matching
+      const matched = actors.filter(a => resolveActor(a, rosterLookup));
+      const pugs    = actors.filter(a => !resolveActor(a, rosterLookup));
+      info(`  Actors: ${actors.length} total, ${matched.length} roster matches, ${pugs.length} pug(s) skipped`);
+      if (pugs.length) {
+        for (const p of pugs) info(`    pug: ${p.name}-${p.server ?? '?'}`);
+      }
+
+      // CombatantInfo / tier gear
+      const latestFight = fights.reduce((a, b) => b.id > a.id ? b : a);
+      info(`  Fetching CombatantInfo from fight ${latestFight.id} (latest)…`);
+      let combatantEvents;
+      try {
+        combatantEvents = await getCombatantInfo(report.code, latestFight.id, wcl_client_id, wcl_client_secret);
+        info(`  ${combatantEvents.length} CombatantInfo event(s)`);
+      } catch (err) {
+        fail(`  Failed to fetch CombatantInfo: ${err.message}`);
+        combatantEvents = [];
+      }
+
+      const snapshotPreview = [];
+      for (const event of combatantEvents) {
+        const actor = actors.find(a => a.id === event.sourceID);
+        if (!actor) continue;
+        const char = resolveActor(actor, rosterLookup);
+        if (!char) continue;
+        const tierMap    = tierItemsByClass.get(actor.subType) ?? new Map();
+        const tierPieces = findTierPieces(event.gear, tierMap);
+        snapshotPreview.push({ name: char.charName, count: tierPieces.length, detail: tierPieces.map(p => `${p.slot}:${p.track}`).join('|') || 'none' });
+      }
+
+      if (snapshotPreview.length) {
+        info(`  Tier Snapshot rows that would be written (${snapshotPreview.length}):`);
+        for (const s of snapshotPreview) {
+          info(`    ${s.name.padEnd(20)} ${s.count} piece(s)  ${s.detail}`);
+        }
+      } else {
+        info('  No tier snapshot rows (no CombatantInfo matched to roster)');
+      }
+
+      // Encounter summary (complete reports only)
+      if (report.endTime > 0) {
+        const byEnc = new Map();
+        for (const f of validFights) {
+          if (!byEnc.has(f.encounterID)) byEnc.set(f.encounterID, { name: f.name, fights: [] });
+          byEnc.get(f.encounterID).fights.push(f);
+        }
+        info(`  Raid Encounters rows that would be written (${byEnc.size}):`);
+        for (const [, { name, fights: ef }] of byEnc) {
+          const killed  = ef.some(f => f.kill);
+          const bestPct = killed ? 0 : Math.min(...ef.map(f => f.bossPercentage ?? 100));
+          info(`    ${name.padEnd(35)} ${ef.length} pull(s)  ${killed ? 'KILLED' : `best ${bestPct.toFixed(1)}%`}`);
+        }
+
+        const attendeeIds = [...new Set(
+          actors.map(a => resolveActor(a, rosterLookup)).filter(c => c?.ownerId).map(c => c.ownerId),
+        )];
+        info(`  Raids row: ${new Date(report.startTime).toISOString().split('T')[0]}  ${report.zone?.name}  ${attendeeIds.length} attendee(s)`);
+      } else {
+        info('  (live report — Raids + Raid Encounters rows skipped until complete)');
+      }
+    }
+  }
+
+  console.log('\n\nDry run complete — nothing was written to any sheet.');
+}
+
+main().catch(err => {
+  console.error('\nFatal:', err.message);
+  process.exit(1);
+});
