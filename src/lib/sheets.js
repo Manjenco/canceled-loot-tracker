@@ -1367,17 +1367,37 @@ export async function getRaids(sheetId) {
  * @param {string} sheetId
  * @param {{ raidId, date, instance, difficulty, attendeeIds }} raid
  */
-export async function upsertRaid(sheetId, { raidId, date, instance, difficulty, attendeeIds }) {
-  log.verbose(`[sheets] upsertRaid ${raidId} (sheet ${sheetId.slice(-6)})`);
-  const existing = await readRange(sheetId, 'Raids!A2:A');
-  const rowIdx   = existing.findIndex(r => r[0] === raidId);
-  const values   = [[raidId, date, instance, difficulty, attendeeIds]];
+export async function upsertRaid(sheetId, raid) {
+  return upsertRaids(sheetId, [raid]);
+}
 
-  if (rowIdx >= 0) {
-    await writeRange(sheetId, `Raids!A${rowIdx + 2}:E${rowIdx + 2}`, values);
-  } else {
-    await appendRows(sheetId, 'Raids!A:E', values);
+/**
+ * Upsert multiple Raids rows in one read + one batchUpdate + one optional append.
+ * Keyed by RaidId.
+ *
+ * @param {string}   sheetId
+ * @param {object[]} raids  Array of { raidId, date, instance, difficulty, attendeeIds }
+ */
+export async function upsertRaids(sheetId, raids) {
+  if (!raids.length) return;
+  log.verbose(`[sheets] upsertRaids (sheet ${sheetId.slice(-6)}) — ${raids.length} row(s)`);
+  const existing = await readRange(sheetId, 'Raids!A2:A');
+  const updates  = [];
+  const appends  = [];
+
+  for (const { raidId, date, instance, difficulty, attendeeIds } of raids) {
+    const rowIdx = existing.findIndex(r => r[0] === raidId);
+    const row    = [raidId, date, instance, difficulty, attendeeIds];
+    if (rowIdx >= 0) {
+      updates.push({ range: `Raids!A${rowIdx + 2}:E${rowIdx + 2}`, values: [row] });
+    } else {
+      appends.push(row);
+      existing.push([raidId]); // prevent duplicate appends within same batch
+    }
   }
+
+  if (updates.length) await batchWriteRanges(sheetId, updates);
+  if (appends.length) await appendRows(sheetId, 'Raids!A:E', appends);
   cacheInvalidate(sheetId, 'raids');
 }
 
@@ -1412,28 +1432,34 @@ export async function getRaidEncounters(sheetId) {
  * @param {object[]} rows  Array of { raidId, encounterId, bossName, pulls, killed, bestPct }
  */
 export async function upsertRaidEncounters(sheetId, rows) {
-  log.verbose(`[sheets] upsertRaidEncounters (sheet ${sheetId.slice(-6)}) — ${rows.length} rows`);
+  if (!rows.length) return;
+  log.verbose(`[sheets] upsertRaidEncounters (sheet ${sheetId.slice(-6)}) — ${rows.length} row(s)`);
   const existing = await readRange(sheetId, 'Raid Encounters!A2:B');
+  const updates  = [];
+  const appends  = [];
 
   for (const row of rows) {
     const rowIdx = existing.findIndex(
       r => r[0] === row.raidId && String(r[1]) === String(row.encounterId),
     );
-    const values = [[
+    const cells = [
       row.raidId,
       row.encounterId,
       row.bossName,
       row.pulls,
       row.killed ? 'TRUE' : 'FALSE',
       row.bestPct,
-    ]];
-
+    ];
     if (rowIdx >= 0) {
-      await writeRange(sheetId, `Raid Encounters!A${rowIdx + 2}:F${rowIdx + 2}`, values);
+      updates.push({ range: `Raid Encounters!A${rowIdx + 2}:F${rowIdx + 2}`, values: [cells] });
     } else {
-      await appendRows(sheetId, 'Raid Encounters!A:F', values);
+      appends.push(cells);
+      existing.push([row.raidId, String(row.encounterId)]); // prevent duplicate appends
     }
   }
+
+  if (updates.length) await batchWriteRanges(sheetId, updates);
+  if (appends.length) await appendRows(sheetId, 'Raid Encounters!A:F', appends);
 }
 
 // ── Tier Snapshot ─────────────────────────────────────────────────────────────
@@ -1470,26 +1496,25 @@ export async function getTierSnapshot(sheetId) {
  * @param {object[]} snapshots  Array of { charId, charName, raidId, tierCount, tierDetail, updatedAt }
  */
 export async function upsertTierSnapshot(sheetId, snapshots) {
-  log.verbose(`[sheets] upsertTierSnapshot (sheet ${sheetId.slice(-6)}) — ${snapshots.length} rows`);
+  if (!snapshots.length) return;
+  log.verbose(`[sheets] upsertTierSnapshot (sheet ${sheetId.slice(-6)}) — ${snapshots.length} row(s)`);
   const existing = await readRange(sheetId, 'Tier Snapshot!A2:A');
+  const updates  = [];
+  const appends  = [];
 
   for (const snap of snapshots) {
     const rowIdx = existing.findIndex(r => r[0] === snap.charId);
-    const values = [[
-      snap.charId,
-      snap.charName,
-      snap.raidId,
-      snap.tierCount,
-      snap.tierDetail,
-      snap.updatedAt,
-    ]];
-
+    const cells  = [snap.charId, snap.charName, snap.raidId, snap.tierCount, snap.tierDetail, snap.updatedAt];
     if (rowIdx >= 0) {
-      await writeRange(sheetId, `Tier Snapshot!A${rowIdx + 2}:F${rowIdx + 2}`, values);
+      updates.push({ range: `Tier Snapshot!A${rowIdx + 2}:F${rowIdx + 2}`, values: [cells] });
     } else {
-      await appendRows(sheetId, 'Tier Snapshot!A:F', values);
+      appends.push(cells);
+      existing.push([snap.charId]); // prevent duplicate appends within same batch
     }
   }
+
+  if (updates.length) await batchWriteRanges(sheetId, updates);
+  if (appends.length) await appendRows(sheetId, 'Tier Snapshot!A:F', appends);
 }
 
 // ── Tier Items (master) ───────────────────────────────────────────────────────

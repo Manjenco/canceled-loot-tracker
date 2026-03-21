@@ -45,14 +45,10 @@ function parseSheetDateMs(value) {
   return isNaN(ms) ? 0 : ms;
 }
 
-function parseTrackBonusIds(value) {
-  if (!value) return {};
-  return Object.fromEntries(
-    String(value).split('|')
-      .map(s => s.split(':'))
-      .filter(([id, name]) => id && name)
-      .map(([id, name]) => [Number(id), name.trim()]),
-  );
+const TRACK_NAMES = ['Veteran', 'Champion', 'Hero', 'Mythic'];
+function buildTrackRanges(veteranStartId) {
+  if (!veteranStartId) return [];
+  return TRACK_NAMES.map((track, i) => ({ bonusId: veteranStartId + i * 8, track }));
 }
 
 function buildRosterLookup(roster) {
@@ -72,14 +68,15 @@ function resolveActor(actor, rosterLookup) {
   return rosterLookup.get(nameServer) ?? rosterLookup.get(nameOnly) ?? null;
 }
 
-function findTierPieces(gear, tierItemMap, trackBonusIds) {
+function findTierPieces(gear, tierItemMap, trackRanges) {
   const pieces = [];
   for (const item of gear ?? []) {
     const slot = tierItemMap.get(Number(item.id));
     if (slot == null) continue;
     let track = 'Unknown';
     for (const bonusId of item.bonusIDs ?? []) {
-      if (trackBonusIds[bonusId]) { track = trackBonusIds[bonusId]; break; }
+      const row = trackRanges.find(r => bonusId >= r.bonusId && bonusId <= r.bonusId + 7);
+      if (row) { track = row.track; break; }
     }
     pieces.push({ slot, track, itemId: item.id, bonusIDs: item.bonusIDs ?? [] });
   }
@@ -94,15 +91,15 @@ async function main() {
   // ── Step 1: Global config ──────────────────────────────────────────────────
   section('Step 1: Load global config');
   const globalConfig = await getGlobalConfig();
-  const { wcl_client_id, wcl_zone_ids, season_start, wcl_track_bonus_ids } = globalConfig;
-  const trackBonusIds = parseTrackBonusIds(wcl_track_bonus_ids);
+  const { wcl_client_id, wcl_zone_ids, season_start, wcl_veteran_bonus_id } = globalConfig;
+  const trackRanges = buildTrackRanges(Number(wcl_veteran_bonus_id) || 0);
   const wcl_client_secret = process.env.WCL_CLIENT_SECRET;
 
-  wcl_client_id         ? pass(`wcl_client_id:          ${wcl_client_id}`)     : fail('wcl_client_id not set in Global Config');
-  wcl_client_secret     ? pass('WCL_CLIENT_SECRET:      (set in env)')          : fail('WCL_CLIENT_SECRET not set in env');
-  wcl_zone_ids          ? pass(`wcl_zone_ids:           ${wcl_zone_ids}`)       : fail('wcl_zone_ids not set in Global Config');
-  season_start          ? pass(`season_start:           ${season_start}  →  ${new Date(parseSheetDateMs(season_start)).toISOString().split('T')[0]}`) : fail('season_start not set in Global Config');
-  wcl_track_bonus_ids   ? pass(`wcl_track_bonus_ids:    ${wcl_track_bonus_ids}`) : fail('wcl_track_bonus_ids not set in Global Config — tier track levels will show as Unknown');
+  wcl_client_id          ? pass(`wcl_client_id:           ${wcl_client_id}`) : fail('wcl_client_id not set in Global Config');
+  wcl_client_secret      ? pass('WCL_CLIENT_SECRET:        (set in env)')     : fail('WCL_CLIENT_SECRET not set in env');
+  wcl_zone_ids           ? pass(`wcl_zone_ids:            ${wcl_zone_ids}`)  : fail('wcl_zone_ids not set in Global Config');
+  season_start           ? pass(`season_start:            ${season_start}  →  ${new Date(parseSheetDateMs(season_start)).toISOString().split('T')[0]}`) : fail('season_start not set in Global Config');
+  wcl_veteran_bonus_id   ? pass(`wcl_veteran_bonus_id:    ${wcl_veteran_bonus_id}  →  ${trackRanges.map(r => `${r.track} ${r.bonusId}–${r.bonusId+7}`).join(', ')}`) : fail('wcl_veteran_bonus_id not set in Global Config — tier track levels will show as Unknown');
 
   if (!wcl_client_id || !wcl_client_secret) {
     console.error('\nCannot proceed without WCL credentials.');
@@ -203,6 +200,7 @@ async function main() {
     let reports;
     try {
       reports = await getReportsForGuild(wclGuildId, lastCheckMs, wcl_client_id, wcl_client_secret);
+      reports.sort((a, b) => a.startTime - b.startTime); // oldest first → most recent snapshot wins
       pass(`${reports.length} report(s) found`);
     } catch (err) {
       fail(`Failed to fetch reports: ${err.message}`);
@@ -319,7 +317,7 @@ async function main() {
           continue;
         }
         const tierMap    = tierItemsByClass.get(actor.subType) ?? new Map();
-        const tierPieces = findTierPieces(event.gear, tierMap, trackBonusIds);
+        const tierPieces = findTierPieces(event.gear, tierMap, trackRanges);
         snapshotPreview.push({ name: char.charName, count: tierPieces.length, detail: tierPieces.map(p => `${p.slot}:${p.track}`).join('|') || 'none' });
       }
 
@@ -347,7 +345,9 @@ async function main() {
             const tierMap = tierItemsByClass.get(actor.subType) ?? new Map();
             for (const item of event.gear ?? []) {
               if (tierMap.has(Number(item.id))) {
-                const hasKnown = (item.bonusIDs ?? []).some(b => trackBonusIds[b]);
+                const hasKnown = (item.bonusIDs ?? []).some(b =>
+                  trackRanges.some(r => b >= r.bonusId && b <= r.bonusId + 7),
+                );
                 if (!hasKnown) {
                   for (const b of item.bonusIDs ?? []) unknownBonusIds.add(b);
                 }
@@ -355,7 +355,7 @@ async function main() {
             }
           }
           info(`  [${[...unknownBonusIds].sort((a, b) => a - b).join(', ')}]`);
-          info('  Update wcl_track_bonus_ids in the Global Config sheet: e.g. 13326:Veteran|13333:Champion|13340:Hero|13574:Mythic');
+          info('  Update wcl_veteran_bonus_id in Global Config to the Veteran track start bonus ID');
         }
       } else {
         info('  No tier snapshot rows (no CombatantInfo matched to roster)');

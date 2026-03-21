@@ -54,7 +54,7 @@ import {
   getTierItems,
   getRoster,
   getRaids,
-  upsertRaid,
+  upsertRaids,
   getRaidEncounters,
   upsertRaidEncounters,
   upsertTierSnapshot,
@@ -66,19 +66,17 @@ import {
   getCombatantInfo,
 } from './wcl.js';
 
+// Upgrade tracks in order — each spans 8 consecutive bonus IDs from veteran_start
+const TRACK_NAMES = ['Veteran', 'Champion', 'Hero', 'Mythic'];
+
 /**
- * Parse the wcl_track_bonus_ids Global Config value into a bonus ID → track name map.
- * Format: "13326:Veteran|13333:Champion|13340:Hero|13574:Mythic"
- * Returns an empty object (all tracks Unknown) if the value is missing or malformed.
+ * Build the 4 upgrade-track ranges from the Veteran start bonus ID.
+ * Each track covers [startId + i*8, startId + i*8 + 7] inclusive.
+ * Returns an empty array if veteranStartId is falsy (tracks will show Unknown).
  */
-function parseTrackBonusIds(value) {
-  if (!value) return {};
-  return Object.fromEntries(
-    String(value).split('|')
-      .map(s => s.split(':'))
-      .filter(([id, name]) => id && name)
-      .map(([id, name]) => [Number(id), name.trim()]),
-  );
+function buildTrackRanges(veteranStartId) {
+  if (!veteranStartId) return [];
+  return TRACK_NAMES.map((track, i) => ({ bonusId: veteranStartId + i * 8, track }));
 }
 
 // WCL difficulty integer → human label
@@ -95,8 +93,12 @@ const DIFFICULTY_LABEL = {
  * Given a gear array from a CombatantInfo event and a Map<itemId, slot> of
  * current-season tier item IDs for the character's class, return an array of
  * { slot, track } for each tier piece found.
+ *
+ * trackRanges is an array of { bonusId: startId, track } rows from the
+ * Track Bonus IDs sheet tab. Each track spans [startId, startId + 7] inclusive
+ * (8 upgrade levels per track).
  */
-function findTierPieces(gear, tierItemMap, trackBonusIds) {
+function findTierPieces(gear, tierItemMap, trackRanges) {
   const pieces = [];
   for (const item of gear ?? []) {
     const slot = tierItemMap.get(Number(item.id));
@@ -104,8 +106,9 @@ function findTierPieces(gear, tierItemMap, trackBonusIds) {
 
     let track = 'Unknown';
     for (const bonusId of item.bonusIDs ?? []) {
-      if (trackBonusIds[bonusId]) {
-        track = trackBonusIds[bonusId];
+      const row = trackRanges.find(r => bonusId >= r.bonusId && bonusId <= r.bonusId + 7);
+      if (row) {
+        track = row.track;
         break;
       }
     }
@@ -144,93 +147,81 @@ function resolveActor(actor, rosterLookup) {
 // ── Main entry point ───────────────────────────────────────────────────────────
 
 /**
- * Run a full WCL sync across all configured teams.
- * Called by the Cloudflare Worker `scheduled` handler.
+ * Build shared WCL sync context (global config, encounter IDs, tier items).
+ * Throws if credentials or zone IDs are missing.
  */
-export async function runWclSync() {
-  log.verbose('[wcl-sync] Starting sync run');
-  let globalConfig;
-  try {
-    globalConfig = await getGlobalConfig();
-  } catch (err) {
-    log.error('[wcl-sync] Failed to load global config:', err.message);
-    return;
-  }
-
-  const { wcl_client_id, wcl_zone_ids, season_start, wcl_track_bonus_ids } = globalConfig;
-  const trackBonusIds = parseTrackBonusIds(wcl_track_bonus_ids);
-  // Secret lives in env (Cloudflare Worker secret / .dev.vars locally) — never in the sheet
+async function buildWclContext() {
+  const globalConfig = await getGlobalConfig();
+  const { wcl_client_id, wcl_zone_ids, season_start, wcl_veteran_bonus_id } = globalConfig;
+  const trackRanges      = buildTrackRanges(Number(wcl_veteran_bonus_id) || 0);
   const wcl_client_secret = process.env.WCL_CLIENT_SECRET;
 
-  if (!wcl_client_id || !wcl_client_secret) {
-    log.verbose('[wcl-sync] WCL credentials not configured — skipping');
-    return;
-  }
+  if (!wcl_client_id || !wcl_client_secret) throw new Error('WCL credentials not configured');
 
   const zoneIds = String(wcl_zone_ids ?? '').split('|').map(Number).filter(Boolean);
-  if (!zoneIds.length) {
-    log.verbose('[wcl-sync] wcl_zone_ids not configured — skipping');
-    return;
+  if (!zoneIds.length) throw new Error('wcl_zone_ids not configured');
+
+  const seasonStartMs     = parseSheetDateMs(season_start);
+  const validEncounterIds = await getValidEncounterIds(zoneIds, wcl_client_id, wcl_client_secret);
+  if (!validEncounterIds.size) throw new Error('No encounters found for configured zone IDs — check wcl_zone_ids');
+
+  if (!trackRanges.length) {
+    log.warn('[wcl-sync] wcl_veteran_bonus_id not set in Global Config — tier track detection will show Unknown');
   }
+  log.verbose(`[wcl-sync] Valid encounter IDs: [${[...validEncounterIds].join(', ')}]`);
 
-  const seasonStartMs = parseSheetDateMs(season_start);
-
-  // Fetch valid encounter IDs for all configured zones (one query per zone, done once)
-  let validEncounterIds;
-  try {
-    validEncounterIds = await getValidEncounterIds(zoneIds, wcl_client_id, wcl_client_secret);
-    log.verbose(`[wcl-sync] Valid encounter IDs: [${[...validEncounterIds].join(', ')}]`);
-  } catch (err) {
-    log.error('[wcl-sync] Failed to fetch zone encounter IDs:', err.message);
-    return;
-  }
-
-  if (!validEncounterIds.size) {
-    log.warn('[wcl-sync] No encounters found for configured zone IDs — check wcl_zone_ids');
-    return;
-  }
-
-  // Load tier items once (master sheet)
-  let tierItemRows;
-  try {
-    tierItemRows = await getTierItems();
-  } catch (err) {
-    log.error('[wcl-sync] Failed to load Tier Items:', err.message);
-    return;
-  }
-
-  // Build per-class Map<itemId, slot>
+  const tierItemRows     = await getTierItems();
   const tierItemsByClass = new Map();
   for (const { class: cls, slot, itemId } of tierItemRows) {
     if (!tierItemsByClass.has(cls)) tierItemsByClass.set(cls, new Map());
     tierItemsByClass.get(cls).set(Number(itemId), slot);
   }
 
-  // Sync each team
-  const teams = getAllTeams();
-  for (const team of teams) {
+  return { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, seasonStartMs, wcl_client_id, wcl_client_secret };
+}
+
+/**
+ * Run a full WCL sync across all configured teams.
+ * Called by the Cloudflare Worker `scheduled` handler.
+ */
+export async function runWclSync() {
+  log.verbose('[wcl-sync] Starting sync run');
+  let ctx;
+  try {
+    ctx = await buildWclContext();
+  } catch (err) {
+    log.error('[wcl-sync] Setup failed:', err.message);
+    return;
+  }
+  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, seasonStartMs, wcl_client_id, wcl_client_secret } = ctx;
+
+  for (const team of getAllTeams()) {
     try {
-      await syncTeam(
-        team,
-        globalConfig,
-        validEncounterIds,
-        tierItemsByClass,
-        trackBonusIds,
-        seasonStartMs,
-        wcl_client_id,
-        wcl_client_secret,
-      );
+      await syncTeam(team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, seasonStartMs, wcl_client_id, wcl_client_secret);
     } catch (err) {
       log.error(`[wcl-sync] Team "${team.name}" sync failed:`, err.message);
     }
   }
-
   log.verbose('[wcl-sync] Sync run complete');
+}
+
+/**
+ * Run WCL sync for a single team.
+ * Called by the web admin manual trigger.
+ *
+ * @param {{ name: string, sheetId: string }} team
+ */
+export async function runWclSyncForTeam(team) {
+  log.warn(`[wcl-sync] Manual sync triggered for team "${team.name}"`);
+  const ctx = await buildWclContext();
+  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, seasonStartMs, wcl_client_id, wcl_client_secret } = ctx;
+  await syncTeam(team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, seasonStartMs, wcl_client_id, wcl_client_secret);
+  log.warn(`[wcl-sync] Manual sync complete for team "${team.name}"`);
 }
 
 // ── Per-team sync ──────────────────────────────────────────────────────────────
 
-async function syncTeam(team, globalConfig, validEncounterIds, tierItemsByClass, trackBonusIds, seasonStartMs, clientId, clientSecret) {
+async function syncTeam(team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, seasonStartMs, clientId, clientSecret) {
   const config     = await getConfig(team.sheetId);
   const wclGuildId = config.wcl_guild_id ? Number(config.wcl_guild_id) : null;
 
@@ -249,6 +240,8 @@ async function syncTeam(team, globalConfig, validEncounterIds, tierItemsByClass,
   log.verbose(`[wcl-sync] Team "${team.name}": fetching reports since ${new Date(lastCheckMs).toISOString()}`);
 
   const reports = await getReportsForGuild(wclGuildId, lastCheckMs, clientId, clientSecret);
+  // Sort ascending so the most recent report is processed last — its tier snapshot wins
+  reports.sort((a, b) => a.startTime - b.startTime);
   log.verbose(`[wcl-sync] Team "${team.name}": ${reports.length} report(s) to process`);
 
   if (!reports.length) return;
@@ -256,26 +249,59 @@ async function syncTeam(team, globalConfig, validEncounterIds, tierItemsByClass,
   const roster       = await getRoster(team.sheetId);
   const rosterLookup = buildRosterLookup(roster);
 
-  for (const report of reports) {
+  // Accumulate data from all reports before writing — reduces Sheets API calls from
+  // O(reports × characters) to O(1 read + 1 batchUpdate) per tab per team sync.
+  const allSnapshots    = new Map(); // charId → snapshotRow  (latest report wins; sorted asc)
+  const allRaidRows     = [];
+  const allEncounterRows = [];
+
+  for (let i = 0; i < reports.length; i++) {
+    const report = reports[i];
+    log.warn(`[wcl-sync] Team "${team.name}": processing report ${i + 1}/${reports.length} — ${report.code}`);
     try {
-      await syncReport(report, team, validEncounterIds, tierItemsByClass, trackBonusIds, rosterLookup, seasonStartMs, clientId, clientSecret);
+      const result = await processReport(report, team, validEncounterIds, tierItemsByClass, trackRanges, rosterLookup, seasonStartMs, clientId, clientSecret);
+      if (!result) continue;
+      const { snapshotRows, raidRow, encounterRows } = result;
+      for (const snap of snapshotRows) allSnapshots.set(snap.charId, snap);
+      if (raidRow) allRaidRows.push(raidRow);
+      allEncounterRows.push(...encounterRows);
     } catch (err) {
       log.error(`[wcl-sync] Team "${team.name}" report ${report.code} failed:`, err.message);
     }
+  }
+
+  // Bulk-write all accumulated data (one read + one batchUpdate per tab)
+  const snapshotList = [...allSnapshots.values()];
+  if (snapshotList.length) {
+    log.warn(`[wcl-sync] Team "${team.name}": writing ${snapshotList.length} tier snapshot row(s)`);
+    await upsertTierSnapshot(team.sheetId, snapshotList);
+  }
+  if (allRaidRows.length) {
+    log.warn(`[wcl-sync] Team "${team.name}": writing ${allRaidRows.length} raid row(s)`);
+    await upsertRaids(team.sheetId, allRaidRows);
+  }
+  if (allEncounterRows.length) {
+    log.warn(`[wcl-sync] Team "${team.name}": writing ${allEncounterRows.length} encounter row(s)`);
+    await upsertRaidEncounters(team.sheetId, allEncounterRows);
   }
 
   // Advance the last-check cursor to now so the next run only fetches new reports
   await setConfigValue(team.sheetId, 'wcl_last_check', String(Date.now()));
 }
 
-// ── Per-report sync ────────────────────────────────────────────────────────────
+// ── Per-report data extraction ─────────────────────────────────────────────────
+// Returns { snapshotRows, raidRow, encounterRows } — no Sheets writes.
+// syncTeam accumulates results across all reports and bulk-writes at the end.
 
-async function syncReport(report, team, validEncounterIds, tierItemsByClass, trackBonusIds, rosterLookup, seasonStartMs, clientId, clientSecret) {
+async function processReport(report, team, validEncounterIds, tierItemsByClass, trackRanges, rosterLookup, seasonStartMs, clientId, clientSecret) {
   // Cheap pre-filter: skip anything before season start
-  if (report.startTime < seasonStartMs) return;
+  if (report.startTime < seasonStartMs) {
+    log.verbose(`[wcl-sync] Report ${report.code}: before season start — skipping`);
+    return null;
+  }
 
   const reportData = await getReportFights(report.code, clientId, clientSecret);
-  if (!reportData) return;
+  if (!reportData) return null;
 
   const { fights = [], masterData = {} } = reportData;
   const actors = masterData.actors ?? [];
@@ -287,12 +313,12 @@ async function syncReport(report, team, validEncounterIds, tierItemsByClass, tra
 
   if (!validFights.length) {
     log.verbose(`[wcl-sync] Report ${report.code}: no valid boss fights — skipping`);
-    return;
+    return null;
   }
 
   // ── Tier Snapshot (live + complete) ─────────────────────────────────────────
   // CombatantInfo from the highest-ID fight (most recent gear snapshot)
-  const latestFight = fights.reduce((a, b) => b.id > a.id ? b : a);
+  const latestFight     = fights.reduce((a, b) => b.id > a.id ? b : a);
   const combatantEvents = await getCombatantInfo(report.code, latestFight.id, clientId, clientSecret);
 
   const snapshotRows = [];
@@ -304,7 +330,7 @@ async function syncReport(report, team, validEncounterIds, tierItemsByClass, tra
     if (!char) continue; // pug — skip
 
     const tierItemMap = tierItemsByClass.get(actor.subType) ?? new Map();
-    const tierPieces  = findTierPieces(event.gear, tierItemMap, trackBonusIds);
+    const tierPieces  = findTierPieces(event.gear, tierItemMap, trackRanges);
 
     snapshotRows.push({
       charId:     char.charId,
@@ -315,24 +341,16 @@ async function syncReport(report, team, validEncounterIds, tierItemsByClass, tra
       updatedAt:  new Date().toISOString(),
     });
   }
-
-  if (snapshotRows.length) {
-    log.verbose(`[wcl-sync] Report ${report.code}: upserting ${snapshotRows.length} tier snapshot row(s)`);
-    await upsertTierSnapshot(team.sheetId, snapshotRows);
-  }
+  log.verbose(`[wcl-sync] Report ${report.code}: ${snapshotRows.length} tier snapshot row(s)`);
 
   // ── Completed reports only ───────────────────────────────────────────────────
   const isComplete = Number(reportData.endTime) > 0;
   if (!isComplete) {
     log.verbose(`[wcl-sync] Report ${report.code}: still in progress — tier snapshot only`);
-    return;
+    return { snapshotRows, raidRow: null, encounterRows: [] };
   }
 
   // ── Raids row ────────────────────────────────────────────────────────────────
-  // Attendance: derive from combatantEvents (same data used for tier snapshots)
-  // rather than masterData.actors, which includes everyone across the entire
-  // session log (alts, bench, other raids in the same night, etc.).
-  // CombatantInfo only includes players present in that specific fight pull.
   const attendeeIds = [...new Set(
     combatantEvents
       .map(event => {
@@ -343,27 +361,25 @@ async function syncReport(report, team, validEncounterIds, tierItemsByClass, tra
       .filter(Boolean),
   )];
 
-  // Dominant difficulty among valid boss fights
   const diffCounts = {};
   for (const f of validFights) {
     if (f.difficulty != null) {
       diffCounts[f.difficulty] = (diffCounts[f.difficulty] ?? 0) + 1;
     }
   }
-  const topDiffId    = Object.entries(diffCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const topDiffId      = Object.entries(diffCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
   const difficultyLabel = DIFFICULTY_LABEL[Number(topDiffId)] ?? String(topDiffId ?? '');
+  const raidDate        = new Date(report.startTime).toISOString().split('T')[0];
+  const instance        = report.zone?.name ?? '';
 
-  const raidDate = new Date(report.startTime).toISOString().split('T')[0];
-  const instance = report.zone?.name ?? '';
-
-  log.verbose(`[wcl-sync] Report ${report.code}: upserting Raids row (${raidDate} ${instance} ${difficultyLabel}, ${attendeeIds.length} attendees)`);
-  await upsertRaid(team.sheetId, {
+  log.verbose(`[wcl-sync] Report ${report.code}: ${raidDate} ${instance} ${difficultyLabel}, ${attendeeIds.length} attendee(s)`);
+  const raidRow = {
     raidId:      report.code,
     date:        raidDate,
     instance,
     difficulty:  difficultyLabel,
     attendeeIds: attendeeIds.join('|'),
-  });
+  };
 
   // ── Raid Encounters rows ─────────────────────────────────────────────────────
   const byEncounter = new Map();
@@ -377,7 +393,6 @@ async function syncReport(report, team, validEncounterIds, tierItemsByClass, tra
   const encounterRows = [];
   for (const [encId, { name, fights: encFights }] of byEncounter) {
     const killed  = encFights.some(f => f.kill === true);
-    // Best % = lowest bossPercentage (0 = dead; null when killed → treat as 0)
     const bestPct = killed
       ? 0
       : Math.min(...encFights.map(f => f.bossPercentage ?? 100));
@@ -391,9 +406,7 @@ async function syncReport(report, team, validEncounterIds, tierItemsByClass, tra
       bestPct:     Number(bestPct.toFixed(1)),
     });
   }
+  log.verbose(`[wcl-sync] Report ${report.code}: ${encounterRows.length} encounter row(s)`);
 
-  if (encounterRows.length) {
-    log.verbose(`[wcl-sync] Report ${report.code}: upserting ${encounterRows.length} encounter row(s)`);
-    await upsertRaidEncounters(team.sheetId, encounterRows);
-  }
+  return { snapshotRows, raidRow, encounterRows };
 }
