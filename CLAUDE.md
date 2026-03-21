@@ -192,16 +192,15 @@ Column order is the source of truth. Tabs marked **[master]** live in the master
 - Current season's tier piece item IDs, one row per class × slot (13 classes × 5 slots = 65 rows)
 - Seeded via web app `/admin` → Sync Tier Items (Blizzard API)
 - Updated once per tier when new content releases
-- The bonus ID → upgrade track name mapping (Veteran/Champion/Hero/Mythic) is a constant in wcl-sync.js
 
 ### Global Config **[master]** (A=Key B=Value)
 Guild-wide settings shared across all teams:
-- `guild_id`          — Discord guild (server) ID; required for officer role checks on web login
-- `web_app_url`       — base URL of the web app (for link buttons in bot panels)
-- `season_start`      — ISO date of current season start (e.g. "2025-01-21"); used as a universal cutoff for all historical data queries and WCL report filtering
-- `wcl_client_id`        — Warcraft Logs OAuth client ID (non-sensitive, fine in sheet)
-- `wcl_zone_ids`         — pipe-separated WCL zone IDs for current tier (e.g. "38|41"); fights outside these zones are excluded from sync
-- `wcl_track_bonus_ids`  — pipe-separated bonusId:TrackName pairs for current season tier upgrade tracks (e.g. "13326:Veteran|13333:Champion|13340:Hero|13574:Mythic"); update each new season
+- `guild_id`               — Discord guild (server) ID; required for officer role checks on web login
+- `web_app_url`            — base URL of the web app (for link buttons in bot panels)
+- `season_start`           — ISO date of current season start (e.g. "2025-01-21"); used as a universal cutoff for all historical data queries and WCL report filtering
+- `wcl_client_id`          — Warcraft Logs OAuth client ID (non-sensitive, fine in sheet)
+- `wcl_zone_ids`           — pipe-separated WCL zone IDs for current tier (e.g. "38|41"); fights outside these zones are excluded from sync
+- `wcl_veteran_bonus_id`   — start bonus ID of the Veteran upgrade track; each track uses 8 consecutive IDs, so Champion = veteran+8, Hero = veteran+16, Mythic = veteran+24; update each new season (Midnight S1: 12777)
 - `wcl_client_secret` is **not** stored here — env var `WCL_CLIENT_SECRET` only (Cloudflare Worker secret in prod, `.dev.vars` locally)
 
 ### Config (A=Key B=Value) — per team
