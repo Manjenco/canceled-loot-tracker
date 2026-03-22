@@ -228,7 +228,7 @@ router.get('/candidates', async (c) => {
           const { overallBisMatch: ovm, raidBisMatch: rbm, hasRaidBis: hrb } =
             computeSpecBisMatch(charKey, spec, item, itemSlot, approvedBis, defaultBisMap);
           return { spec, overallBisMatch: ovm, raidBisMatch: rbm, hasRaidBis: hrb,
-            wornBis: getWornTracksForSlot(wornBisMap, char.charId, sc.spec, itemSlot) };
+            wornBis: getWornTracksForSlot(wornBisMap, char.charId, spec, itemSlot) };
         });
 
       candidates.push({
