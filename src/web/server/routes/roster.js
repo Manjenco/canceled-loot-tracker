@@ -16,6 +16,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getRoster, getLootLog, getBisSubmissions,
   getEffectiveDefaultBis, getItemDb, applyRaidBisInference,
+  getWornBis, primeTeamCache,
   setRosterStatus, setOwnerNick, setRosterOwner, addRosterChar, deleteRosterChar,
   renameRosterChar, setRosterServer,
 } from '../../../lib/sheets.js';
@@ -140,9 +141,14 @@ router.get('/:charName', async (c) => {
   const charName        = c.req.param('charName');
   if (!teamSheetId) return c.json({ error: 'No team' }, 404);
   try {
-    const [roster, lootLog, bisSubmissions, effectiveBis, itemDb] = await Promise.all([
+    const [, effectiveBis, itemDb] = await Promise.all([
+      primeTeamCache(teamSheetId, ['roster', 'lootLog', 'bisSubmissions', 'wornBis']),
+      getEffectiveDefaultBis(),
+      getItemDb(),
+    ]);
+    const [roster, lootLog, bisSubmissions, wornBisMap] = await Promise.all([
       getRoster(teamSheetId), getLootLog(teamSheetId), getBisSubmissions(teamSheetId),
-      getEffectiveDefaultBis(), getItemDb(),
+      getWornBis(teamSheetId),
     ]);
     const rosterChar = roster.find(r => r.charName.toLowerCase() === charName.toLowerCase());
     if (!rosterChar) return c.json({ error: 'Character not found' }, 404);
@@ -176,10 +182,23 @@ router.get('/:charName', async (c) => {
     const specRows      = effectiveBis.filter(d => d.spec === canonicalSpec);
     const specDefaults  = applyRaidBisInference(specRows, itemDb);
 
+    // Build slot → tracks map for this character from the Worn BIS sheet
+    const wornBis = {};
+    for (const [key, row] of wornBisMap) {
+      const [rowCharId, ...slotParts] = key.split(':');
+      if (rowCharId !== rosterChar.charId) continue;
+      const slot = slotParts.join(':');
+      wornBis[slot] = {
+        overallBISTrack: row.overallBISTrack ?? '',
+        raidBISTrack:    row.raidBISTrack    ?? '',
+        otherTrack:      row.otherTrack      ?? '',
+      };
+    }
+
     return c.json({
       charName: rosterChar.charName, class: rosterChar.class, spec: rosterChar.spec,
       role: rosterChar.role, status: rosterChar.status, ownerNick: rosterChar.ownerNick,
-      bis: approvedBis, specDefaults, loot, accountChars: accountCharNames, accountLoot,
+      bis: approvedBis, specDefaults, loot, accountChars: accountCharNames, accountLoot, wornBis,
     });
   } catch (err) {
     console.error('[ROSTER] Character detail error:', err);

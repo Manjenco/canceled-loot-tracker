@@ -11,25 +11,14 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getItemDb, getRoster, getLootLog, getBisSubmissions,
   getEffectiveDefaultBis, getRaids, getConfig, getTierSnapshot,
+  getWornBis, primeTeamCache,
 } from '../../../lib/sheets.js';
 import { toCanonical, getArmorType, canUseWeapon } from '../../../lib/specs.js';
+import { matchesBis } from '../../../lib/bis-match.js';
 import { log } from '../../../lib/logger.js';
 
 const router = new Hono();
 router.use('*', requireAuth);
-
-function matchesBis(bisValue, bisItemId, item, charArmorType, slot) {
-  if (!bisValue) return false;
-  if (bisValue === '<Crafted>') return false;
-  if (bisValue === '<Tier>')    return item.isTierToken === true;
-  if (bisValue === '<Catalyst>') {
-    const normalizedSlot = slot.replace(/ [12]$/, '');
-    return item.slot === normalizedSlot &&
-      (item.armorType === charArmorType || item.armorType === 'Accessory');
-  }
-  if (bisItemId && String(bisItemId) === String(item.itemId)) return true;
-  return item.name.toLowerCase() === bisValue.toLowerCase();
-}
 
 /** Parse "Head:Mythic|Chest:Hero" → { Head: 'Mythic', Chest: 'Hero' } */
 function parseTierDetail(detail) {
@@ -39,6 +28,28 @@ function parseTierDetail(detail) {
     if (slot) map[slot] = track ?? 'Unknown';
   }
   return map;
+}
+
+// Ring and Trinket items are stored without a number in the Item DB ("Ring", "Trinket")
+// but Worn BIS uses the numbered slot names ("Ring 1", "Ring 2", "Trinket 1", "Trinket 2").
+const SLOT_EXPANSIONS = { Ring: ['Ring 1', 'Ring 2'], Trinket: ['Trinket 1', 'Trinket 2'] };
+const TRACK_ORDER = { '': -1, Crafted: 0, Veteran: 1, Champion: 2, Hero: 3, Mythic: 4 };
+
+function mergeTrack(a, b) {
+  return (TRACK_ORDER[a] ?? -1) >= (TRACK_ORDER[b] ?? -1) ? a : b;
+}
+
+function getWornTracksForSlot(wornBisMap, charId, itemSlot) {
+  const slots = SLOT_EXPANSIONS[itemSlot] ?? [itemSlot];
+  const best  = { overallBISTrack: '', raidBISTrack: '', otherTrack: '' };
+  for (const slot of slots) {
+    const w = wornBisMap.get(`${charId}:${slot}`);
+    if (!w) continue;
+    best.overallBISTrack = mergeTrack(best.overallBISTrack, w.overallBISTrack);
+    best.raidBISTrack    = mergeTrack(best.raidBISTrack,    w.raidBISTrack);
+    best.otherTrack      = mergeTrack(best.otherTrack,      w.otherTrack);
+  }
+  return best;
 }
 
 function isEligible(item, charArmorType, canonSpec) {
@@ -51,7 +62,7 @@ router.get('/items', async (c) => {
   const { teamSheetId } = c.get('session').user;
   if (!teamSheetId) return c.json({ instances: [], currentInstance: '', currentDifficulty: '' });
   try {
-    const [itemDb, config] = await Promise.all([getItemDb(), getConfig(teamSheetId)]);
+    const [itemDb, config] = await Promise.all([getItemDb(), primeTeamCache(teamSheetId, ['config']).then(() => getConfig(teamSheetId))]);
     const instanceMap = new Map();
     for (const item of itemDb) {
       if (item.sourceType !== 'Raid' || !item.name) continue;
@@ -88,9 +99,15 @@ router.get('/candidates', async (c) => {
   const { teamSheetId } = c.get('session').user;
   if (!teamSheetId) return c.json({ error: 'No team configured' }, 400);
   try {
-    const [itemDb, roster, lootLog, bisSubmissions, effectiveBis, raids] = await Promise.all([
-      getItemDb(), getRoster(teamSheetId), getLootLog(teamSheetId),
-      getBisSubmissions(teamSheetId), getEffectiveDefaultBis(), getRaids(teamSheetId),
+    const [, itemDb, effectiveBis] = await Promise.all([
+      primeTeamCache(teamSheetId, ['roster', 'lootLog', 'bisSubmissions', 'raids', 'wornBis']),
+      getItemDb(),
+      getEffectiveDefaultBis(),
+    ]);
+    const [roster, lootLog, bisSubmissions, raids, wornBisMap] = await Promise.all([
+      getRoster(teamSheetId), getLootLog(teamSheetId),
+      getBisSubmissions(teamSheetId), getRaids(teamSheetId),
+      getWornBis(teamSheetId),
     ]);
 
     const item = itemDb.find(i => String(i.itemId) === String(itemId));
@@ -171,11 +188,13 @@ router.get('/candidates', async (c) => {
 
       let overallBisMatch;
       if (effectiveTrueBis === '<Crafted>') overallBisMatch = 'crafted';
+      else if (effectiveTrueBis === '<Catalyst>' && matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot)) overallBisMatch = 'catalyst';
       else overallBisMatch = matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot);
 
       const resolvedRaidBis   = effectiveRaidBis   || (effectiveTrueBis   !== '<Crafted>' ? effectiveTrueBis   : '');
       const resolvedRaidBisId = effectiveRaidBisId || (effectiveTrueBis   !== '<Crafted>' ? effectiveTrueBisId : '');
-      const raidBisMatch      = resolvedRaidBis ? matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, itemSlot) : false;
+      const raidBisRaw   = resolvedRaidBis ? matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, itemSlot) : false;
+      const raidBisMatch = (raidBisRaw === true && resolvedRaidBis === '<Catalyst>') ? 'catalyst' : raidBisRaw;
 
       const s    = stats[char.charId || char.charName.toLowerCase()]  ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
       const acct = acctStats[char.ownerId] ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
@@ -186,6 +205,7 @@ router.get('/candidates', async (c) => {
         acctBisH: acct.bisH, acctBisM: acct.bisM, acctNonBisH: acct.nonBisH, acctNonBisM: acct.nonBisM,
         raidsAttended: raidsByOwner[char.ownerId] ?? 0,
         overallBisMatch, raidBisMatch, hasRaidBis: Boolean(resolvedRaidBis),
+        wornBis: getWornTracksForSlot(wornBisMap, char.charId, itemSlot),
         ...(item.isTierToken && { tierSlots: tierSnapshotMap.get(char.charId) ?? {} }),
       });
     }
@@ -210,10 +230,13 @@ router.get('/curio-candidates', async (c) => {
   const { teamSheetId } = c.get('session').user;
   if (!teamSheetId) return c.json({ error: 'No team configured' }, 400);
   try {
-    const [roster, lootLog, bisSubmissions, effectiveBis, raids, config, tierSnapshots] = await Promise.all([
+    const [, effectiveBis] = await Promise.all([
+      primeTeamCache(teamSheetId, ['roster', 'lootLog', 'bisSubmissions', 'raids', 'config', 'tierSnapshot']),
+      getEffectiveDefaultBis(),
+    ]);
+    const [roster, lootLog, bisSubmissions, raids, config, tierSnapshots] = await Promise.all([
       getRoster(teamSheetId), getLootLog(teamSheetId), getBisSubmissions(teamSheetId),
-      getEffectiveDefaultBis(), getRaids(teamSheetId), getConfig(teamSheetId),
-      getTierSnapshot(teamSheetId),
+      getRaids(teamSheetId), getConfig(teamSheetId), getTierSnapshot(teamSheetId),
     ]);
 
     const tierSnapshotMap = new Map(); // charId → { slot → track }

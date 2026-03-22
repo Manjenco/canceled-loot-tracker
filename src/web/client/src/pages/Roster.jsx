@@ -1,5 +1,5 @@
 import { apiPath } from '../lib/api.js';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import ItemLink from '../components/ItemLink.jsx';
 
 const ALL_SLOTS = [
@@ -8,8 +8,33 @@ const ALL_SLOTS = [
   'Ring 1', 'Ring 2', 'Trinket 1', 'Trinket 2', 'Weapon', 'Off-Hand',
 ];
 
-const SENTINELS       = new Set(['<Tier>', '<Catalyst>', '<Crafted>']);
+const SENTINELS        = new Set(['<Tier>', '<Catalyst>', '<Crafted>']);
 const DIFFICULTY_ORDER = ['Mythic', 'Heroic', 'Normal'];
+
+const TRACK_CLASS = {
+  Crafted:  'track-crafted',
+  Veteran:  'track-veteran',
+  Champion: 'track-champion',
+  Hero:     'track-hero',
+  Mythic:   'track-mythic',
+};
+const TRACK_ORDER = { Crafted: -1, Veteran: 0, Champion: 1, Hero: 2, Mythic: 3 };
+function bestTrack(...tracks) {
+  return tracks.reduce((best, t) =>
+    t && (TRACK_ORDER[t] ?? -2) > (TRACK_ORDER[best] ?? -2) ? t : best
+  , '');
+}
+function TrackBadge({ track }) {
+  if (!track) return null;
+  return <span className={`track-badge ${TRACK_CLASS[track] ?? ''}`}>{track}</span>;
+}
+
+const SLOT_GROUPS = [
+  { label: 'Tier',        slots: ['Head', 'Shoulders', 'Chest', 'Hands', 'Legs'] },
+  { label: 'Other Armor', slots: ['Wrists', 'Waist', 'Feet'] },
+  { label: 'Accessories', slots: ['Neck', 'Back', 'Ring 1', 'Ring 2', 'Trinket 1', 'Trinket 2'] },
+  { label: 'Weapons',     slots: ['Weapon', 'Off-Hand'] },
+];
 
 const CLASS_SPECS = {
   'Death Knight':  ['Blood DK', 'Frost DK', 'Unholy DK'],
@@ -249,15 +274,9 @@ function LootTable({ loot }) {
   );
 }
 
-function BisTable({ bis, specDefaults, loot }) {
+function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
   const personalBySlot = Object.fromEntries(bis.map(b => [b.slot, b]));
   const defaultBySlot  = Object.fromEntries(specDefaults.map(d => [d.slot, d]));
-
-  const receivedBis = new Set(
-    loot
-      .filter(e => e.upgradeType === 'BIS')
-      .map(e => e.itemName.toLowerCase())
-  );
 
   const rows = ALL_SLOTS.flatMap(slot => {
     const personal = personalBySlot[slot];
@@ -270,10 +289,15 @@ function BisTable({ bis, specDefaults, loot }) {
     const raid       = src.raidBis        ?? '';
     const raidId     = src.raidBisItemId  ?? '';
     const isPersonal = !!personal;
-    const received   = overall && !SENTINELS.has(overall) &&
-                       receivedBis.has(overall.toLowerCase());
 
-    return [{ slot, overall, overallId, raid, raidId, isPersonal, received }];
+    const worn = wornBis[slot] ?? {};
+    const effectiveRaidTrack = worn.raidBISTrack ||
+      (raid && overall && raid === overall ? worn.overallBISTrack : '');
+    const displayWorn = { ...worn, raidBISTrack: effectiveRaidTrack };
+    const maxed    = worn.overallBISTrack === 'Mythic';
+    const slotBest = bestTrack(worn.overallBISTrack, worn.raidBISTrack, worn.otherTrack);
+
+    return [{ slot, overall, overallId, raid, raidId, isPersonal, worn: displayWorn, maxed, slotBest }];
   });
 
   if (!rows.length) return <p className="empty">No BIS data available for this spec.</p>;
@@ -285,33 +309,44 @@ function BisTable({ bis, specDefaults, loot }) {
           <th>Slot</th>
           <th>Overall BIS</th>
           <th>Raid BIS</th>
-          <th></th>
+          <th className="bis-col-best">Best</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map(({ slot, overall, overallId, raid, raidId, isPersonal, received }) => (
-          <tr key={slot} className={received ? 'bis-row-received' : ''}>
-            <td className="bis-slot">{slot}</td>
-            <td>
-              <ItemLink
-                name={overall || '—'}
-                itemId={overallId}
-                className={SENTINELS.has(overall) ? 'bis-sentinel' : undefined}
-              />
-              {isPersonal && <span className="badge badge-personal">Personal</span>}
-            </td>
-            <td>
-              <ItemLink
-                name={raid || '—'}
-                itemId={raidId}
-                className={SENTINELS.has(raid) ? 'bis-sentinel' : 'text-muted'}
-              />
-            </td>
-            <td className="bis-check">
-              {received && <span className="bis-received-mark">✓</span>}
-            </td>
-          </tr>
-        ))}
+        {SLOT_GROUPS.map(group => {
+          const groupRows = rows.filter(r => group.slots.includes(r.slot));
+          if (!groupRows.length) return null;
+          return (
+            <Fragment key={group.label}>
+              <tr className="bis-group-header-row">
+                <td colSpan={4} className="bis-group-header">{group.label}</td>
+              </tr>
+              {groupRows.map(({ slot, overall, overallId, raid, raidId, isPersonal, worn, maxed, slotBest }) => (
+                <tr key={slot} className={maxed ? 'bis-row-received' : ''}>
+                  <td className="bis-slot">{slot}</td>
+                  <td>
+                    <ItemLink
+                      name={overall || '—'}
+                      itemId={overallId}
+                      className={SENTINELS.has(overall) ? 'bis-sentinel' : undefined}
+                    />
+                    {isPersonal && <span className="badge badge-personal">Personal</span>}
+                    <TrackBadge track={worn.overallBISTrack} />
+                  </td>
+                  <td>
+                    <ItemLink
+                      name={raid || '—'}
+                      itemId={raidId}
+                      className={SENTINELS.has(raid) ? 'bis-sentinel' : 'text-muted'}
+                    />
+                    <TrackBadge track={worn.raidBISTrack} />
+                  </td>
+                  <td className="bis-col-best"><TrackBadge track={slotBest} /></td>
+                </tr>
+              ))}
+            </Fragment>
+          );
+        })}
       </tbody>
     </table>
   );
@@ -435,7 +470,7 @@ function CharacterDetail({ charName, onClose }) {
         <>
           <section className="card">
             <h3 className="card-title">BIS Status</h3>
-            <BisTable bis={data.bis} specDefaults={data.specDefaults} loot={data.loot} />
+            <BisTable bis={data.bis} specDefaults={data.specDefaults} loot={data.loot} wornBis={data.wornBis ?? {}} />
           </section>
 
           <section className="card">
