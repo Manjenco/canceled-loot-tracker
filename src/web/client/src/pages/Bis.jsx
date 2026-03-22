@@ -318,25 +318,56 @@ function SlotRow({ slotData, edit, onEdit, onAcknowledge, onResubmit, onReset })
   );
 }
 
+// ── Spec change request modal ──────────────────────────────────────────────────
+
+function SpecChangeModal({ targetSpec, onConfirm, onCancel, busy }) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
+        <h3 className="modal-title">Request Spec Change</h3>
+        <p className="modal-body">
+          Make <strong>{targetSpec}</strong> your primary spec?<br />
+          This requires officer approval. Your current BIS lists are unchanged.
+        </p>
+        <div className="modal-actions">
+          <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn-primary"   onClick={onConfirm} disabled={busy}>
+            {busy ? 'Submitting…' : 'Request'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ───────────────────────────────────────────────────────────────────
 
 export default function Bis() {
   const { user } = useMe();
-  const [slots, setSlots]     = useState([]);
-  const [edits, setEdits]     = useState({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving]   = useState(false);
-  const [saveMsg, setSaveMsg] = useState(null);
-  const [error, setError]     = useState(null);
+  const [slots,           setSlots]           = useState([]);
+  const [availableSpecs,  setAvailableSpecs]  = useState([]);
+  const [activeSpec,      setActiveSpec]      = useState(null);
+  const [pendingSpecChange, setPendingSpecChange] = useState(null);
+  const [edits,           setEdits]           = useState({});
+  const [loading,         setLoading]         = useState(true);
+  const [saving,          setSaving]          = useState(false);
+  const [saveMsg,         setSaveMsg]         = useState(null);
+  const [error,           setError]           = useState(null);
+  const [showSpecModal,   setShowSpecModal]   = useState(false);
+  const [specModalBusy,   setSpecModalBusy]   = useState(false);
 
-  const loadBis = useCallback(() => {
+  const loadBis = useCallback((spec = null) => {
     setLoading(true);
     setError(null);
     setSaveMsg(null);
-    fetch(apiPath('/api/bis'), { credentials: 'include' })
+    const url = apiPath('/api/bis') + (spec ? `?spec=${encodeURIComponent(spec)}` : '');
+    fetch(url, { credentials: 'include' })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(data => {
         setSlots(data.slots ?? []);
+        setActiveSpec(data.spec ?? null);
+        setAvailableSpecs(data.availableSpecs ?? []);
+        setPendingSpecChange(data.pendingSpecChange ?? null);
         setEdits({});
         setLoading(false);
       })
@@ -348,6 +379,12 @@ export default function Bis() {
 
   useEffect(() => { loadBis(); }, [loadBis]);
   useEffect(() => { if (slots.length) window.$WowheadPower?.refreshLinks(); }, [slots]);
+
+  const switchSpec = (spec) => {
+    if (spec === activeSpec) return;
+    setEdits({}); // discard unsaved edits when switching
+    loadBis(spec);
+  };
 
   const handleEdit = useCallback((slot, values) => {
     const slotData     = slots.find(s => s.slot === slot);
@@ -405,7 +442,7 @@ export default function Bis() {
         method:      'POST',
         credentials: 'include',
         headers:     { 'Content-Type': 'application/json' },
-        body:        JSON.stringify({ updates }),
+        body:        JSON.stringify({ updates, spec: activeSpec }),
       });
       if (!res.ok) throw new Error(res.status);
       const { saved, cleared, message } = await res.json();
@@ -413,7 +450,7 @@ export default function Bis() {
       if (saved)   parts.push(`${saved} slot${saved !== 1 ? 's' : ''} saved. Pending officer review.`);
       if (cleared) parts.push(`${cleared} slot${cleared !== 1 ? 's' : ''} reset to spec default.`);
       setSaveMsg(parts.join(' ') || message || 'Done.');
-      loadBis();
+      loadBis(activeSpec);
     } catch {
       setError('Failed to save. Please try again.');
     } finally {
@@ -428,11 +465,11 @@ export default function Bis() {
       method:      'POST',
       credentials: 'include',
       headers:     { 'Content-Type': 'application/json' },
-      body:        JSON.stringify({ updates: [{ slot, clearRejected: true }] }),
+      body:        JSON.stringify({ updates: [{ slot, clearRejected: true }], spec: activeSpec }),
     });
     if (!res.ok) throw new Error(res.status);
-    loadBis();
-  }, [loadBis]);
+    loadBis(activeSpec);
+  }, [loadBis, activeSpec]);
 
   // Immediate resets — no approval needed (removing an override, not adding one).
   // Overall BIS reset: deletes the whole submission row.
@@ -443,11 +480,11 @@ export default function Bis() {
       method:      'POST',
       credentials: 'include',
       headers:     { 'Content-Type': 'application/json' },
-      body:        JSON.stringify({ updates: [{ slot, ...action }] }),
+      body:        JSON.stringify({ updates: [{ slot, ...action }], spec: activeSpec }),
     });
     if (!res.ok) throw new Error(res.status);
-    loadBis();
-  }, [loadBis]);
+    loadBis(activeSpec);
+  }, [loadBis, activeSpec]);
 
   const handleResubmit = useCallback(async (slot, rationale) => {
     const slotData = slots.find(s => s.slot === slot);
@@ -458,7 +495,7 @@ export default function Bis() {
       method:      'POST',
       credentials: 'include',
       headers:     { 'Content-Type': 'application/json' },
-      body:        JSON.stringify({ updates: [{
+      body:        JSON.stringify({ spec: activeSpec, updates: [{
         slot,
         trueBis:       sub.trueBis,
         trueBisItemId: sub.trueBisItemId ?? '',
@@ -468,13 +505,40 @@ export default function Bis() {
       }] }),
     });
     if (!res.ok) throw new Error(res.status);
-    loadBis();
-  }, [slots, loadBis]);
+    loadBis(activeSpec);
+  }, [slots, loadBis, activeSpec]);
+
+  const handleSpecChangeRequest = async () => {
+    setSpecModalBusy(true);
+    try {
+      const res = await fetch(apiPath('/api/bis/request-spec-change'), {
+        method:      'POST',
+        credentials: 'include',
+        headers:     { 'Content-Type': 'application/json' },
+        body:        JSON.stringify({ newPrimarySpec: activeSpec }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? res.status);
+      }
+      const { pending } = await res.json();
+      setPendingSpecChange(pending);
+      setShowSpecModal(false);
+    } catch (err) {
+      setSaveMsg(`Failed to request spec change: ${err.message}`);
+    } finally {
+      setSpecModalBusy(false);
+    }
+  };
 
   const dirtyCount = Object.keys(edits).length;
 
   if (loading) return <div className="loading">Loading BIS list…</div>;
   if (error)   return <div className="error">{error}</div>;
+
+  const isSecondaryTab     = activeSpec && availableSpecs.find(s => s.spec === activeSpec && !s.isPrimary);
+  const canRequestChange   = isSecondaryTab && !pendingSpecChange;
+  const primarySpec        = availableSpecs.find(s => s.isPrimary)?.spec;
 
   return (
     <div className="bis-page">
@@ -482,7 +546,6 @@ export default function Bis() {
         <h2 className="page-title">
           My BIS List
           {user?.charName && <span className="spec-label"> — {user.charName}</span>}
-          {user?.spec     && <span className="spec-label"> ({user.spec})</span>}
         </h2>
         <p className="page-sub">
           Set your best-in-slot items for each slot. Overall BIS is the absolute
@@ -490,6 +553,36 @@ export default function Bis() {
           raid tier only. Submissions go to officers for review.
         </p>
       </div>
+
+      {availableSpecs.length > 1 && (
+        <div className="spec-tabs">
+          {availableSpecs.map(s => (
+            <button
+              key={s.spec}
+              className={`spec-tab${s.spec === activeSpec ? ' spec-tab-active' : ''}`}
+              onClick={() => switchSpec(s.spec)}
+            >
+              {s.spec}{s.isPrimary ? ' ★' : ''}
+            </button>
+          ))}
+          {pendingSpecChange ? (
+            <span className="spec-change-pending">Spec change to {pendingSpecChange} pending approval</span>
+          ) : canRequestChange ? (
+            <button className="btn-secondary spec-change-btn" onClick={() => setShowSpecModal(true)}>
+              Make primary spec
+            </button>
+          ) : null}
+        </div>
+      )}
+
+      {showSpecModal && (
+        <SpecChangeModal
+          targetSpec={activeSpec}
+          onConfirm={handleSpecChangeRequest}
+          onCancel={() => setShowSpecModal(false)}
+          busy={specModalBusy}
+        />
+      )}
 
       <div className="admin-save-bar">
         <span className="bis-legend-trigger">

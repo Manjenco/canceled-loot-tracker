@@ -310,15 +310,17 @@ function normalizeSheetDate(val) {
 function parseRosterRows(rows) {
   return rows
     .map(r => ({
-      charName:  String(r[0] ?? '').trim(),
-      class:     String(r[1] ?? '').trim(),
-      spec:      String(r[2] ?? '').trim(),
-      role:      String(r[3] ?? '').trim(),
-      status:    String(r[4] ?? '').trim(),
-      ownerId:   String(r[5] ?? '').trim(),
-      ownerNick: String(r[6] ?? '').trim(),
-      charId:    String(r[7] ?? '').trim(),
-      server:    String(r[8] ?? '').trim(),
+      charName:           String(r[0]  ?? '').trim(),
+      class:              String(r[1]  ?? '').trim(),
+      spec:               String(r[2]  ?? '').trim(),
+      role:               String(r[3]  ?? '').trim(),
+      status:             String(r[4]  ?? '').trim(),
+      ownerId:            String(r[5]  ?? '').trim(),
+      ownerNick:          String(r[6]  ?? '').trim(),
+      charId:             String(r[7]  ?? '').trim(),
+      server:             String(r[8]  ?? '').trim(),
+      secondarySpecs:     String(r[9]  ?? '').trim().split('|').map(s => s.trim()).filter(Boolean),
+      pendingPrimarySpec: String(r[10] ?? '').trim(),
     }))
     .filter(c => c.charName && c.status.toLowerCase() !== 'deleted');
 }
@@ -414,7 +416,7 @@ function parseWornBisRows(rows) {
 
 // Maps cache key → { range, parse } for all tabs that can be batch-loaded.
 const TEAM_TAB_DEFS = {
-  roster:         { range: 'Roster!A2:I',          parse: parseRosterRows },
+  roster:         { range: 'Roster!A2:K',          parse: parseRosterRows },
   lootLog:        { range: 'Loot Log!A2:K',         parse: parseLootLogRows },
   bisSubmissions: { range: 'BIS Submissions!A2:N',  parse: parseBisRows },
   config:         { range: 'Config!A2:B',           parse: parseConfigRows },
@@ -470,18 +472,21 @@ export async function primeTeamCache(sheetId, tabKeys = Object.keys(TEAM_TAB_DEF
 }
 
 /**
- * Roster tab  (A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId)
+ * Roster tab  (A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId
+ *              I=Server J=SecondarySpecs K=PendingPrimarySpec)
  *
  * CharId (col H) is a UUID appended to every row — stable across renames.
  * Cols A–G are unchanged from the old schema; old prod code reading A:G is unaffected.
  * Note: Role (col D) is computed by an Apps Script onEdit trigger — never write to it.
+ * SecondarySpecs (col J) = pipe-separated list of secondary spec names (may be empty).
+ * PendingPrimarySpec (col K) = requested new primary spec awaiting officer approval.
  *
  * @param {string} sheetId
  * @returns {object[]}
  */
 export async function getRoster(sheetId) {
   log.verbose(`[sheets] getRoster (sheet ${sheetId.slice(-6)})`);
-  return cachedRead(sheetId, 'roster', async () => parseRosterRows(await readRange(sheetId, 'Roster!A2:I')));
+  return cachedRead(sheetId, 'roster', async () => parseRosterRows(await readRange(sheetId, 'Roster!A2:K')));
 }
 
 /**
@@ -567,7 +572,8 @@ export async function setRosterStatus(sheetId, charName, status, charId = null) 
 export async function addRosterChar(sheetId, charName, cls, spec, role, status, server = '') {
   const charId = randomUUID();
   log.verbose(`[sheets] addRosterChar charId=${charId} char="${charName}" server="${server}" class="${cls}" spec="${spec}" role="${role}" status="${status}" (sheet ${sheetId.slice(-6)})`);
-  await appendRows(sheetId, 'Roster!A:I', [[charName, cls, spec, role, status, '', '', charId, server]]);
+  // Cols A–K: Name, Class, Spec, Role, Status, OwnerId, OwnerNick, CharId, Server, SecondarySpecs, PendingPrimarySpec
+  await appendRows(sheetId, 'Roster!A:K', [[charName, cls, spec, role, status, '', '', charId, server, '', '']]);
   cacheInvalidate(sheetId, 'roster');
   return charId;
 }
@@ -633,6 +639,93 @@ export async function deleteRosterChar(sheetId, charName, charId = null) {
     { range: `Roster!E${rowNum}`, values: [['Deleted']] },
   ]);
   cacheInvalidate(sheetId, 'roster');
+}
+
+// ── Multi-spec roster helpers ─────────────────────────────────────────────────
+
+/**
+ * Set the SecondarySpecs (column J) for a character, identified by charId.
+ * Pass an empty array to clear all secondary specs.
+ *
+ * @param {string}   sheetId
+ * @param {string}   charId
+ * @param {string[]} specs   Array of sheet spec names (e.g. ['Arms Warrior'])
+ */
+export async function setSecondarySpecs(sheetId, charId, specs) {
+  log.verbose(`[sheets] setSecondarySpecs charId=${charId} specs=[${specs.join(', ')}] (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:K');
+  const idx  = rows.findIndex(r => String(r[7] ?? '') === charId);
+  if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
+  await writeRange(sheetId, `Roster!J${idx + 2}`, [[specs.join('|')]]);
+  cacheInvalidate(sheetId, 'roster');
+}
+
+/**
+ * Write a pending primary spec change request (column K) for a character.
+ * Pass '' to clear an existing request.
+ *
+ * @param {string} sheetId
+ * @param {string} charId
+ * @param {string} pendingSpec  Sheet spec name to request as primary, or '' to clear
+ */
+export async function setPendingPrimarySpec(sheetId, charId, pendingSpec) {
+  log.verbose(`[sheets] setPendingPrimarySpec charId=${charId} pendingSpec="${pendingSpec}" (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:K');
+  const idx  = rows.findIndex(r => String(r[7] ?? '') === charId);
+  if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
+  await writeRange(sheetId, `Roster!K${idx + 2}`, [[pendingSpec]]);
+  cacheInvalidate(sheetId, 'roster');
+}
+
+/**
+ * Approve a pending primary spec change:
+ *   1. Reads current primary spec (col C) and pending spec (col K).
+ *   2. Moves old primary into SecondarySpecs (col J), removing the new primary from there.
+ *   3. Writes new primary to col C.
+ *   4. Clears col K.
+ *
+ * @param {string} sheetId
+ * @param {string} charId
+ * @returns {{ oldSpec: string, newSpec: string }}
+ */
+export async function approvePrimarySpecChange(sheetId, charId) {
+  log.verbose(`[sheets] approvePrimarySpecChange charId=${charId} (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:K');
+  const idx  = rows.findIndex(r => String(r[7] ?? '') === charId);
+  if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
+
+  const r          = rows[idx];
+  const oldPrimary = String(r[2]  ?? '').trim();
+  const newPrimary = String(r[10] ?? '').trim();
+  if (!newPrimary) throw new Error(`No pending spec change for charId "${charId}"`);
+
+  const currentSecondary = String(r[9] ?? '').trim().split('|').map(s => s.trim()).filter(Boolean);
+
+  // New secondary list: add old primary, remove new primary, deduplicate
+  const newSecondary = [...new Set(
+    [oldPrimary, ...currentSecondary].filter(s => s && s !== newPrimary)
+  )];
+
+  const rowNum = idx + 2;
+  log.debug(`[sheets] approvePrimarySpecChange row ${rowNum}: ${oldPrimary} → ${newPrimary}, secondary=[${newSecondary.join(', ')}]`);
+  await batchWriteRanges(sheetId, [
+    { range: `Roster!C${rowNum}`,  values: [[newPrimary]]             }, // new primary spec
+    { range: `Roster!J${rowNum}`,  values: [[newSecondary.join('|')]] }, // updated secondary
+    { range: `Roster!K${rowNum}`,  values: [['']]                     }, // clear pending
+  ]);
+  cacheInvalidate(sheetId, 'roster');
+  return { oldSpec: oldPrimary, newSpec: newPrimary };
+}
+
+/**
+ * Reject a pending primary spec change: clears column K only.
+ *
+ * @param {string} sheetId
+ * @param {string} charId
+ */
+export async function rejectPrimarySpecChange(sheetId, charId) {
+  log.verbose(`[sheets] rejectPrimarySpecChange charId=${charId} (sheet ${sheetId.slice(-6)})`);
+  await setPendingPrimarySpec(sheetId, charId, '');
 }
 
 /**
@@ -768,18 +861,21 @@ export async function upsertBisSubmission(sheetId, {
   const rows  = await readRange(sheetId, 'BIS Submissions!A2:N');
   const today = new Date().toISOString().slice(0, 10);
 
-  // Match by charId (col N) if available, fall back to charName (col B) for un-migrated rows
+  // Match by charId+spec+slot (or charName+slot for un-migrated rows without charId)
   const idx = rows.findIndex(r => {
     const rowCharId   = String(r[13] ?? '');
     const rowCharName = String(r[1]  ?? '').toLowerCase();
+    const rowSpec     = String(r[2]  ?? '').toLowerCase();
     const slotMatch   = String(r[3]  ?? '').toLowerCase() === slot.toLowerCase();
     if (!slotMatch) return false;
+    // spec must match when both are present (multi-spec isolation)
+    if (spec && rowSpec && rowSpec !== spec.toLowerCase()) return false;
     return charId && rowCharId ? rowCharId === charId : rowCharName === (charName ?? '').toLowerCase();
   });
 
   if (idx >= 0) {
     const rowNum = idx + 2;
-    log.debug(`[sheets] upsertBisSubmission updating existing row ${rowNum} for charId=${charId} slot="${slot}"`);
+    log.debug(`[sheets] upsertBisSubmission updating existing row ${rowNum} for charId=${charId} spec="${spec}" slot="${slot}"`);
     await writeRange(sheetId, `BIS Submissions!E${rowNum}:I${rowNum}`, [[
       trueBis   ?? '',
       raidBis   ?? '',
@@ -861,12 +957,15 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
       rationale = '',
     } = u;
 
-    // Match by charId (col N) if available, fall back to charName (col B) for un-migrated rows
+    // Match by charId+spec+slot (or charName+slot for un-migrated rows without charId)
     const idx = rows.findIndex(r => {
       const rowCharId   = String(r[13] ?? '');
       const rowCharName = String(r[1]  ?? '').toLowerCase();
+      const rowSpec     = String(r[2]  ?? '').toLowerCase();
       const slotMatch   = String(r[3]  ?? '').toLowerCase() === slot.toLowerCase();
       if (!slotMatch) return false;
+      // spec must match when both are present (multi-spec isolation)
+      if (spec && rowSpec && rowSpec !== spec.toLowerCase()) return false;
       return charId && rowCharId ? rowCharId === charId : rowCharName === charName.toLowerCase();
     });
 

@@ -6,8 +6,8 @@
 
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { getLootLog, getBisSubmissions, getEffectiveDefaultBis, getItemDb, applyRaidBisInference, getWornBis, primeTeamCache } from '../../../lib/sheets.js';
-import { toCanonical } from '../../../lib/specs.js';
+import { getLootLog, getBisSubmissions, getEffectiveDefaultBis, getItemDb, applyRaidBisInference, getWornBis, primeTeamCache, getRoster } from '../../../lib/sheets.js';
+import { toCanonical, getCharSpecs } from '../../../lib/specs.js';
 
 const router = new Hono();
 
@@ -21,15 +21,25 @@ router.get('/', requireAuth, async (c) => {
   try {
     // Batch-load all team sheet tabs in one API call; master sheet reads run in parallel.
     const [, effectiveBis, itemDb] = await Promise.all([
-      primeTeamCache(teamSheetId, ['lootLog', 'bisSubmissions', 'wornBis']),
+      primeTeamCache(teamSheetId, ['roster', 'lootLog', 'bisSubmissions', 'wornBis']),
       getEffectiveDefaultBis(),
       getItemDb(),
     ]);
-    const [lootLog, bisSubmissions, wornBisMap] = await Promise.all([
+    const [roster, lootLog, bisSubmissions, wornBisMap] = await Promise.all([
+      getRoster(teamSheetId),
       getLootLog(teamSheetId),
       getBisSubmissions(teamSheetId),
       getWornBis(teamSheetId),
     ]);
+
+    const rosterEntry = roster.find(r =>
+      charId && r.charId ? r.charId === charId : r.charName.toLowerCase() === charName.toLowerCase()
+    );
+    const charSpecs = rosterEntry ? getCharSpecs(rosterEntry) : { primary: spec, secondary: [], pending: null, all: [spec] };
+
+    // ?spec= param allows browsing any of the character's specs on the dashboard
+    const requestedSpec = c.req.query('spec') || charSpecs.primary;
+    const activeSpec    = charSpecs.all.includes(requestedSpec) ? requestedSpec : charSpecs.primary;
 
     const itemIdByName = new Map();
     for (const item of itemDb) {
@@ -46,12 +56,16 @@ router.get('/', requireAuth, async (c) => {
         itemId: itemIdByName.get((e.itemName ?? '').toLowerCase()) ?? '',
       }));
 
-    const approvedBis = bisSubmissions.filter(s =>
+    const charApprovedBis = bisSubmissions.filter(s =>
       s.status === 'Approved' &&
       (charId && s.charId ? s.charId === charId : s.charName.toLowerCase() === charName.toLowerCase())
     );
 
-    const canonicalSpec = toCanonical(spec);
+    // BIS data for the requested spec
+    const approvedBis = charApprovedBis.filter(s =>
+      s.spec ? s.spec.toLowerCase() === activeSpec.toLowerCase() : activeSpec === charSpecs.primary
+    );
+    const canonicalSpec = toCanonical(activeSpec);
     const specRows      = effectiveBis.filter(d => d.spec === canonicalSpec);
     const specDefaults  = applyRaidBisInference(specRows, itemDb);
 
@@ -80,7 +94,12 @@ router.get('/', requireAuth, async (c) => {
       };
     }
 
-    return c.json({ loot, bis: approvedBis, specDefaults, charName, charBisStatus, wornBis });
+    return c.json({
+      loot, bis: approvedBis, specDefaults, charName,
+      activeSpec,
+      availableSpecs: charSpecs.all.map(s => ({ spec: s, isPrimary: s === charSpecs.primary })),
+      charBisStatus, wornBis,
+    });
   } catch (err) {
     console.error('[DASHBOARD] Error:', err);
     return c.json({ error: 'Failed to load dashboard data' }, 500);

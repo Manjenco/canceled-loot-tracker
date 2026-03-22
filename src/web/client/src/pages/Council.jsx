@@ -268,40 +268,53 @@ function BenchDot() {
 
 function CandidateRow({ c, isTierToken, itemSlot }) {
   const worn = c.wornBis ?? {};
+  const [expanded, setExpanded] = useState(false);
+  const hasSecondary = c.secondarySpecCandidates?.length > 0;
+
   return (
-    <tr>
-      <td className="council-col-char">
-        {c.charName}{c.status === 'Bench' && <BenchDot />}
-      </td>
-      <td className="council-col-spec">{c.spec}</td>
-      {isTierToken && (
-        <td className="council-col-tier-slots">
-          <TierPips tierSlots={c.tierSlots} activeSlot={itemSlot} />
+    <>
+      <tr className={expanded ? 'council-row-expanded-parent' : ''}>
+        <td className="council-col-char">
+          {hasSecondary && (
+            <button
+              className={`council-expand-btn${expanded ? ' expanded' : ''}`}
+              onClick={() => setExpanded(e => !e)}
+              title={expanded ? 'Collapse secondary specs' : 'Expand secondary specs'}
+            >▶</button>
+          )}
+          {c.charName}{c.status === 'Bench' && <BenchDot />}
         </td>
-      )}
-      <td className="council-col-stats">
-        <span className="council-stat-bis">{c.bisH}/{c.bisM}</span>
-      </td>
-      <td className="council-col-stats">
-        <span className="council-stat-nonbis">{c.nonBisH}/{c.nonBisM}</span>
-      </td>
-      <td className="council-col-stats" title="Account total across all characters">
-        <span className="council-stat-bis">{c.acctBisH}/{c.acctBisM}</span>
-      </td>
-      <td className="council-col-stats" title="Account total across all characters">
-        <span className="council-stat-nonbis">{c.acctNonBisH}/{c.acctNonBisM}</span>
-      </td>
-      <td className="council-col-num">{c.raidsAttended}</td>
-      <td className="council-col-bis">
-        <BisIndicator match={c.overallBisMatch} track={worn.overallBISTrack} />
-      </td>
-      <td className="council-col-bis">
-        <BisIndicator match={c.raidBisMatch} track={worn.raidBISTrack} />
-      </td>
-      <td className="council-col-bis">
-        <MiniTrackBadge track={worn.otherTrack} />
-      </td>
-    </tr>
+        <td className="council-col-spec">{c.spec}</td>
+        {isTierToken && (
+          <td className="council-col-tier-slots">
+            <TierPips tierSlots={c.tierSlots} activeSlot={itemSlot} />
+          </td>
+        )}
+        <td className="council-col-stats"><span className="council-stat-bis">{c.bisH}/{c.bisM}</span></td>
+        <td className="council-col-stats"><span className="council-stat-nonbis">{c.nonBisH}/{c.nonBisM}</span></td>
+        <td className="council-col-stats" title="Account total"><span className="council-stat-bis">{c.acctBisH}/{c.acctBisM}</span></td>
+        <td className="council-col-stats" title="Account total"><span className="council-stat-nonbis">{c.acctNonBisH}/{c.acctNonBisM}</span></td>
+        <td className="council-col-num">{c.raidsAttended}</td>
+        <td className="council-col-bis"><BisIndicator match={c.overallBisMatch} track={worn.overallBISTrack} /></td>
+        <td className="council-col-bis"><BisIndicator match={c.raidBisMatch} track={worn.raidBISTrack} /></td>
+        <td className="council-col-bis"><MiniTrackBadge track={worn.otherTrack} /></td>
+      </tr>
+      {expanded && c.secondarySpecCandidates?.map(sc => {
+        const scWorn = sc.wornBis ?? {};
+        return (
+          <tr key={sc.spec} className="council-row-secondary">
+            <td className="council-col-char council-secondary-indent">↳ {sc.spec}</td>
+            <td className="council-col-spec" />
+            {isTierToken && <td className="council-col-tier-slots" />}
+            <td className="council-col-stats" colSpan={4} />
+            <td className="council-col-num" />
+            <td className="council-col-bis"><BisIndicator match={sc.overallBisMatch} track={scWorn.overallBISTrack} /></td>
+            <td className="council-col-bis"><BisIndicator match={sc.raidBisMatch} track={scWorn.raidBISTrack} /></td>
+            <td className="council-col-bis"><MiniTrackBadge track={scWorn.otherTrack} /></td>
+          </tr>
+        );
+      })}
+    </>
   );
 }
 

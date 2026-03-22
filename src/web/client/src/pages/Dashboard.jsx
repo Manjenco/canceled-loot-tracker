@@ -221,18 +221,20 @@ function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
 
 export default function Dashboard() {
   const { user } = useMe();
-  const [data, setData]           = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [switching, setSwitching] = useState(false);
-  const [error, setError]         = useState(null);
-  const initialSelectDone         = useRef(false);
+  const [data,         setData]         = useState(null);
+  const [loading,      setLoading]      = useState(true);
+  const [switching,    setSwitching]    = useState(false);
+  const [error,        setError]        = useState(null);
+  const [activeSpec,   setActiveSpec]   = useState(null);
+  const initialSelectDone              = useRef(false);
 
-  const loadDashboard = useCallback(() => {
+  const loadDashboard = useCallback((spec = null) => {
     setLoading(true);
     setError(null);
-    fetch(apiPath('/api/dashboard'), { credentials: 'include' })
+    const url = apiPath('/api/dashboard') + (spec ? `?spec=${encodeURIComponent(spec)}` : '');
+    fetch(url, { credentials: 'include' })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(d => { setData(d); setLoading(false); })
+      .then(d => { setData(d); setActiveSpec(d.activeSpec ?? null); setLoading(false); })
       .catch(e => { setError(e); setLoading(false); });
   }, []);
 
@@ -353,8 +355,26 @@ export default function Dashboard() {
       <section className="card">
         <div className="card-title-row">
           <h3 className="card-title">BIS Status</h3>
-          <Link to="/bis" className="btn-primary btn-sm">Edit BIS</Link>
+          <Link
+            to={activeSpec && activeSpec !== (data.availableSpecs?.find(s => s.isPrimary)?.spec)
+              ? `/bis?spec=${encodeURIComponent(activeSpec)}`
+              : '/bis'}
+            className="btn-primary btn-sm"
+          >Edit BIS</Link>
         </div>
+        {(data.availableSpecs?.length ?? 0) > 1 && (
+          <div className="spec-tabs" style={{marginBottom: 12}}>
+            {(data.availableSpecs ?? []).map(s => (
+              <button
+                key={s.spec}
+                className={`spec-tab${s.spec === activeSpec ? ' spec-tab-active' : ''}`}
+                onClick={() => { setActiveSpec(s.spec); loadDashboard(s.spec); }}
+              >
+                {s.spec}{s.isPrimary ? ' ★' : ''}
+              </button>
+            ))}
+          </div>
+        )}
         {(() => {
           const activeStatus = charBisStatus[data.charName] ?? {};
           const pending  = activeStatus.pending  ?? 0;

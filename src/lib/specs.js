@@ -96,6 +96,20 @@ export function toSheet(canonicalSpec) {
   return CANONICAL_TO_SHEET[canonicalSpec] ?? canonicalSpec;
 }
 
+/**
+ * Returns a structured spec summary for a roster entry.
+ * Works whether or not the character has secondary specs.
+ *
+ * @param {object} rosterEntry  Row from getRoster()
+ * @returns {{ primary: string, secondary: string[], pending: string|null, all: string[] }}
+ */
+export function getCharSpecs(rosterEntry) {
+  const primary   = rosterEntry.spec ?? '';
+  const secondary = rosterEntry.secondarySpecs ?? [];
+  const pending   = rosterEntry.pendingPrimarySpec || null;
+  return { primary, secondary, pending, all: [primary, ...secondary].filter(Boolean) };
+}
+
 /** All sheet spec names, grouped by class. */
 export const CLASS_SPECS = {
   'Death Knight':  ['Blood DK', 'Frost DK', 'Unholy DK'],
