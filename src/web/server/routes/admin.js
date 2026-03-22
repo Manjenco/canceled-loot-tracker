@@ -17,6 +17,7 @@ import {
   applyRaidBisInference, updateDefaultBisOverrides, getBisSubmissions,
   approveBisSubmission, rejectBisSubmission, getConfig, clearWornBis,
   invalidateWornBisSlots, getRoster, approvePrimarySpecChange, rejectPrimarySpecChange,
+  getEffectiveDefaultBis,
 } from '../../../lib/sheets.js';
 import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
 import { getAllTeams } from '../../../lib/teams.js';
@@ -228,8 +229,8 @@ router.get('/bis-review', requireOfficer, async (c) => {
   const { teamSheetId } = c.get('session').user;
   if (!teamSheetId) return c.json({ error: 'No team sheet configured' }, 400);
   try {
-    const [allSubmissions, itemDb, allDefaults, specConfig, roster] = await Promise.all([
-      getBisSubmissions(teamSheetId), getItemDb(), getDefaultBis(), getSpecBisConfig(), getRoster(teamSheetId),
+    const [allSubmissions, itemDb, effectiveDefaults, roster] = await Promise.all([
+      getBisSubmissions(teamSheetId), getItemDb(), getEffectiveDefaultBis(), getRoster(teamSheetId),
     ]);
 
     const itemByName = new Map(itemDb.map(i => [i.name.toLowerCase(), i]));
@@ -240,16 +241,13 @@ router.get('/bis-review', requireOfficer, async (c) => {
       return { itemId: String(item.itemId ?? ''), difficulty: item.difficulty ?? '', sourceType: item.sourceType ?? '', sourceName: item.sourceName ?? '' };
     };
 
+    // Build specDefaultByKey from effective defaults (seed rows + officer overrides, preferred source).
+    // Uses getEffectiveDefaultBis() so any Raid BIS set via the admin page is reflected here.
     const specDefaultByKey = new Map();
-    for (const canonSpec of [...new Set(allDefaults.map(r => toCanonical(r.spec)))]) {
-      const specRows  = allDefaults.filter(r => toCanonical(r.spec) === canonSpec);
-      const sources   = [...new Set(specRows.map(r => r.source).filter(Boolean))];
-      const preferred = specConfig.get(canonSpec);
-      const source    = (preferred && sources.includes(preferred)) ? preferred : (sources[0] ?? '');
-      for (const row of applyRaidBisInference(specRows.filter(r => r.source === source), itemDb)) {
-        if (!row.trueBis) continue;
-        specDefaultByKey.set(canonSpec + '::' + row.slot, { trueBis: row.trueBis ?? '', raidBis: row.raidBis ?? '', source });
-      }
+    for (const row of applyRaidBisInference(effectiveDefaults, itemDb)) {
+      if (!row.trueBis) continue;
+      const canonSpec = toCanonical(row.spec);
+      specDefaultByKey.set(canonSpec + '::' + row.slot, { trueBis: row.trueBis ?? '', raidBis: row.raidBis ?? '', source: row.source ?? '' });
     }
 
     const approvedByKey = new Map();
