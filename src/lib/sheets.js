@@ -310,15 +310,17 @@ function normalizeSheetDate(val) {
 function parseRosterRows(rows) {
   return rows
     .map(r => ({
-      charName:  String(r[0] ?? '').trim(),
-      class:     String(r[1] ?? '').trim(),
-      spec:      String(r[2] ?? '').trim(),
-      role:      String(r[3] ?? '').trim(),
-      status:    String(r[4] ?? '').trim(),
-      ownerId:   String(r[5] ?? '').trim(),
-      ownerNick: String(r[6] ?? '').trim(),
-      charId:    String(r[7] ?? '').trim(),
-      server:    String(r[8] ?? '').trim(),
+      charName:           String(r[0]  ?? '').trim(),
+      class:              String(r[1]  ?? '').trim(),
+      spec:               String(r[2]  ?? '').trim(),
+      role:               String(r[3]  ?? '').trim(),
+      status:             String(r[4]  ?? '').trim(),
+      ownerId:            String(r[5]  ?? '').trim(),
+      ownerNick:          String(r[6]  ?? '').trim(),
+      charId:             String(r[7]  ?? '').trim(),
+      server:             String(r[8]  ?? '').trim(),
+      secondarySpecs:     String(r[9]  ?? '').trim().split('|').map(s => s.trim()).filter(Boolean),
+      pendingPrimarySpec: String(r[10] ?? '').trim(),
     }))
     .filter(c => c.charName && c.status.toLowerCase() !== 'deleted');
 }
@@ -396,11 +398,13 @@ function parseWornBisRows(rows) {
   for (const r of rows) {
     const charId = r[0] ?? '';
     const slot   = r[2] ?? '';
+    const spec   = r[7] ?? ''; // col H — added after initial rollout; empty on pre-spec rows
     if (!charId || !slot) continue;
-    map.set(`${charId}:${slot}`, {
+    map.set(`${charId}:${spec}:${slot}`, {
       charId,
       charName:        r[1] ?? '',
       slot,
+      spec,
       overallBISTrack: r[3] ?? '',
       raidBISTrack:    r[4] ?? '',
       otherTrack:      r[5] ?? '',
@@ -414,13 +418,13 @@ function parseWornBisRows(rows) {
 
 // Maps cache key → { range, parse } for all tabs that can be batch-loaded.
 const TEAM_TAB_DEFS = {
-  roster:         { range: 'Roster!A2:I',          parse: parseRosterRows },
+  roster:         { range: 'Roster!A2:K',          parse: parseRosterRows },
   lootLog:        { range: 'Loot Log!A2:K',         parse: parseLootLogRows },
   bisSubmissions: { range: 'BIS Submissions!A2:N',  parse: parseBisRows },
   config:         { range: 'Config!A2:B',           parse: parseConfigRows },
   raids:          { range: 'Raids!A2:E',            parse: parseRaidsRows },
   tierSnapshot:   { range: 'Tier Snapshot!A2:F',    parse: parseTierSnapshotRows },
-  wornBis:        { range: 'Worn BIS!A2:G',         parse: parseWornBisRows },
+  wornBis:        { range: 'Worn BIS!A2:H',         parse: parseWornBisRows },
 };
 
 /**
@@ -470,18 +474,21 @@ export async function primeTeamCache(sheetId, tabKeys = Object.keys(TEAM_TAB_DEF
 }
 
 /**
- * Roster tab  (A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId)
+ * Roster tab  (A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId
+ *              I=Server J=SecondarySpecs K=PendingPrimarySpec)
  *
  * CharId (col H) is a UUID appended to every row — stable across renames.
  * Cols A–G are unchanged from the old schema; old prod code reading A:G is unaffected.
  * Note: Role (col D) is computed by an Apps Script onEdit trigger — never write to it.
+ * SecondarySpecs (col J) = pipe-separated list of secondary spec names (may be empty).
+ * PendingPrimarySpec (col K) = requested new primary spec awaiting officer approval.
  *
  * @param {string} sheetId
  * @returns {object[]}
  */
 export async function getRoster(sheetId) {
   log.verbose(`[sheets] getRoster (sheet ${sheetId.slice(-6)})`);
-  return cachedRead(sheetId, 'roster', async () => parseRosterRows(await readRange(sheetId, 'Roster!A2:I')));
+  return cachedRead(sheetId, 'roster', async () => parseRosterRows(await readRange(sheetId, 'Roster!A2:K')));
 }
 
 /**
@@ -567,7 +574,8 @@ export async function setRosterStatus(sheetId, charName, status, charId = null) 
 export async function addRosterChar(sheetId, charName, cls, spec, role, status, server = '') {
   const charId = randomUUID();
   log.verbose(`[sheets] addRosterChar charId=${charId} char="${charName}" server="${server}" class="${cls}" spec="${spec}" role="${role}" status="${status}" (sheet ${sheetId.slice(-6)})`);
-  await appendRows(sheetId, 'Roster!A:I', [[charName, cls, spec, role, status, '', '', charId, server]]);
+  // Cols A–K: Name, Class, Spec, Role, Status, OwnerId, OwnerNick, CharId, Server, SecondarySpecs, PendingPrimarySpec
+  await appendRows(sheetId, 'Roster!A:K', [[charName, cls, spec, role, status, '', '', charId, server, '', '']]);
   cacheInvalidate(sheetId, 'roster');
   return charId;
 }
@@ -633,6 +641,93 @@ export async function deleteRosterChar(sheetId, charName, charId = null) {
     { range: `Roster!E${rowNum}`, values: [['Deleted']] },
   ]);
   cacheInvalidate(sheetId, 'roster');
+}
+
+// ── Multi-spec roster helpers ─────────────────────────────────────────────────
+
+/**
+ * Set the SecondarySpecs (column J) for a character, identified by charId.
+ * Pass an empty array to clear all secondary specs.
+ *
+ * @param {string}   sheetId
+ * @param {string}   charId
+ * @param {string[]} specs   Array of sheet spec names (e.g. ['Arms Warrior'])
+ */
+export async function setSecondarySpecs(sheetId, charId, specs) {
+  log.verbose(`[sheets] setSecondarySpecs charId=${charId} specs=[${specs.join(', ')}] (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:K');
+  const idx  = rows.findIndex(r => String(r[7] ?? '') === charId);
+  if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
+  await writeRange(sheetId, `Roster!J${idx + 2}`, [[specs.join('|')]]);
+  cacheInvalidate(sheetId, 'roster');
+}
+
+/**
+ * Write a pending primary spec change request (column K) for a character.
+ * Pass '' to clear an existing request.
+ *
+ * @param {string} sheetId
+ * @param {string} charId
+ * @param {string} pendingSpec  Sheet spec name to request as primary, or '' to clear
+ */
+export async function setPendingPrimarySpec(sheetId, charId, pendingSpec) {
+  log.verbose(`[sheets] setPendingPrimarySpec charId=${charId} pendingSpec="${pendingSpec}" (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:K');
+  const idx  = rows.findIndex(r => String(r[7] ?? '') === charId);
+  if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
+  await writeRange(sheetId, `Roster!K${idx + 2}`, [[pendingSpec]]);
+  cacheInvalidate(sheetId, 'roster');
+}
+
+/**
+ * Approve a pending primary spec change:
+ *   1. Reads current primary spec (col C) and pending spec (col K).
+ *   2. Moves old primary into SecondarySpecs (col J), removing the new primary from there.
+ *   3. Writes new primary to col C.
+ *   4. Clears col K.
+ *
+ * @param {string} sheetId
+ * @param {string} charId
+ * @returns {{ oldSpec: string, newSpec: string }}
+ */
+export async function approvePrimarySpecChange(sheetId, charId) {
+  log.verbose(`[sheets] approvePrimarySpecChange charId=${charId} (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Roster!A2:K');
+  const idx  = rows.findIndex(r => String(r[7] ?? '') === charId);
+  if (idx < 0) throw new Error(`Character ID "${charId}" not found in roster`);
+
+  const r          = rows[idx];
+  const oldPrimary = String(r[2]  ?? '').trim();
+  const newPrimary = String(r[10] ?? '').trim();
+  if (!newPrimary) throw new Error(`No pending spec change for charId "${charId}"`);
+
+  const currentSecondary = String(r[9] ?? '').trim().split('|').map(s => s.trim()).filter(Boolean);
+
+  // New secondary list: add old primary, remove new primary, deduplicate
+  const newSecondary = [...new Set(
+    [oldPrimary, ...currentSecondary].filter(s => s && s !== newPrimary)
+  )];
+
+  const rowNum = idx + 2;
+  log.debug(`[sheets] approvePrimarySpecChange row ${rowNum}: ${oldPrimary} → ${newPrimary}, secondary=[${newSecondary.join(', ')}]`);
+  await batchWriteRanges(sheetId, [
+    { range: `Roster!C${rowNum}`,  values: [[newPrimary]]             }, // new primary spec
+    { range: `Roster!J${rowNum}`,  values: [[newSecondary.join('|')]] }, // updated secondary
+    { range: `Roster!K${rowNum}`,  values: [['']]                     }, // clear pending
+  ]);
+  cacheInvalidate(sheetId, 'roster');
+  return { oldSpec: oldPrimary, newSpec: newPrimary };
+}
+
+/**
+ * Reject a pending primary spec change: clears column K only.
+ *
+ * @param {string} sheetId
+ * @param {string} charId
+ */
+export async function rejectPrimarySpecChange(sheetId, charId) {
+  log.verbose(`[sheets] rejectPrimarySpecChange charId=${charId} (sheet ${sheetId.slice(-6)})`);
+  await setPendingPrimarySpec(sheetId, charId, '');
 }
 
 /**
@@ -768,18 +863,21 @@ export async function upsertBisSubmission(sheetId, {
   const rows  = await readRange(sheetId, 'BIS Submissions!A2:N');
   const today = new Date().toISOString().slice(0, 10);
 
-  // Match by charId (col N) if available, fall back to charName (col B) for un-migrated rows
+  // Match by charId+spec+slot (or charName+slot for un-migrated rows without charId)
   const idx = rows.findIndex(r => {
     const rowCharId   = String(r[13] ?? '');
     const rowCharName = String(r[1]  ?? '').toLowerCase();
+    const rowSpec     = String(r[2]  ?? '').toLowerCase();
     const slotMatch   = String(r[3]  ?? '').toLowerCase() === slot.toLowerCase();
     if (!slotMatch) return false;
+    // spec must match when both are present (multi-spec isolation)
+    if (spec && rowSpec && rowSpec !== spec.toLowerCase()) return false;
     return charId && rowCharId ? rowCharId === charId : rowCharName === (charName ?? '').toLowerCase();
   });
 
   if (idx >= 0) {
     const rowNum = idx + 2;
-    log.debug(`[sheets] upsertBisSubmission updating existing row ${rowNum} for charId=${charId} slot="${slot}"`);
+    log.debug(`[sheets] upsertBisSubmission updating existing row ${rowNum} for charId=${charId} spec="${spec}" slot="${slot}"`);
     await writeRange(sheetId, `BIS Submissions!E${rowNum}:I${rowNum}`, [[
       trueBis   ?? '',
       raidBis   ?? '',
@@ -861,12 +959,15 @@ export async function batchUpsertBisSubmissions(sheetId, updates) {
       rationale = '',
     } = u;
 
-    // Match by charId (col N) if available, fall back to charName (col B) for un-migrated rows
+    // Match by charId+spec+slot (or charName+slot for un-migrated rows without charId)
     const idx = rows.findIndex(r => {
       const rowCharId   = String(r[13] ?? '');
       const rowCharName = String(r[1]  ?? '').toLowerCase();
+      const rowSpec     = String(r[2]  ?? '').toLowerCase();
       const slotMatch   = String(r[3]  ?? '').toLowerCase() === slot.toLowerCase();
       if (!slotMatch) return false;
+      // spec must match when both are present (multi-spec isolation)
+      if (spec && rowSpec && rowSpec !== spec.toLowerCase()) return false;
       return charId && rowCharId ? rowCharId === charId : rowCharName === charName.toLowerCase();
     });
 
@@ -1641,7 +1742,7 @@ export async function upsertTierSnapshot(sheetId, snapshots) {
 // ── Worn BIS ──────────────────────────────────────────────────────────────────
 
 /**
- * Worn BIS tab  (A=CharId B=CharName C=Slot D=OverallBISTrack E=RaidBISTrack F=OtherTrack G=UpdatedAt)
+ * Worn BIS tab  (A=CharId B=CharName C=Slot D=OverallBISTrack E=RaidBISTrack F=OtherTrack G=UpdatedAt H=Spec)
  * One row per character × slot. Tracks the highest upgrade track ever worn for each
  * BIS category per slot. "Best ever" — values only increase, never decrease.
  *
@@ -1652,36 +1753,37 @@ export async function upsertTierSnapshot(sheetId, snapshots) {
  */
 export async function getWornBis(sheetId) {
   log.verbose(`[sheets] getWornBis (sheet ${sheetId.slice(-6)})`);
-  return cachedRead(sheetId, 'wornBis', async () => parseWornBisRows(await readRange(sheetId, 'Worn BIS!A2:G')));
+  return cachedRead(sheetId, 'wornBis', async () => parseWornBisRows(await readRange(sheetId, 'Worn BIS!A2:H')));
 }
 
 /**
- * Upsert Worn BIS rows. Keyed by CharId + Slot (composite) — one row per character per slot.
+ * Upsert Worn BIS rows. Keyed by CharId + Spec + Slot — one row per character per spec per slot.
  *
  * @param {string}   sheetId
- * @param {object[]} rows  Array of { charId, charName, slot, overallBISTrack, raidBISTrack, otherTrack }
+ * @param {object[]} rows  Array of { charId, charName, spec, slot, overallBISTrack, raidBISTrack, otherTrack }
  */
 export async function upsertWornBis(sheetId, rows) {
   if (!rows.length) return;
   log.verbose(`[sheets] upsertWornBis (sheet ${sheetId.slice(-6)}) — ${rows.length} row(s)`);
-  const existing = await readRange(sheetId, 'Worn BIS!A2:C');
+  const existing = await readRange(sheetId, 'Worn BIS!A2:H');
   const updates  = [];
   const appends  = [];
   const now      = new Date().toISOString();
 
   for (const row of rows) {
-    const rowIdx = existing.findIndex(r => r[0] === row.charId && r[2] === row.slot);
-    const cells  = [row.charId, row.charName, row.slot, row.overallBISTrack, row.raidBISTrack, row.otherTrack, now];
+    // Match on charId (col A) + slot (col C) + spec (col H)
+    const rowIdx = existing.findIndex(r => r[0] === row.charId && r[2] === row.slot && (r[7] ?? '') === row.spec);
+    const cells  = [row.charId, row.charName, row.slot, row.overallBISTrack, row.raidBISTrack, row.otherTrack, now, row.spec];
     if (rowIdx >= 0) {
-      updates.push({ range: `Worn BIS!A${rowIdx + 2}:G${rowIdx + 2}`, values: [cells] });
+      updates.push({ range: `Worn BIS!A${rowIdx + 2}:H${rowIdx + 2}`, values: [cells] });
     } else {
       appends.push(cells);
-      existing.push([row.charId, row.charName, row.slot]); // prevent duplicate appends within same batch
+      existing.push([row.charId, row.charName, row.slot, '', '', '', '', row.spec]); // prevent duplicate appends within same batch
     }
   }
 
   if (updates.length) await batchWriteRanges(sheetId, updates);
-  if (appends.length) await appendRows(sheetId, 'Worn BIS!A:G', appends);
+  if (appends.length) await appendRows(sheetId, 'Worn BIS!A:H', appends);
   cacheInvalidate(sheetId, 'wornBis');
 }
 
@@ -1692,13 +1794,13 @@ export async function upsertWornBis(sheetId, rows) {
  * otherTrack is intentionally preserved.
  *
  * @param {string}   sheetId
- * @param {object[]} targets  Array of { charId, slot }
+ * @param {object[]} targets  Array of { charId, slot } — invalidates all specs for that char+slot
  */
 export async function invalidateWornBisSlots(sheetId, targets) {
   if (!targets.length) return;
   log.verbose(`[sheets] invalidateWornBisSlots (sheet ${sheetId.slice(-6)}) — ${targets.length} target(s)`);
   const targetSet = new Set(targets.map(t => `${t.charId}:${t.slot}`));
-  const existing  = await readRange(sheetId, 'Worn BIS!A2:G');
+  const existing  = await readRange(sheetId, 'Worn BIS!A2:H');
   const updates   = [];
   for (let i = 0; i < existing.length; i++) {
     const r      = existing[i];
@@ -1723,8 +1825,8 @@ export async function clearWornBis(sheetId) {
   // Read how many rows exist so we can overwrite them with blanks
   const existing = await readRange(sheetId, 'Worn BIS!A2:A');
   if (!existing.length) return;
-  const blankRows = existing.map(() => ['', '', '', '', '', '', '']);
-  await writeRange(sheetId, 'Worn BIS!A2:G', blankRows);
+  const blankRows = existing.map(() => ['', '', '', '', '', '', '', '']); // A:H
+  await writeRange(sheetId, 'Worn BIS!A2:H', blankRows);
   cacheInvalidate(sheetId, 'wornBis');
 }
 

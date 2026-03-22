@@ -18,9 +18,10 @@ import {
   getEffectiveDefaultBis, getItemDb, applyRaidBisInference,
   getWornBis, primeTeamCache,
   setRosterStatus, setOwnerNick, setRosterOwner, addRosterChar, deleteRosterChar,
-  renameRosterChar, setRosterServer,
+  renameRosterChar, setRosterServer, setSecondarySpecs,
+  approvePrimarySpecChange, rejectPrimarySpecChange,
 } from '../../../lib/sheets.js';
-import { toCanonical, CLASS_SPECS } from '../../../lib/specs.js';
+import { toCanonical, CLASS_SPECS, getCharSpecs } from '../../../lib/specs.js';
 
 const TANK_SPECS   = new Set(['Blood DK', 'Vengeance DH', 'Guardian Druid', 'Brewmaster Monk', 'Prot Paladin', 'Prot Warrior']);
 const HEALER_SPECS = new Set(['Resto Druid', 'Preservation Evoker', 'Mistweaver Monk', 'Holy Paladin', 'Disc Priest', 'Holy Priest', 'Resto Shaman']);
@@ -174,21 +175,35 @@ router.get('/:charName', async (c) => {
           .map(e => ({ ...e, itemId: itemIdByName.get((e.itemName ?? '').toLowerCase()) ?? '' }))
       : [];
 
-    const approvedBis   = bisSubmissions.filter(s =>
+    const charSpecs = getCharSpecs(rosterChar);
+
+    // Build BIS data per spec (approved submissions + spec defaults)
+    const charApprovedBis = bisSubmissions.filter(s =>
       s.status === 'Approved' &&
       (rosterChar.charId && s.charId ? s.charId === rosterChar.charId : s.charName.toLowerCase() === charName.toLowerCase())
     );
-    const canonicalSpec = toCanonical(rosterChar.spec);
-    const specRows      = effectiveBis.filter(d => d.spec === canonicalSpec);
-    const specDefaults  = applyRaidBisInference(specRows, itemDb);
 
-    // Build slot → tracks map for this character from the Worn BIS sheet
-    const wornBis = {};
-    for (const [key, row] of wornBisMap) {
-      const [rowCharId, ...slotParts] = key.split(':');
-      if (rowCharId !== rosterChar.charId) continue;
-      const slot = slotParts.join(':');
-      wornBis[slot] = {
+    const bisBySpec = {};
+    const defaultsBySpec = {};
+    for (const spec of charSpecs.all) {
+      const canonSpec = toCanonical(spec);
+      const specRows  = effectiveBis.filter(d => d.spec === canonSpec);
+      defaultsBySpec[spec] = applyRaidBisInference(specRows, itemDb);
+      bisBySpec[spec] = charApprovedBis.filter(s =>
+        s.spec ? s.spec.toLowerCase() === spec.toLowerCase() : spec === charSpecs.primary
+      );
+    }
+
+    // Primary spec convenience fields (backward compat)
+    const approvedBis  = bisBySpec[charSpecs.primary] ?? [];
+    const specDefaults = defaultsBySpec[charSpecs.primary] ?? [];
+
+    // Build wornBisBySpec: { [spec]: { [slot]: { overallBISTrack, raidBISTrack, otherTrack } } }
+    const wornBisBySpec = {};
+    for (const row of wornBisMap.values()) {
+      if (row.charId !== rosterChar.charId) continue;
+      if (!wornBisBySpec[row.spec]) wornBisBySpec[row.spec] = {};
+      wornBisBySpec[row.spec][row.slot] = {
         overallBISTrack: row.overallBISTrack ?? '',
         raidBISTrack:    row.raidBISTrack    ?? '',
         otherTrack:      row.otherTrack      ?? '',
@@ -196,9 +211,14 @@ router.get('/:charName', async (c) => {
     }
 
     return c.json({
-      charName: rosterChar.charName, class: rosterChar.class, spec: rosterChar.spec,
+      charName: rosterChar.charName, charId: rosterChar.charId,
+      class: rosterChar.class, spec: rosterChar.spec,
       role: rosterChar.role, status: rosterChar.status, ownerNick: rosterChar.ownerNick,
-      bis: approvedBis, specDefaults, loot, accountChars: accountCharNames, accountLoot, wornBis,
+      secondarySpecs:     charSpecs.secondary,
+      pendingPrimarySpec: charSpecs.pending,
+      bis: approvedBis, specDefaults,
+      bisBySpec, defaultsBySpec,
+      loot, accountChars: accountCharNames, accountLoot, wornBisBySpec,
     });
   } catch (err) {
     console.error('[ROSTER] Character detail error:', err);
@@ -309,6 +329,62 @@ router.delete('/:charName', async (c) => {
   } catch (err) {
     console.error('[ROSTER] Delete error:', err);
     return c.json({ error: 'Failed to delete character' }, 500);
+  }
+});
+
+// ── POST /api/roster/:charName/secondary-specs ─────────────────────────────────
+// Officer sets the secondary spec list for a character.
+
+router.post('/:charName/secondary-specs', async (c) => {
+  const { teamSheetId } = c.get('session').user;
+  const charName        = c.req.param('charName');
+  const { specs = [], charId = null } = await c.req.json();
+  if (!Array.isArray(specs)) return c.json({ error: 'specs must be an array' }, 400);
+
+  try {
+    const roster      = await getRoster(teamSheetId);
+    const rosterChar  = roster.find(r =>
+      charId && r.charId ? r.charId === charId : r.charName.toLowerCase() === charName.toLowerCase()
+    );
+    if (!rosterChar) return c.json({ error: 'Character not found' }, 404);
+    if (!rosterChar.charId) return c.json({ error: 'Character has no charId — run the migration script first' }, 409);
+
+    const classSpecs = CLASS_SPECS[rosterChar.class] ?? [];
+    for (const s of specs) {
+      if (!classSpecs.includes(s))
+        return c.json({ error: `"${s}" is not a valid spec for class "${rosterChar.class}"` }, 400);
+      if (s === rosterChar.spec)
+        return c.json({ error: `"${s}" is already the primary spec — cannot be secondary` }, 400);
+    }
+
+    await setSecondarySpecs(teamSheetId, rosterChar.charId, specs);
+    return c.json({ ok: true, charName: rosterChar.charName, secondarySpecs: specs });
+  } catch (err) {
+    console.error('[ROSTER] Secondary specs error:', err);
+    return c.json({ error: 'Failed to update secondary specs' }, 500);
+  }
+});
+
+// ── POST /api/roster/:charName/spec-change ─────────────────────────────────────
+// Officer approves or rejects a pending primary spec change (mirrors BIS review endpoint).
+
+router.post('/:charName/spec-change', async (c) => {
+  const { teamSheetId } = c.get('session').user;
+  const charName        = c.req.param('charName');
+  const { charId, approve } = await c.req.json();
+  if (!charId)               return c.json({ error: 'charId is required' }, 400);
+  if (approve === undefined) return c.json({ error: 'approve (bool) is required' }, 400);
+  try {
+    if (approve) {
+      const { oldSpec, newSpec } = await approvePrimarySpecChange(teamSheetId, charId);
+      return c.json({ ok: true, oldSpec, newSpec });
+    } else {
+      await rejectPrimarySpecChange(teamSheetId, charId);
+      return c.json({ ok: true });
+    }
+  } catch (err) {
+    console.error('[ROSTER] Spec change error:', err);
+    return c.json({ error: 'Failed to process spec change' }, 500);
   }
 });
 

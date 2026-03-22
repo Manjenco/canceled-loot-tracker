@@ -13,7 +13,7 @@ import {
   getEffectiveDefaultBis, getRaids, getConfig, getTierSnapshot,
   getWornBis, primeTeamCache,
 } from '../../../lib/sheets.js';
-import { toCanonical, getArmorType, canUseWeapon } from '../../../lib/specs.js';
+import { toCanonical, getArmorType, canUseWeapon, getCharSpecs } from '../../../lib/specs.js';
 import { matchesBis } from '../../../lib/bis-match.js';
 import { log } from '../../../lib/logger.js';
 
@@ -39,11 +39,11 @@ function mergeTrack(a, b) {
   return (TRACK_ORDER[a] ?? -1) >= (TRACK_ORDER[b] ?? -1) ? a : b;
 }
 
-function getWornTracksForSlot(wornBisMap, charId, itemSlot) {
+function getWornTracksForSlot(wornBisMap, charId, spec, itemSlot) {
   const slots = SLOT_EXPANSIONS[itemSlot] ?? [itemSlot];
   const best  = { overallBISTrack: '', raidBISTrack: '', otherTrack: '' };
   for (const slot of slots) {
-    const w = wornBisMap.get(`${charId}:${slot}`);
+    const w = wornBisMap.get(`${charId}:${spec}:${slot}`);
     if (!w) continue;
     best.overallBISTrack = mergeTrack(best.overallBISTrack, w.overallBISTrack);
     best.raidBISTrack    = mergeTrack(best.raidBISTrack,    w.raidBISTrack);
@@ -56,6 +56,43 @@ function isEligible(item, charArmorType, canonSpec) {
   if (item.slot === 'Weapon' || item.slot === 'Off-Hand') return canUseWeapon(canonSpec, item.weaponType);
   if (item.armorType === 'Accessory' || item.armorType === 'Tier Token') return true;
   return charArmorType === item.armorType;
+}
+
+/**
+ * Compute BIS match fields for a single (char, spec, item) combination.
+ * @returns {{ overallBisMatch, raidBisMatch, hasRaidBis, effectiveTrueBis }}
+ */
+function computeSpecBisMatch(charKey, spec, item, itemSlot, approvedBis, defaultBisMap) {
+  const canonSpec  = toCanonical(spec);
+  const armorType  = getArmorType(canonSpec);
+
+  let personalSub = null;
+  for (const key of [charKey + '|' + itemSlot, charKey + '|' + itemSlot + ' 1', charKey + '|' + itemSlot + ' 2']) {
+    // Match approved BIS to this spec
+    const sub = approvedBis[key];
+    if (sub && (!sub.spec || sub.spec.toLowerCase() === spec.toLowerCase())) { personalSub = sub; break; }
+  }
+
+  const defRow = defaultBisMap[canonSpec + '|' + itemSlot]
+              ?? defaultBisMap[canonSpec + '|' + itemSlot + ' 1']
+              ?? defaultBisMap[canonSpec + '|' + itemSlot + ' 2']
+              ?? null;
+
+  const effectiveTrueBis   = personalSub?.trueBis      ?? defRow?.trueBis      ?? '';
+  const effectiveTrueBisId = personalSub?.trueBisItemId ?? defRow?.trueBisItemId ?? '';
+  const effectiveRaidBis   = personalSub?.raidBis      ?? defRow?.raidBis      ?? '';
+  const effectiveRaidBisId = personalSub?.raidBisItemId ?? defRow?.raidBisItemId ?? '';
+
+  let overallBisMatch;
+  if (effectiveTrueBis === '<Crafted>') overallBisMatch = 'crafted';
+  else if (effectiveTrueBis === '<Catalyst>') overallBisMatch = 'catalyst';
+  else overallBisMatch = matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot);
+
+  const resolvedRaidBis   = effectiveRaidBis   || (effectiveTrueBis !== '<Crafted>' ? effectiveTrueBis   : '');
+  const resolvedRaidBisId = effectiveRaidBisId || (effectiveTrueBis !== '<Crafted>' ? effectiveTrueBisId : '');
+  const raidBisMatch      = resolvedRaidBis ? matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, itemSlot) : false;
+
+  return { overallBisMatch, raidBisMatch, hasRaidBis: Boolean(resolvedRaidBis), effectiveTrueBis };
 }
 
 router.get('/items', async (c) => {
@@ -166,46 +203,42 @@ router.get('/candidates', async (c) => {
     const candidates = [];
     for (const char of roster) {
       if (char.status === 'Inactive') continue;
-      const canonSpec = toCanonical(char.spec);
-      const armorType = getArmorType(canonSpec);
-      if (!isEligible(item, armorType, canonSpec)) continue;
+      const charKey  = char.charId || char.charName.toLowerCase();
+      const charSpec = getCharSpecs(char);
 
-      let personalSub = null;
-      const charKey = char.charId || char.charName.toLowerCase();
-      for (const key of [charKey + '|' + itemSlot, charKey + '|' + itemSlot + ' 1', charKey + '|' + itemSlot + ' 2']) {
-        if (approvedBis[key]) { personalSub = approvedBis[key]; break; }
-      }
+      // Primary spec eligibility
+      const primaryCanon   = toCanonical(charSpec.primary);
+      const primaryArmor   = getArmorType(primaryCanon);
+      if (!isEligible(item, primaryArmor, primaryCanon)) continue;
 
-      const defRow = defaultBisMap[canonSpec + '|' + itemSlot]
-                  ?? defaultBisMap[canonSpec + '|' + itemSlot + ' 1']
-                  ?? defaultBisMap[canonSpec + '|' + itemSlot + ' 2']
-                  ?? null;
+      const { overallBisMatch, raidBisMatch, hasRaidBis } =
+        computeSpecBisMatch(charKey, charSpec.primary, item, itemSlot, approvedBis, defaultBisMap);
 
-      const effectiveTrueBis   = personalSub?.trueBis      ?? defRow?.trueBis      ?? '';
-      const effectiveTrueBisId = personalSub?.trueBisItemId ?? defRow?.trueBisItemId ?? '';
-      const effectiveRaidBis   = personalSub?.raidBis      ?? defRow?.raidBis      ?? '';
-      const effectiveRaidBisId = personalSub?.raidBisItemId ?? defRow?.raidBisItemId ?? '';
-
-      let overallBisMatch;
-      if (effectiveTrueBis === '<Crafted>') overallBisMatch = 'crafted';
-      else if (effectiveTrueBis === '<Catalyst>' && matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot)) overallBisMatch = 'catalyst';
-      else overallBisMatch = matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot);
-
-      const resolvedRaidBis   = effectiveRaidBis   || (effectiveTrueBis   !== '<Crafted>' ? effectiveTrueBis   : '');
-      const resolvedRaidBisId = effectiveRaidBisId || (effectiveTrueBis   !== '<Crafted>' ? effectiveTrueBisId : '');
-      const raidBisRaw   = resolvedRaidBis ? matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, itemSlot) : false;
-      const raidBisMatch = (raidBisRaw === true && resolvedRaidBis === '<Catalyst>') ? 'catalyst' : raidBisRaw;
-
-      const s    = stats[char.charId || char.charName.toLowerCase()]  ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
+      const s    = stats[charKey] ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
       const acct = acctStats[char.ownerId] ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
+
+      // Secondary spec BIS matches — only for specs eligible for this item
+      const secondarySpecCandidates = charSpec.secondary
+        .filter(spec => {
+          const canonSpec = toCanonical(spec);
+          const armorType = getArmorType(canonSpec);
+          return isEligible(item, armorType, canonSpec);
+        })
+        .map(spec => {
+          const { overallBisMatch: ovm, raidBisMatch: rbm, hasRaidBis: hrb } =
+            computeSpecBisMatch(charKey, spec, item, itemSlot, approvedBis, defaultBisMap);
+          return { spec, overallBisMatch: ovm, raidBisMatch: rbm, hasRaidBis: hrb,
+            wornBis: getWornTracksForSlot(wornBisMap, char.charId, spec, itemSlot) };
+        });
 
       candidates.push({
         charName: char.charName, class: char.class, spec: char.spec, role: char.role, status: char.status,
         bisH: s.bisH, bisM: s.bisM, nonBisH: s.nonBisH, nonBisM: s.nonBisM,
         acctBisH: acct.bisH, acctBisM: acct.bisM, acctNonBisH: acct.nonBisH, acctNonBisM: acct.nonBisM,
         raidsAttended: raidsByOwner[char.ownerId] ?? 0,
-        overallBisMatch, raidBisMatch, hasRaidBis: Boolean(resolvedRaidBis),
-        wornBis: getWornTracksForSlot(wornBisMap, char.charId, itemSlot),
+        overallBisMatch, raidBisMatch, hasRaidBis,
+        wornBis: getWornTracksForSlot(wornBisMap, char.charId, char.spec, itemSlot),
+        secondarySpecCandidates,
         ...(item.isTierToken && { tierSlots: tierSnapshotMap.get(char.charId) ?? {} }),
       });
     }

@@ -1,8 +1,9 @@
 /**
  * bis.js — Raider BIS submission routes.
  *
- * GET  /api/bis
- * POST /api/bis
+ * GET  /api/bis                      — load BIS slots for a spec
+ * POST /api/bis                      — save BIS updates for a spec
+ * POST /api/bis/request-spec-change  — request promotion of a secondary spec to primary
  */
 
 import { Hono } from 'hono';
@@ -11,8 +12,9 @@ import {
   getBisSubmissions, getItemDb, getEffectiveDefaultBis, applyRaidBisInference,
   batchUpsertBisSubmissions, clearPendingBisSubmission, clearRejectedBisSubmission,
   clearBisSubmission, resetBisRaidBisField,
+  getRoster, setPendingPrimarySpec,
 } from '../../../lib/sheets.js';
-import { toCanonical, getArmorType, canUseWeapon, canDualWield } from '../../../lib/specs.js';
+import { toCanonical, getArmorType, canUseWeapon, canDualWield, CLASS_SPECS, getCharSpecs } from '../../../lib/specs.js';
 
 const ALL_SLOTS = [
   'Head', 'Neck', 'Shoulders', 'Back', 'Chest', 'Wrists',
@@ -60,22 +62,39 @@ router.use('*', requireAuth);
 // ── GET /api/bis ───────────────────────────────────────────────────────────────
 
 router.get('/', async (c) => {
-  const { teamSheetId, charId, charName, spec } = c.get('session').user;
+  const { teamSheetId, charId, charName } = c.get('session').user;
   if (!teamSheetId) return c.json({ noTeam: true });
 
   try {
-    const [submissions, itemDb, effectiveBis] = await Promise.all([
+    const [roster, submissions, itemDb, effectiveBis] = await Promise.all([
+      getRoster(teamSheetId),
       getBisSubmissions(teamSheetId),
       getItemDb(),
       getEffectiveDefaultBis(),
     ]);
 
-    const canonicalSpec = toCanonical(spec);
+    // Resolve character and their available specs
+    const rosterEntry = roster.find(r =>
+      charId && r.charId ? r.charId === charId : r.charName.toLowerCase() === charName.toLowerCase()
+    );
+    const charSpecs = rosterEntry ? getCharSpecs(rosterEntry) : { primary: c.get('session').user.spec, secondary: [], pending: null, all: [c.get('session').user.spec] };
+
+    // Determine which spec to show — ?spec= param or primary
+    const requestedSpec = c.req.query('spec') || charSpecs.primary;
+    if (!charSpecs.all.includes(requestedSpec)) {
+      return c.json({ error: `Spec "${requestedSpec}" is not available for this character` }, 400);
+    }
+    const activeSpec    = requestedSpec;
+    const canonicalSpec = toCanonical(activeSpec);
     const armorType     = getArmorType(canonicalSpec);
 
     const bySlot = Object.fromEntries(
       submissions
-        .filter(s => (charId && s.charId ? s.charId === charId : s.charName.toLowerCase() === charName.toLowerCase()))
+        .filter(s => {
+          const charMatch = charId && s.charId ? s.charId === charId : s.charName.toLowerCase() === charName.toLowerCase();
+          const specMatch = s.spec ? s.spec.toLowerCase() === activeSpec.toLowerCase() : true; // legacy fallback
+          return charMatch && specMatch;
+        })
         .map(s => [s.slot, s])
     );
 
@@ -116,7 +135,13 @@ router.get('/', async (c) => {
       };
     });
 
-    return c.json({ charName, spec, slots });
+    return c.json({
+      charName,
+      spec:           activeSpec,
+      availableSpecs: charSpecs.all.map(s => ({ spec: s, isPrimary: s === charSpecs.primary })),
+      pendingSpecChange: charSpecs.pending,
+      slots,
+    });
   } catch (err) {
     console.error('[BIS] GET error:', err);
     return c.json({ error: 'Failed to load BIS data' }, 500);
@@ -126,14 +151,21 @@ router.get('/', async (c) => {
 // ── POST /api/bis ──────────────────────────────────────────────────────────────
 
 router.post('/', async (c) => {
-  const { updates } = await c.req.json();
+  const body = await c.req.json();
+  const { updates, spec: bodySpec } = body;
   if (!Array.isArray(updates) || !updates.length) {
     return c.json({ error: 'updates[] is required' }, 400);
   }
 
-  const { teamSheetId, charId, charName, spec } = c.get('session').user;
+  const { teamSheetId, charId, charName } = c.get('session').user;
   if (!teamSheetId) return c.json({ error: 'No team configured' }, 400);
   if (!charName)    return c.json({ error: 'No character linked to this account' }, 400);
+
+  // Determine active spec — from request body (multi-spec) or session fallback
+  const roster      = await getRoster(teamSheetId);
+  const rosterEntry = roster.find(r => charId && r.charId ? r.charId === charId : r.charName.toLowerCase() === charName.toLowerCase());
+  const charSpecs   = rosterEntry ? getCharSpecs(rosterEntry) : { primary: c.get('session').user.spec, secondary: [], all: [c.get('session').user.spec] };
+  const spec        = bodySpec && charSpecs.all.includes(bodySpec) ? bodySpec : charSpecs.primary;
 
   const validSlots = new Set(ALL_SLOTS);
 
@@ -189,6 +221,42 @@ router.post('/', async (c) => {
   } catch (err) {
     console.error('[BIS] POST error:', err);
     return c.json({ error: 'Failed to save BIS submissions' }, 500);
+  }
+});
+
+// ── POST /api/bis/request-spec-change ─────────────────────────────────────────
+// Raider requests that one of their secondary specs becomes primary.
+// Requires officer approval via /api/admin/bis-review/spec-change.
+
+router.post('/request-spec-change', async (c) => {
+  const { teamSheetId, charId, charName } = c.get('session').user;
+  if (!teamSheetId) return c.json({ error: 'No team configured' }, 400);
+  if (!charName)    return c.json({ error: 'No character linked to this account' }, 400);
+
+  const { newPrimarySpec } = await c.req.json();
+  if (!newPrimarySpec) return c.json({ error: 'newPrimarySpec is required' }, 400);
+
+  try {
+    const roster      = await getRoster(teamSheetId);
+    const rosterEntry = roster.find(r => charId && r.charId ? r.charId === charId : r.charName.toLowerCase() === charName.toLowerCase());
+    if (!rosterEntry) return c.json({ error: 'Character not found in roster' }, 404);
+
+    const charSpecs = getCharSpecs(rosterEntry);
+
+    // Can only promote an existing secondary spec
+    if (!charSpecs.secondary.includes(newPrimarySpec)) {
+      return c.json({ error: `"${newPrimarySpec}" is not a secondary spec for this character` }, 400);
+    }
+    // Reject if a change is already pending
+    if (charSpecs.pending) {
+      return c.json({ error: `A spec change to "${charSpecs.pending}" is already pending officer approval` }, 409);
+    }
+
+    await setPendingPrimarySpec(teamSheetId, rosterEntry.charId, newPrimarySpec);
+    return c.json({ ok: true, pending: newPrimarySpec });
+  } catch (err) {
+    console.error('[BIS] request-spec-change error:', err);
+    return c.json({ error: 'Failed to submit spec change request' }, 500);
   }
 });
 

@@ -288,7 +288,9 @@ function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
     const overallId  = src.trueBisItemId  ?? '';
     const raid       = src.raidBis        ?? '';
     const raidId     = src.raidBisItemId  ?? '';
-    const isPersonal = !!personal;
+    // Show "Personal" badge only in the column where the personal value differs from default.
+    const isPersonalOverall = !!personal && overall !== (def?.trueBis ?? '');
+    const isPersonalRaid    = !!personal && raid    !== (def?.raidBis ?? '');
 
     const worn = wornBis[slot] ?? {};
     const effectiveRaidTrack = worn.raidBISTrack ||
@@ -297,7 +299,7 @@ function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
     const maxed    = worn.overallBISTrack === 'Mythic';
     const slotBest = bestTrack(worn.overallBISTrack, worn.raidBISTrack, worn.otherTrack);
 
-    return [{ slot, overall, overallId, raid, raidId, isPersonal, worn: displayWorn, maxed, slotBest }];
+    return [{ slot, overall, overallId, raid, raidId, isPersonalOverall, isPersonalRaid, worn: displayWorn, maxed, slotBest }];
   });
 
   if (!rows.length) return <p className="empty">No BIS data available for this spec.</p>;
@@ -321,7 +323,7 @@ function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
               <tr className="bis-group-header-row">
                 <td colSpan={4} className="bis-group-header">{group.label}</td>
               </tr>
-              {groupRows.map(({ slot, overall, overallId, raid, raidId, isPersonal, worn, maxed, slotBest }) => (
+              {groupRows.map(({ slot, overall, overallId, raid, raidId, isPersonalOverall, isPersonalRaid, worn, maxed, slotBest }) => (
                 <tr key={slot} className={maxed ? 'bis-row-received' : ''}>
                   <td className="bis-slot">{slot}</td>
                   <td>
@@ -330,7 +332,7 @@ function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
                       itemId={overallId}
                       className={SENTINELS.has(overall) ? 'bis-sentinel' : undefined}
                     />
-                    {isPersonal && <span className="badge badge-personal">Personal</span>}
+                    {isPersonalOverall && <span className="badge badge-personal">Personal</span>}
                     <TrackBadge track={worn.overallBISTrack} />
                   </td>
                   <td>
@@ -339,6 +341,7 @@ function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
                       itemId={raidId}
                       className={SENTINELS.has(raid) ? 'bis-sentinel' : 'text-muted'}
                     />
+                    {isPersonalRaid && <span className="badge badge-personal">Personal</span>}
                     <TrackBadge track={worn.raidBISTrack} />
                   </td>
                   <td className="bis-col-best"><TrackBadge track={slotBest} /></td>
@@ -426,23 +429,79 @@ function AccountWidget({ accountChars, accountLoot, currentChar }) {
 // ── Character detail panel ─────────────────────────────────────────────────────
 
 function CharacterDetail({ charName, onClose }) {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState(null);
+  const [data,         setData]         = useState(null);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState(null);
+  const [activeSpec,   setActiveSpec]   = useState(null);
+  const [specBusy,     setSpecBusy]     = useState(false);
+  const [specMsg,      setSpecMsg]      = useState(null);
+  const [showAddSpec,  setShowAddSpec]  = useState(false);
+  const [addSpecValue, setAddSpecValue] = useState('');
 
-  useEffect(() => {
+  const reload = () => {
     setLoading(true);
     setError(null);
-    setData(null);
     fetch(apiPath(`/api/roster/${encodeURIComponent(charName)}`), { credentials: 'include' })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(d => { setData(d); setLoading(false); })
+      .then(d => { setData(d); setActiveSpec(s => s ?? d.spec); setLoading(false); })
       .catch(() => { setError(true); setLoading(false); });
-  }, [charName]);
+  };
 
-  useEffect(() => {
-    if (data) window.$WowheadPower?.refreshLinks();
-  }, [data]);
+  useEffect(() => { reload(); }, [charName]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (data) window.$WowheadPower?.refreshLinks(); }, [data]);
+
+  const handleSecondarySpecRemove = async (specToRemove) => {
+    if (!data) return;
+    setSpecBusy(true); setSpecMsg(null);
+    const newList = (data.secondarySpecs ?? []).filter(s => s !== specToRemove);
+    try {
+      const res = await fetch(apiPath(`/api/roster/${encodeURIComponent(data.charName)}/secondary-specs`), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ specs: newList, charId: data.charId }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.status);
+      reload();
+    } catch (err) { setSpecMsg(`Error: ${err.message}`); }
+    finally { setSpecBusy(false); }
+  };
+
+  const handleSecondarySpecAdd = async () => {
+    if (!data || !addSpecValue) return;
+    setSpecBusy(true); setSpecMsg(null);
+    const newList = [...new Set([...(data.secondarySpecs ?? []), addSpecValue])];
+    try {
+      const res = await fetch(apiPath(`/api/roster/${encodeURIComponent(data.charName)}/secondary-specs`), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ specs: newList, charId: data.charId }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.status);
+      setShowAddSpec(false); setAddSpecValue('');
+      reload();
+    } catch (err) { setSpecMsg(`Error: ${err.message}`); }
+    finally { setSpecBusy(false); }
+  };
+
+  const handleSpecChange = async (approve) => {
+    if (!data) return;
+    setSpecBusy(true); setSpecMsg(null);
+    try {
+      const res = await fetch(apiPath(`/api/roster/${encodeURIComponent(data.charName)}/spec-change`), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ charId: data.charId, approve }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.status);
+      reload();
+    } catch (err) { setSpecMsg(`Error: ${err.message}`); }
+    finally { setSpecBusy(false); }
+  };
+
+  const allSpecs        = data ? [data.spec, ...(data.secondarySpecs ?? [])] : [];
+  const addableSpecs    = data ? (CLASS_SPECS[data.class] ?? []).filter(s => !allSpecs.includes(s)) : [];
+  const bisForSpec      = activeSpec && data?.bisBySpec ? (data.bisBySpec[activeSpec] ?? data.bis) : data?.bis;
+  const defaultsForSpec = activeSpec && data?.defaultsBySpec ? (data.defaultsBySpec[activeSpec] ?? data.specDefaults) : data?.specDefaults;
 
   return (
     <div className="roster-detail">
@@ -453,7 +512,28 @@ function CharacterDetail({ charName, onClose }) {
             : data && (
               <>
                 <span className="roster-detail-name">{data.charName}</span>
-                <span className="roster-detail-spec">{data.spec}</span>
+                <span className="roster-detail-spec">{data.spec} (primary)</span>
+                {(data.secondarySpecs ?? []).map(s => (
+                  <span key={s} className="roster-detail-spec roster-detail-spec-secondary">
+                    {s}
+                    <button className="spec-remove-btn" title="Remove secondary spec" disabled={specBusy}
+                      onClick={() => handleSecondarySpecRemove(s)}>✕</button>
+                  </span>
+                ))}
+                {addableSpecs.length > 0 && !showAddSpec && (
+                  <button className="btn-secondary spec-add-btn" disabled={specBusy}
+                    onClick={() => setShowAddSpec(true)}>+ Add Spec</button>
+                )}
+                {showAddSpec && (
+                  <span className="spec-add-inline">
+                    <select value={addSpecValue} onChange={e => setAddSpecValue(e.target.value)}>
+                      <option value="">Select spec…</option>
+                      {addableSpecs.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <button className="btn-primary" disabled={!addSpecValue || specBusy} onClick={handleSecondarySpecAdd}>Add</button>
+                    <button className="btn-secondary" onClick={() => { setShowAddSpec(false); setAddSpecValue(''); }}>Cancel</button>
+                  </span>
+                )}
                 <span className={`badge ${STATUS_BADGE[data.status] ?? ''}`}>{data.status}</span>
                 {data.ownerNick && <span className="roster-detail-owner">@{data.ownerNick}</span>}
               </>
@@ -463,6 +543,16 @@ function CharacterDetail({ charName, onClose }) {
         <button className="roster-detail-close" onClick={onClose} title="Close">✕</button>
       </div>
 
+      {data?.pendingPrimarySpec && (
+        <div className="spec-change-pending-banner">
+          Spec change pending: → <strong>{data.pendingPrimarySpec}</strong>
+          <button className="btn-approve btn-sm" disabled={specBusy} onClick={() => handleSpecChange(true)}>Approve</button>
+          <button className="btn-reject  btn-sm" disabled={specBusy} onClick={() => handleSpecChange(false)}>Reject</button>
+        </div>
+      )}
+
+      {specMsg && <div className="error" style={{margin:'4px 0'}}>{specMsg}</div>}
+
       {loading && <div className="loading">Loading…</div>}
       {error   && <div className="error">Failed to load character data.</div>}
 
@@ -470,7 +560,18 @@ function CharacterDetail({ charName, onClose }) {
         <>
           <section className="card">
             <h3 className="card-title">BIS Status</h3>
-            <BisTable bis={data.bis} specDefaults={data.specDefaults} loot={data.loot} wornBis={data.wornBis ?? {}} />
+            {allSpecs.length > 1 && (
+              <div className="spec-tabs" style={{marginBottom:12}}>
+                {allSpecs.map(s => (
+                  <button key={s}
+                    className={`spec-tab${s === activeSpec ? ' spec-tab-active' : ''}`}
+                    onClick={() => setActiveSpec(s)}>
+                    {s}{s === data.spec ? ' ★' : ''}
+                  </button>
+                ))}
+              </div>
+            )}
+            <BisTable bis={bisForSpec} specDefaults={defaultsForSpec} loot={data.loot} wornBis={(data.wornBisBySpec ?? {})[activeSpec] ?? {}} />
           </section>
 
           <section className="card">

@@ -264,19 +264,50 @@ function PlayerGroup({ group, isExpanded, onToggle, onApprove, onReject }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+// ── Spec change card ───────────────────────────────────────────────────────────
+
+function SpecChangeCard({ req, onApprove, onReject }) {
+  const [busy, setBusy] = useState(false);
+
+  const act = async (approve) => {
+    setBusy(true);
+    try { await (approve ? onApprove(req.charId) : onReject(req.charId)); }
+    catch { setBusy(false); }
+  };
+
+  return (
+    <div className="review-spec-change-card">
+      <span className="review-spec-change-char">{req.charName}</span>
+      <span className="review-spec-change-arrow">
+        {req.currentSpec} <span className="arrow">→</span> {req.requestedSpec}
+      </span>
+      <div className="review-spec-change-actions">
+        <button className="btn btn-approve" disabled={busy} onClick={() => act(true)}>Approve</button>
+        <button className="btn btn-reject"  disabled={busy} onClick={() => act(false)}>Reject</button>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminBisReview() {
-  const [groups,       setGroups]       = useState([]);
-  const [pending,      setPending]      = useState(0);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState(null);
-  const [expandedChar, setExpandedChar] = useState(null);
+  const [groups,            setGroups]           = useState([]);
+  const [specChangeReqs,    setSpecChangeReqs]    = useState([]);
+  const [pending,           setPending]           = useState(0);
+  const [loading,           setLoading]           = useState(true);
+  const [error,             setError]             = useState(null);
+  const [expandedChar,      setExpandedChar]      = useState(null);
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
     fetch(apiPath('/api/admin/bis-review'), { credentials: 'include' })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(d => { setGroups(d.groups); setPending(d.pending); setLoading(false); })
+      .then(d => {
+        setGroups(d.groups);
+        setPending(d.pending);
+        setSpecChangeReqs(d.specChangeRequests ?? []);
+        setLoading(false);
+      })
       .catch(() => { setError('Failed to load BIS review queue.'); setLoading(false); });
   }, []);
 
@@ -319,19 +350,57 @@ export default function AdminBisReview() {
     removeSubmission(id);
   };
 
+  const handleSpecChangeApprove = async (charId) => {
+    const res = await fetch(apiPath('/api/admin/bis-review/spec-change'), {
+      method:      'POST',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ charId, approve: true }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    setSpecChangeReqs(prev => prev.filter(r => r.charId !== charId));
+  };
+
+  const handleSpecChangeReject = async (charId) => {
+    const res = await fetch(apiPath('/api/admin/bis-review/spec-change'), {
+      method:      'POST',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ charId, approve: false }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    setSpecChangeReqs(prev => prev.filter(r => r.charId !== charId));
+  };
+
   if (loading) return <div className="loading">Loading BIS review queue…</div>;
   if (error)   return <div className="error">{error}</div>;
+
+  const totalPending = pending + specChangeReqs.length;
 
   return (
     <div className="review-page">
       <div className="page-header">
         <h2 className="page-title">
           BIS Review
-          {pending > 0 && (
-            <span className="review-pending-count">{pending} pending</span>
+          {totalPending > 0 && (
+            <span className="review-pending-count">{totalPending} pending</span>
           )}
         </h2>
       </div>
+
+      {specChangeReqs.length > 0 && (
+        <div className="card review-spec-changes">
+          <h3 className="card-title">Pending Spec Changes</h3>
+          {specChangeReqs.map(req => (
+            <SpecChangeCard
+              key={req.charId}
+              req={req}
+              onApprove={handleSpecChangeApprove}
+              onReject={handleSpecChangeReject}
+            />
+          ))}
+        </div>
+      )}
 
       {groups.length === 0 ? (
         <div className="card">

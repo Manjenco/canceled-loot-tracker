@@ -16,9 +16,10 @@ import {
   getDefaultBis, getDefaultBisOverrides, getItemDb, getSpecBisConfig, setSpecBisSource,
   applyRaidBisInference, updateDefaultBisOverrides, getBisSubmissions,
   approveBisSubmission, rejectBisSubmission, getConfig, clearWornBis,
-  invalidateWornBisSlots, getRoster,
+  invalidateWornBisSlots, getRoster, approvePrimarySpecChange, rejectPrimarySpecChange,
+  getEffectiveDefaultBis,
 } from '../../../lib/sheets.js';
-import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand } from '../../../lib/specs.js';
+import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
 import { getAllTeams } from '../../../lib/teams.js';
 import { runWclSyncForTeam, runWclSyncWornBisOnly } from '../../../lib/wcl-sync.js';
 
@@ -228,8 +229,8 @@ router.get('/bis-review', requireOfficer, async (c) => {
   const { teamSheetId } = c.get('session').user;
   if (!teamSheetId) return c.json({ error: 'No team sheet configured' }, 400);
   try {
-    const [allSubmissions, itemDb, allDefaults, specConfig] = await Promise.all([
-      getBisSubmissions(teamSheetId), getItemDb(), getDefaultBis(), getSpecBisConfig(),
+    const [allSubmissions, itemDb, effectiveDefaults, roster] = await Promise.all([
+      getBisSubmissions(teamSheetId), getItemDb(), getEffectiveDefaultBis(), getRoster(teamSheetId),
     ]);
 
     const itemByName = new Map(itemDb.map(i => [i.name.toLowerCase(), i]));
@@ -240,26 +241,26 @@ router.get('/bis-review', requireOfficer, async (c) => {
       return { itemId: String(item.itemId ?? ''), difficulty: item.difficulty ?? '', sourceType: item.sourceType ?? '', sourceName: item.sourceName ?? '' };
     };
 
+    // Build specDefaultByKey from effective defaults (seed rows + officer overrides, preferred source).
+    // Uses getEffectiveDefaultBis() so any Raid BIS set via the admin page is reflected here.
     const specDefaultByKey = new Map();
-    for (const canonSpec of [...new Set(allDefaults.map(r => toCanonical(r.spec)))]) {
-      const specRows  = allDefaults.filter(r => toCanonical(r.spec) === canonSpec);
-      const sources   = [...new Set(specRows.map(r => r.source).filter(Boolean))];
-      const preferred = specConfig.get(canonSpec);
-      const source    = (preferred && sources.includes(preferred)) ? preferred : (sources[0] ?? '');
-      for (const row of applyRaidBisInference(specRows.filter(r => r.source === source), itemDb)) {
-        if (!row.trueBis) continue;
-        specDefaultByKey.set(canonSpec + '::' + row.slot, { trueBis: row.trueBis ?? '', raidBis: row.raidBis ?? '', source });
-      }
+    for (const row of applyRaidBisInference(effectiveDefaults, itemDb)) {
+      if (!row.trueBis) continue;
+      const canonSpec = toCanonical(row.spec);
+      specDefaultByKey.set(canonSpec + '::' + row.slot, { trueBis: row.trueBis ?? '', raidBis: row.raidBis ?? '', source: row.source ?? '' });
     }
 
     const approvedByKey = new Map();
     for (const s of allSubmissions) {
       if (s.status !== 'Approved') continue;
-      approvedByKey.set(s.charName + '::' + s.slot, { trueBis: s.trueBis ?? '', raidBis: s.raidBis ?? '' });
+      // Key includes spec so multi-spec characters get the correct current value per spec.
+      // Use charName (always populated) rather than charId to avoid mismatches when charId
+      // isn't consistently present across approved vs pending rows.
+      approvedByKey.set(s.charName + '::' + (s.spec ?? '') + '::' + s.slot, { trueBis: s.trueBis ?? '', raidBis: s.raidBis ?? '' });
     }
 
     const resolveCurrent = (charName, spec, slot) => {
-      const approved = approvedByKey.get(charName + '::' + slot);
+      const approved = approvedByKey.get(charName + '::' + (spec ?? '') + '::' + slot);
       if (approved) return { ...approved, isDefault: false, defaultSource: null };
       const def = specDefaultByKey.get(toCanonical(spec) + '::' + slot);
       if (def)      return { ...def,      isDefault: true,  defaultSource: def.source ?? null };
@@ -283,7 +284,17 @@ router.get('/bis-review', requireOfficer, async (c) => {
         rationale: s.rationale, submittedAt: s.submittedAt,
       });
     }
-    return c.json({ pending: pending.length, groups: [...groupMap.values()] });
+    // Spec change requests — characters with a pending primary spec change
+    const specChangeRequests = roster
+      .filter(r => r.pendingPrimarySpec)
+      .map(r => ({
+        charName:     r.charName,
+        charId:       r.charId,
+        currentSpec:  r.spec,
+        requestedSpec: r.pendingPrimarySpec,
+      }));
+
+    return c.json({ pending: pending.length, groups: [...groupMap.values()], specChangeRequests });
   } catch (err) {
     console.error('[ADMIN] bis-review GET error:', err);
     return c.json({ error: 'Failed to load BIS review queue' }, 500);
@@ -329,6 +340,29 @@ router.post('/bis-review/reject', requireOfficer, async (c) => {
   } catch (err) {
     console.error('[ADMIN] bis-review reject error:', err);
     return c.json({ error: 'Failed to reject submission' }, 500);
+  }
+});
+
+// ── POST /api/admin/bis-review/spec-change ─────────────────────────────────────
+// Officer approves or rejects a pending primary spec change request.
+
+router.post('/bis-review/spec-change', requireOfficer, async (c) => {
+  const { charId, approve } = await c.req.json();
+  if (!charId)           return c.json({ error: 'charId is required' }, 400);
+  if (approve === undefined) return c.json({ error: 'approve (bool) is required' }, 400);
+  const { teamSheetId } = c.get('session').user;
+  if (!teamSheetId) return c.json({ error: 'No team sheet configured' }, 400);
+  try {
+    if (approve) {
+      const { oldSpec, newSpec } = await approvePrimarySpecChange(teamSheetId, charId);
+      return c.json({ ok: true, oldSpec, newSpec });
+    } else {
+      await rejectPrimarySpecChange(teamSheetId, charId);
+      return c.json({ ok: true });
+    }
+  } catch (err) {
+    console.error('[ADMIN] bis-review spec-change error:', err);
+    return c.json({ error: 'Failed to process spec change' }, 500);
   }
 });
 
