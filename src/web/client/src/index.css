@@ -1746,9 +1746,10 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .council-stat-bis    { color: var(--bis);    font-weight: 600; }
 .council-stat-nonbis { color: var(--nonbis); font-weight: 600; }
 
-.council-bis-yes     { color: var(--bis); font-weight: 700; font-size: 15px; }
-.council-bis-crafted { color: var(--text-muted); font-size: 11px; font-style: italic; }
-.council-bis-no      { color: var(--border); }
+.council-bis-yes      { color: var(--bis); font-weight: 700; font-size: 15px; }
+.council-bis-crafted  { color: var(--text-muted); font-size: 11px; font-style: italic; }
+.council-bis-catalyst { color: #7ab8f5; font-size: 11px; font-style: italic; }
+.council-bis-no       { color: var(--border); }
 
 .council-link-btn {
   background: none;

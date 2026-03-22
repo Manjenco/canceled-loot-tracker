@@ -188,11 +188,13 @@ router.get('/candidates', async (c) => {
 
       let overallBisMatch;
       if (effectiveTrueBis === '<Crafted>') overallBisMatch = 'crafted';
+      else if (effectiveTrueBis === '<Catalyst>' && matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot)) overallBisMatch = 'catalyst';
       else overallBisMatch = matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot);
 
       const resolvedRaidBis   = effectiveRaidBis   || (effectiveTrueBis   !== '<Crafted>' ? effectiveTrueBis   : '');
       const resolvedRaidBisId = effectiveRaidBisId || (effectiveTrueBis   !== '<Crafted>' ? effectiveTrueBisId : '');
-      const raidBisMatch      = resolvedRaidBis ? matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, itemSlot) : false;
+      const raidBisRaw   = resolvedRaidBis ? matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, itemSlot) : false;
+      const raidBisMatch = (raidBisRaw === true && resolvedRaidBis === '<Catalyst>') ? 'catalyst' : raidBisRaw;
 
       const s    = stats[char.charId || char.charName.toLowerCase()]  ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
       const acct = acctStats[char.ownerId] ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };

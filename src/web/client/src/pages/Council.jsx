@@ -256,8 +256,9 @@ function ItemGrid({ items, selectedItemId, onSelect }) {
 
 function BisIndicator({ match, track }) {
   const badge = <MiniTrackBadge track={track} />;
-  if (match === true)      return <span className="council-bis-yes" title="BIS match">✓{badge}</span>;
-  if (match === 'crafted') return <span className="council-bis-crafted" title="Crafted BIS">&lt;Crafted&gt;{badge}</span>;
+  if (match === true)       return <span className="council-bis-yes" title="BIS match">✓{badge}</span>;
+  if (match === 'crafted')  return <span className="council-bis-crafted" title="Crafted BIS">&lt;Crafted&gt;{badge}</span>;
+  if (match === 'catalyst') return <span className="council-bis-catalyst" title="Catalyst BIS">&lt;Catalyst&gt;{badge}</span>;
   return <span className="council-bis-no">—{badge}</span>;
 }
 
