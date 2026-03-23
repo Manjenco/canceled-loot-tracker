@@ -6,24 +6,31 @@
  * lines (talents, spells, professions, etc.) are ignored.
  */
 
-/** SimC slot name → canonical app slot name (matches BIS Submissions / Worn BIS). */
+/** SimC slot name → canonical app slot name (matches BIS Submissions / Worn BIS).
+ *  Both singular and plural forms are accepted by SimC; the addon typically exports
+ *  singular (shoulder, wrist, hand) so all variants are mapped here. */
 export const SIMC_SLOT_MAP = {
-  head:      'Head',
-  neck:      'Neck',
-  shoulders: 'Shoulders',
-  back:      'Back',
-  chest:     'Chest',
-  waist:     'Waist',
-  legs:      'Legs',
-  feet:      'Feet',
-  wrists:    'Wrists',
-  hands:     'Hands',
-  finger1:   'Ring 1',
-  finger2:   'Ring 2',
-  trinket1:  'Trinket 1',
-  trinket2:  'Trinket 2',
-  main_hand: 'Weapon',
-  off_hand:  'Off-Hand',
+  head:       'Head',
+  neck:       'Neck',
+  shoulder:   'Shoulders',
+  shoulders:  'Shoulders',
+  back:       'Back',
+  chest:      'Chest',
+  waist:      'Waist',
+  legs:       'Legs',
+  feet:       'Feet',
+  wrist:      'Wrists',
+  wrists:     'Wrists',
+  hand:       'Hands',
+  hands:      'Hands',
+  finger1:    'Ring 1',
+  ring1:      'Ring 1',
+  finger2:    'Ring 2',
+  ring2:      'Ring 2',
+  trinket1:   'Trinket 1',
+  trinket2:   'Trinket 2',
+  main_hand:  'Weapon',
+  off_hand:   'Off-Hand',
 };
 
 /**
