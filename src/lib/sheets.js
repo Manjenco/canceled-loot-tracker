@@ -1796,7 +1796,14 @@ export async function upsertWornBis(sheetId, rows) {
   for (const row of rows) {
     // Match on charId (col A) + slot (col C) + spec (col H)
     const rowIdx = existing.findIndex(r => r[0] === row.charId && r[2] === row.slot && (r[7] ?? '') === row.spec);
-    const cells  = [row.charId, row.charName, row.slot, row.overallBISTrack, row.raidBISTrack, row.otherTrack, now, row.spec];
+
+    // Merge with existing sheet values so tracks never decrease across sync runs
+    const ex = rowIdx >= 0 ? existing[rowIdx] : null;
+    const overallBISTrack = mergeTrack(ex?.[3] ?? '', row.overallBISTrack);
+    const raidBISTrack    = mergeTrack(ex?.[4] ?? '', row.raidBISTrack);
+    const otherTrack      = mergeTrack(ex?.[5] ?? '', row.otherTrack);
+
+    const cells = [row.charId, row.charName, row.slot, overallBISTrack, raidBISTrack, otherTrack, now, row.spec];
     if (rowIdx >= 0) {
       updates.push({ range: `Worn BIS!A${rowIdx + 2}:H${rowIdx + 2}`, values: [cells] });
     } else {
