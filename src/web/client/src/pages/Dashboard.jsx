@@ -220,12 +220,11 @@ function BisTable({ bis, specDefaults, loot, wornBis = {} }) {
   );
 }
 
-// ── SimC import ───────────────────────────────────────────────────────────────
+// ── SimC import panel (rendered inside the BIS Status card) ──────────────────
 
-function SimcImport({ activeSpec, onImported }) {
-  const [open,    setOpen]    = useState(false);
-  const [text,    setText]    = useState('');
-  const [status,  setStatus]  = useState(null); // null | 'loading' | { ok, message }
+function SimcPanel({ open, onClose, activeSpec, onImported }) {
+  const [text,   setText]   = useState('');
+  const [status, setStatus] = useState(null); // null | 'loading' | { ok, message }
 
   const handleSubmit = async () => {
     if (!text.trim()) return;
@@ -250,43 +249,38 @@ function SimcImport({ activeSpec, onImported }) {
     }
   };
 
+  if (!open) return null;
+
   return (
-    <section className="card">
-      <div className="card-title-row">
-        <h3 className="card-title">SimC Import</h3>
-        <button className="btn-secondary btn-sm" onClick={() => { setOpen(o => !o); setStatus(null); }}>
-          {open ? 'Cancel' : 'Import gear'}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-color, #333)' }}>
+      <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+        Paste your SimulationCraft export below. Only equipped gear is read — talents and other settings are ignored.
+      </p>
+      <textarea
+        value={text}
+        onChange={e => { setText(e.target.value); setStatus(null); }}
+        placeholder="Paste SimC export here…"
+        rows={8}
+        style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.8rem', resize: 'vertical', boxSizing: 'border-box' }}
+      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button
+          className="btn-primary btn-sm"
+          onClick={handleSubmit}
+          disabled={status === 'loading' || !text.trim()}
+        >
+          {status === 'loading' ? 'Importing…' : 'Import'}
         </button>
+        <button className="btn-secondary btn-sm" onClick={() => { onClose(); setStatus(null); setText(''); }}>
+          Cancel
+        </button>
+        {status && status !== 'loading' && (
+          <span style={{ fontSize: '0.85rem', color: status.ok ? 'var(--color-success, #4caf50)' : 'var(--color-danger, #e74c3c)' }}>
+            {status.message}
+          </span>
+        )}
       </div>
-      {open && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-            Paste your SimulationCraft export below. Only equipped gear is read — talents and other settings are ignored.
-          </p>
-          <textarea
-            value={text}
-            onChange={e => { setText(e.target.value); setStatus(null); }}
-            placeholder="Paste SimC export here…"
-            rows={8}
-            style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.8rem', resize: 'vertical', boxSizing: 'border-box' }}
-          />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button
-              className="btn-primary btn-sm"
-              onClick={handleSubmit}
-              disabled={status === 'loading' || !text.trim()}
-            >
-              {status === 'loading' ? 'Importing…' : 'Import'}
-            </button>
-            {status && status !== 'loading' && (
-              <span style={{ fontSize: '0.85rem', color: status.ok ? 'var(--color-success, #4caf50)' : 'var(--color-danger, #e74c3c)' }}>
-                {status.message}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
+    </div>
   );
 }
 
@@ -299,6 +293,7 @@ export default function Dashboard() {
   const [switching,    setSwitching]    = useState(false);
   const [error,        setError]        = useState(null);
   const [activeSpec,   setActiveSpec]   = useState(null);
+  const [simcOpen,     setSimcOpen]     = useState(false);
   const initialSelectDone              = useRef(false);
 
   const loadDashboard = useCallback((spec = null) => {
@@ -428,12 +423,17 @@ export default function Dashboard() {
       <section className="card">
         <div className="card-title-row">
           <h3 className="card-title">BIS Status</h3>
-          <Link
-            to={activeSpec && activeSpec !== (data.availableSpecs?.find(s => s.isPrimary)?.spec)
-              ? `/bis?spec=${encodeURIComponent(activeSpec)}`
-              : '/bis'}
-            className="btn-primary btn-sm"
-          >Edit BIS</Link>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-secondary btn-sm" onClick={() => setSimcOpen(o => !o)}>
+              SimC Import
+            </button>
+            <Link
+              to={activeSpec && activeSpec !== (data.availableSpecs?.find(s => s.isPrimary)?.spec)
+                ? `/bis?spec=${encodeURIComponent(activeSpec)}`
+                : '/bis'}
+              className="btn-primary btn-sm"
+            >Edit BIS</Link>
+          </div>
         </div>
         {(data.availableSpecs?.length ?? 0) > 1 && (
           <div className="spec-tabs" style={{marginBottom: 12}}>
@@ -475,9 +475,13 @@ export default function Dashboard() {
           loot={data.loot}
           wornBis={data.wornBis ?? {}}
         />
+        <SimcPanel
+          open={simcOpen}
+          onClose={() => setSimcOpen(false)}
+          activeSpec={activeSpec}
+          onImported={() => { setSimcOpen(false); loadDashboard(activeSpec); }}
+        />
       </section>
-
-      <SimcImport activeSpec={activeSpec} onImported={() => loadDashboard(activeSpec)} />
 
       <section className="card">
         <h3 className="card-title">Loot History</h3>
