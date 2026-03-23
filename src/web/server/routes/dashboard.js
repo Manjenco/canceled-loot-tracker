@@ -243,7 +243,22 @@ router.post('/simc', requireAuth, async (c) => {
       }
     }
 
-    // Write worn BIS (upsertWornBis merges best-ever with existing sheet data)
+    // Second pass: tier pieces can't be matched via matchesBis (they're not tokens).
+    // For slots where BIS is <Tier>, pull the track directly from the tierPieces map.
+    for (const [tierSlot, track] of tierPieces) {
+      const charBis = bisSlotMap.get(tierSlot);
+      if (!charBis) continue;
+      const matchesOverall = charBis.trueBis === '<Tier>';
+      const matchesRaid    = charBis.raidBis  === '<Tier>';
+      if (!matchesOverall && !matchesRaid) continue;
+      const prev = wornBisMap.get(tierSlot) ?? { overallBISTrack: '', raidBISTrack: '', otherTrack: '' };
+      wornBisMap.set(tierSlot, {
+        overallBISTrack: matchesOverall ? mergeTrack(prev.overallBISTrack, track) : prev.overallBISTrack,
+        raidBISTrack:    matchesRaid    ? mergeTrack(prev.raidBISTrack,    track) : prev.raidBISTrack,
+        otherTrack:      mergeTrack(prev.otherTrack, track),
+      });
+    }
+
     const wornBisRows = [...wornBisMap.entries()].map(([slot, tracks]) => ({
       charId:   rosterEntry.charId,
       charName: rosterEntry.charName,
