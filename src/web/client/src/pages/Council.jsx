@@ -42,7 +42,7 @@ function getRelevantTrack(c) {
   return worn.otherTrack ?? '';
 }
 
-function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroicWeight, nonBisWeight) {
+function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroicWeight, nonBisWeight, itemSlot) {
   const maxAttendance  = Math.max(...candidates.map(c => c.raidsAttended ?? 0), 1);
   const itemTrackRank  = TRACK_RANK[DIFFICULTY_TO_TRACK[selectedDifficulty] ?? 'Hero'];
   const tierScores     = TIER_DIST_SCORES[tierDistPriority] ?? TIER_DIST_SCORES['bonus-first'];
@@ -50,7 +50,9 @@ function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroi
   return [...candidates].map(c => {
     const isTierToken  = c.tierSlots !== undefined;
     const tierCount    = isTierToken ? Object.keys(c.tierSlots).length : 0;
-    const tierDistPts  = isTierToken ? (tierScores[Math.min(tierCount, 4)] ?? 0) : 0;
+    // No tier dist benefit if the character already owns tier for this specific slot
+    const alreadyHasSlot = isTierToken && itemSlot && c.tierSlots[itemSlot] !== undefined;
+    const tierDistPts  = isTierToken && !alreadyHasSlot ? (tierScores[Math.min(tierCount, 4)] ?? 0) : 0;
 
     const bisMatchPoints = c.overallBisMatch === true      ? 4
       : c.overallBisMatch === 'catalyst'                   ? 3
@@ -555,7 +557,7 @@ function CandidateTable({ itemId, showAll, onToggle, selectedDifficulty, tierDis
 
   const { item, candidates } = data;
   const filtered = showAll ? candidates : candidates.filter(c => c.raidBisMatch);
-  const sorted   = scoreCandidates(filtered, selectedDifficulty, tierDistributionPriority, heroicWeight, nonBisWeight);
+  const sorted   = scoreCandidates(filtered, selectedDifficulty, tierDistributionPriority, heroicWeight, nonBisWeight, item.slot);
 
   return (
     <div className="council-candidates">
