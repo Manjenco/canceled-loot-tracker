@@ -9,6 +9,8 @@
 
 import { apiPath } from '../lib/api.js';
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { useMe } from '../hooks/useMe.js';
 
 // ── Item meta label ───────────────────────────────────────────────────────────
 
@@ -20,21 +22,145 @@ function itemMeta(item) {
   return item.slot;
 }
 
-// ── Sort helpers ──────────────────────────────────────────────────────────────
+// ── Scoring & tags ────────────────────────────────────────────────────────────
 
-function sortCandidates(candidates) {
-  return [...candidates].sort((a, b) => {
-    // 1. Raid BIS match first
-    if (b.raidBisMatch !== a.raidBisMatch) return b.raidBisMatch - a.raidBisMatch;
-    // 2. Overall BIS match (true > 'crafted' > false)
-    const aO = a.overallBisMatch === true ? 2 : a.overallBisMatch === 'crafted' ? 1 : 0;
-    const bO = b.overallBisMatch === true ? 2 : b.overallBisMatch === 'crafted' ? 1 : 0;
-    if (bO !== aO) return bO - aO;
-    // 3. Fewest H/M BIS drops (needs loot more)
-    const aBis = a.bisH + a.bisM;
-    const bBis = b.bisH + b.bisM;
-    return aBis - bBis;
-  });
+const TRACK_RANK       = { '': 0, Veteran: 1, Champion: 2, Hero: 3, Mythic: 4, Crafted: 5 };
+const TRACK_BY_RANK    = ['', 'Veteran', 'Champion', 'Hero', 'Mythic', 'Crafted'];
+const DIFFICULTY_TO_TRACK = { Normal: 'Champion', Heroic: 'Hero', Mythic: 'Mythic' };
+
+const TIER_DIST_SCORES = {
+  'four-first':  [1, 2, 3, 4, 0],
+  'two-first':   [2, 4, 1, 3, 0],
+  'bonus-first': [2, 3, 1, 4, 0],
+  'even':        [4, 3, 2, 1, 0],
+};
+
+function getRelevantTrack(c) {
+  const worn = c.wornBis ?? {};
+  if (c.overallBisMatch) return worn.overallBISTrack ?? '';
+  if (c.raidBisMatch)    return worn.raidBISTrack    ?? '';
+  return worn.otherTrack ?? '';
+}
+
+function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroicWeight, nonBisWeight) {
+  const maxAttendance  = Math.max(...candidates.map(c => c.raidsAttended ?? 0), 1);
+  const itemTrackRank  = TRACK_RANK[DIFFICULTY_TO_TRACK[selectedDifficulty] ?? 'Hero'];
+  const tierScores     = TIER_DIST_SCORES[tierDistPriority] ?? TIER_DIST_SCORES['bonus-first'];
+
+  return [...candidates].map(c => {
+    const isTierToken  = c.tierSlots !== undefined;
+    const tierCount    = isTierToken ? Object.keys(c.tierSlots).length : 0;
+    const tierDistPts  = isTierToken ? (tierScores[Math.min(tierCount, 4)] ?? 0) : 0;
+
+    const bisMatchPoints = c.overallBisMatch === true      ? 4
+      : c.overallBisMatch === 'catalyst'                   ? 3
+      : c.raidBisMatch                                     ? 2
+      : 0;
+
+    const wornS = c.wornBis ?? {};
+    const relevantTrackRank = Math.max(
+      TRACK_RANK[wornS.overallBISTrack ?? ''] ?? 0,
+      TRACK_RANK[wornS.raidBISTrack    ?? ''] ?? 0,
+      TRACK_RANK[wornS.otherTrack      ?? ''] ?? 0,
+    );
+    const trackDelta = itemTrackRank - relevantTrackRank;
+
+    const baseScore = tierDistPts * 10_000_000 + bisMatchPoints * 1_000_000 + trackDelta * 10_000;
+
+    const A           = 0.5 + 0.5 * ((c.raidsAttended ?? 0) / maxAttendance);
+    const weightedLoot = (c.acctBisM ?? 0)
+      + (c.acctBisH    ?? 0) * heroicWeight
+      + ((c.acctNonBisM ?? 0) + (c.acctNonBisH ?? 0) * heroicWeight) * nonBisWeight;
+    const lootPerRaid = weightedLoot / Math.max(c.raidsAttended ?? 1, 1);
+    const L           = 1 / (1 + lootPerRaid);
+
+    // If candidate already has this slot at or above the dropping item's track, sink to bottom
+    const finalScore = trackDelta <= 0 && relevantTrackRank > 0
+      ? -1_000_000_000
+      : Math.round(baseScore * A * L * 1000);
+    return {
+      ...c,
+      _score: finalScore,
+      _tierCount: tierCount,
+      _breakdown: {
+        tierDistPts, bisMatchPoints, trackDelta,
+        baseScore, A, L,
+        lootPerRaid: Math.round(lootPerRaid * 100) / 100,
+        finalScore,
+      },
+    };
+  }).sort((a, b) => b._score - a._score);
+}
+
+function scoreCurioCandidates(candidates, tierDistPriority, heroicWeight, nonBisWeight) {
+  const maxAttendance = Math.max(...candidates.map(c => c.raidsAttended ?? 0), 1);
+  const tierScores    = TIER_DIST_SCORES[tierDistPriority] ?? TIER_DIST_SCORES['bonus-first'];
+
+  return [...candidates].map(c => {
+    const tierCount  = Object.keys(c.tierSlots ?? {}).length;
+    const tierDistPts = tierScores[Math.min(tierCount, 4)] ?? 0;
+
+    const bisMatchPoints = c.overallBisMatch === true      ? 4
+      : c.overallBisMatch === 'catalyst'                   ? 3
+      : c.raidBisMatch                                     ? 2
+      : 0;
+
+    const baseScore = tierDistPts * 10_000_000 + bisMatchPoints * 1_000_000;
+
+    const A           = 0.5 + 0.5 * ((c.raidsAttended ?? 0) / maxAttendance);
+    const weightedLoot = (c.acctBisM ?? 0)
+      + (c.acctBisH    ?? 0) * heroicWeight
+      + ((c.acctNonBisM ?? 0) + (c.acctNonBisH ?? 0) * heroicWeight) * nonBisWeight;
+    const lootPerRaid = weightedLoot / Math.max(c.raidsAttended ?? 1, 1);
+    const L           = 1 / (1 + lootPerRaid);
+
+    const finalScore = Math.round(baseScore * A * L * 1000);
+    return {
+      ...c,
+      _score:     finalScore,
+      _tierCount: tierCount,
+      _breakdown: { tierDistPts, bisMatchPoints, baseScore, A, L, lootPerRaid: Math.round(lootPerRaid * 100) / 100, finalScore },
+    };
+  }).sort((a, b) => b._score - a._score);
+}
+
+function getCurioTags(c) {
+  const tags = [];
+  tags.push(`Has ${c._tierCount} tier`);
+  if (c.overallBisMatch === true)           tags.push('Overall BIS');
+  else if (c.overallBisMatch === 'catalyst') tags.push('Catalyst');
+  else if (c.raidBisMatch)                  tags.push('Raid BIS');
+  else if (c.overallBisMatch === 'crafted')  tags.push('Crafted BIS');
+  const wanted = c.tierSlotsWanted?.length ?? 0;
+  if (wanted > 0) tags.push(`Wants ${wanted} slot${wanted !== 1 ? 's' : ''}`);
+  return tags.slice(0, 3);
+}
+
+function getPriorityTags(c, selectedDifficulty) {
+  const tags        = [];
+  const isTierToken = c.tierSlots !== undefined;
+  if (isTierToken) tags.push(`Has ${c._tierCount} tier`);
+
+  if (c.overallBisMatch === true)          tags.push('Overall BIS');
+  else if (c.overallBisMatch === 'catalyst') tags.push('Catalyst');
+  else if (c.raidBisMatch)                 tags.push('Raid BIS');
+  else if (c.overallBisMatch === 'crafted') tags.push('Crafted BIS');
+
+  const itemTrackRank  = TRACK_RANK[DIFFICULTY_TO_TRACK[selectedDifficulty] ?? 'Hero'];
+  const worn           = c.wornBis ?? {};
+  // For tag display, compare against the best item they currently have in the slot
+  const currentBestRank = Math.max(
+    TRACK_RANK[worn.overallBISTrack ?? ''] ?? 0,
+    TRACK_RANK[worn.raidBISTrack    ?? ''] ?? 0,
+    TRACK_RANK[worn.otherTrack      ?? ''] ?? 0,
+    1, // no data → assume Veteran baseline
+  );
+  const currentBestTrack = TRACK_BY_RANK[currentBestRank] ?? '';
+  const trackDelta       = itemTrackRank - currentBestRank;
+  if (trackDelta > 0)        tags.push(`+${trackDelta} track`);
+  else if (currentBestTrack) tags.push(`Has ${currentBestTrack}`);
+
+  return tags.slice(0, 3);
 }
 
 // ── Tier helpers ──────────────────────────────────────────────────────────────
@@ -94,11 +220,33 @@ function TierPips({ tierSlots, activeSlot }) {
 
 // ── Curio candidate table ─────────────────────────────────────────────────────
 
-function CurioCandidateRow({ c }) {
+function CurioCandidateRow({ c, tags, isOfficer }) {
+  const [tooltipPos, setTooltipPos] = useState(null);
   return (
     <tr>
       <td className="council-col-char">
-        {c.charName}{c.status === 'Bench' && <BenchDot />}
+        <div
+          className="council-char-cell"
+          onMouseEnter={e => {
+            if (!isOfficer) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            const isBottomHalf = r.top > window.innerHeight / 2;
+            setTooltipPos({ top: isBottomHalf ? r.top : r.bottom + 4, left: r.left, anchorBottom: isBottomHalf });
+          }}
+          onMouseLeave={() => setTooltipPos(null)}
+        >
+          <span>{c.charName}{c.status === 'Bench' && <BenchDot />}</span>
+          {tags?.length > 0 && (
+            <div className="council-priority-tags">
+              {tags.map(t => (
+                <span key={t} className={`council-ptag ptag-${t.toLowerCase().replace(/[+\s]+/g, '-').replace(/[^a-z0-9-]/g, '')}`}>{t}</span>
+              ))}
+            </div>
+          )}
+          {tooltipPos && c._breakdown && (
+            <ScoreTooltip b={c._breakdown} isTierToken pos={tooltipPos} />
+          )}
+        </div>
       </td>
       <td className="council-col-spec">{c.spec}</td>
       <td className="council-col-tier-slots">
@@ -130,10 +278,12 @@ function CurioCandidateRow({ c }) {
   );
 }
 
-function CurioCandidateTable({ curioItemId }) {
+function CurioCandidateTable({ curioItemId, tierDistributionPriority, heroicWeight, nonBisWeight }) {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+  const { user } = useMe();
+  const isOfficer = !!user?.isOfficer;
 
   useEffect(() => {
     setLoading(true);
@@ -151,7 +301,8 @@ function CurioCandidateTable({ curioItemId }) {
   if (error)   return <div className="error">{error}</div>;
   if (!data)   return null;
 
-  const { candidates } = data;
+  const scored = scoreCurioCandidates(data.candidates, tierDistributionPriority, heroicWeight, nonBisWeight);
+  const candidates = scored;
 
   return (
     <div className="council-candidates">
@@ -188,7 +339,7 @@ function CurioCandidateTable({ curioItemId }) {
               </tr>
             </thead>
             <tbody>
-              {candidates.map(c => <CurioCandidateRow key={c.charName} c={c} />)}
+              {candidates.map(c => <CurioCandidateRow key={c.charName} c={c} tags={getCurioTags(c)} isOfficer={isOfficer} />)}
             </tbody>
           </table>
         </div>
@@ -266,9 +417,39 @@ function BenchDot() {
   return <span className="council-bench-dot" title="Benched" />;
 }
 
-function CandidateRow({ c, isTierToken, itemSlot }) {
+function ScoreTooltip({ b, isTierToken, pos }) {
+  // pos.anchorBottom: tooltip grows upward from pos.top via translateY
+  const style = {
+    left: pos.left,
+    top:  pos.top,
+    transform: pos.anchorBottom ? 'translateY(calc(-100% - 4px))' : undefined,
+  };
+  return createPortal(
+    <div className="council-score-tooltip" style={style}>
+      <div className="cst-title">Score breakdown</div>
+      {isTierToken && (
+        <div className="cst-row"><span>Tier dist</span><span>{b.tierDistPts} × 10M = {(b.tierDistPts * 10_000_000).toLocaleString()}</span></div>
+      )}
+      {b.bisMatchPoints !== undefined && (
+        <div className="cst-row"><span>BIS match</span><span>{b.bisMatchPoints} × 1M = {(b.bisMatchPoints * 1_000_000).toLocaleString()}</span></div>
+      )}
+      {b.trackDelta !== undefined && (
+        <div className="cst-row"><span>Track delta</span><span>{b.trackDelta} × 10K = {(b.trackDelta * 10_000).toLocaleString()}</span></div>
+      )}
+      <div className="cst-row cst-sub"><span>Base score</span><span>{b.baseScore.toLocaleString()}</span></div>
+      <div className="cst-divider" />
+      <div className="cst-row"><span>Attendance</span><span>× {b.A.toFixed(2)}</span></div>
+      <div className="cst-row"><span>Loot density</span><span>× {b.L.toFixed(3)} ({b.lootPerRaid.toFixed(2)}/raid)</span></div>
+      <div className="cst-row cst-final"><span>Final</span><span>{b.finalScore.toLocaleString()}</span></div>
+    </div>,
+    document.body
+  );
+}
+
+function CandidateRow({ c, isTierToken, itemSlot, tags, isOfficer }) {
   const worn = c.wornBis ?? {};
-  const [expanded, setExpanded] = useState(false);
+  const [expanded,    setExpanded]    = useState(false);
+  const [tooltipPos,  setTooltipPos]  = useState(null);
   const hasSecondary = c.secondarySpecCandidates?.length > 0;
 
   return (
@@ -282,7 +463,35 @@ function CandidateRow({ c, isTierToken, itemSlot }) {
               title={expanded ? 'Collapse secondary specs' : 'Expand secondary specs'}
             >▶</button>
           )}
-          {c.charName}{c.status === 'Bench' && <BenchDot />}
+          <div
+            className="council-char-cell"
+            onMouseEnter={e => {
+              if (!isOfficer) return;
+              const r = e.currentTarget.getBoundingClientRect();
+              const isBottomHalf = r.top > window.innerHeight / 2;
+              setTooltipPos({
+                top:          isBottomHalf ? r.top : r.bottom + 4,
+                left:         r.left,
+                anchorBottom: isBottomHalf,
+              });
+            }}
+            onMouseLeave={() => setTooltipPos(null)}
+          >
+            <span>{c.charName}{c.status === 'Bench' && <BenchDot />}</span>
+            {tags?.length > 0 && (
+              <div className="council-priority-tags">
+                {tags.map(t => (
+                  <span
+                    key={t}
+                    className={`council-ptag ptag-${t.toLowerCase().replace(/[+\s]+/g, '-').replace(/[^a-z0-9-]/g, '')}`}
+                  >{t}</span>
+                ))}
+              </div>
+            )}
+            {tooltipPos && c._breakdown && (
+              <ScoreTooltip b={c._breakdown} isTierToken={isTierToken} pos={tooltipPos} />
+            )}
+          </div>
         </td>
         <td className="council-col-spec">{c.spec}</td>
         {isTierToken && (
@@ -318,10 +527,12 @@ function CandidateRow({ c, isTierToken, itemSlot }) {
   );
 }
 
-function CandidateTable({ itemId, showAll, onToggle }) {
+function CandidateTable({ itemId, showAll, onToggle, selectedDifficulty, tierDistributionPriority, heroicWeight, nonBisWeight }) {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+  const { user } = useMe();
+  const isOfficer = !!user?.isOfficer;
 
   useEffect(() => {
     if (!itemId) return;
@@ -344,7 +555,7 @@ function CandidateTable({ itemId, showAll, onToggle }) {
 
   const { item, candidates } = data;
   const filtered = showAll ? candidates : candidates.filter(c => c.raidBisMatch);
-  const sorted   = sortCandidates(filtered);
+  const sorted   = scoreCandidates(filtered, selectedDifficulty, tierDistributionPriority, heroicWeight, nonBisWeight);
 
   return (
     <div className="council-candidates">
@@ -356,7 +567,7 @@ function CandidateTable({ itemId, showAll, onToggle }) {
           rel="noreferrer"
         >{item.name}</a>
         <span className="council-item-subtitle">
-          {itemMeta(item)}{item.difficulty ? ` · ${item.difficulty}` : ''}
+          {itemMeta(item)}{selectedDifficulty ? ` · ${selectedDifficulty}` : ''}
         </span>
       </div>
 
@@ -411,7 +622,7 @@ function CandidateTable({ itemId, showAll, onToggle }) {
               </tr>
             </thead>
             <tbody>
-              {sorted.map(c => <CandidateRow key={c.charName} c={c} isTierToken={item.isTierToken} itemSlot={item.slot} />)}
+              {sorted.map(c => <CandidateRow key={c.charName} c={c} isTierToken={item.isTierToken} itemSlot={item.slot} tags={getPriorityTags(c, selectedDifficulty)} isOfficer={isOfficer} />)}
             </tbody>
           </table>
         </div>
@@ -423,15 +634,19 @@ function CandidateTable({ itemId, showAll, onToggle }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Council() {
-  const [instances,        setInstances]        = useState([]);
-  const [currentInstance,  setCurrentInstance]  = useState('');
-  const [curioItemId,      setCurioItemId]      = useState('');
-  const [loading,          setLoading]          = useState(true);
-  const [error,            setError]            = useState(null);
-  const [selectedBoss,     setSelectedBoss]     = useState(null);
-  const [selectedItemId,   setSelectedItemId]   = useState(null);
-  const [showAll,          setShowAll]          = useState(false);
-  const [showCurio,        setShowCurio]        = useState(false);
+  const [instances,              setInstances]              = useState([]);
+  const [currentInstance,        setCurrentInstance]        = useState('');
+  const [curioItemId,            setCurioItemId]            = useState('');
+  const [selectedDifficulty,     setSelectedDifficulty]     = useState('Mythic');
+  const [tierDistributionPriority, setTierDistributionPriority] = useState('bonus-first');
+  const [heroicWeight,           setHeroicWeight]           = useState(0.2);
+  const [nonBisWeight,           setNonBisWeight]           = useState(0.333);
+  const [loading,                setLoading]                = useState(true);
+  const [error,                  setError]                  = useState(null);
+  const [selectedBoss,           setSelectedBoss]           = useState(null);
+  const [selectedItemId,         setSelectedItemId]         = useState(null);
+  const [showAll,                setShowAll]                = useState(false);
+  const [showCurio,              setShowCurio]              = useState(false);
 
   useEffect(() => {
     fetch(apiPath('/api/council/items'), { credentials: 'include' })
@@ -439,6 +654,10 @@ export default function Council() {
       .then(d => {
         setInstances(d.instances);
         setCurioItemId(d.curioItemId ?? '');
+        setSelectedDifficulty(d.currentDifficulty || 'Mythic');
+        setTierDistributionPriority(d.tierDistributionPriority || 'bonus-first');
+        setHeroicWeight(typeof d.heroicWeight === 'number' ? d.heroicWeight : 0.2);
+        setNonBisWeight(typeof d.nonBisWeight === 'number' ? d.nonBisWeight : 0.333);
         const inst = d.instances.find(i => i.instance === d.currentInstance) ?? d.instances[0];
         setCurrentInstance(inst?.instance ?? '');
         if (inst?.bosses?.length) setSelectedBoss(inst.bosses[0].name);
@@ -503,6 +722,18 @@ export default function Council() {
             </div>
           </div>
         )}
+        <div className="council-selector-row">
+          <span className="council-selector-label">Difficulty</span>
+          <div className="council-instance-tabs">
+            {['Normal', 'Heroic', 'Mythic'].map(diff => (
+              <button
+                key={diff}
+                className={`council-instance-tab${selectedDifficulty === diff ? ' active' : ''}`}
+                onClick={() => setSelectedDifficulty(diff)}
+              >{diff}</button>
+            ))}
+          </div>
+        </div>
         {curioItemId && (
           <button
             className={`council-curio-btn${showCurio ? ' active' : ''}`}
@@ -539,6 +770,10 @@ export default function Council() {
                     itemId={selectedItemId}
                     showAll={showAll}
                     onToggle={setShowAll}
+                    selectedDifficulty={selectedDifficulty}
+                    tierDistributionPriority={tierDistributionPriority}
+                    heroicWeight={heroicWeight}
+                    nonBisWeight={nonBisWeight}
                   />
                 </div>
               ) : (
@@ -551,7 +786,12 @@ export default function Council() {
         </>
       ) : (
         <div className="card">
-          <CurioCandidateTable curioItemId={curioItemId} />
+          <CurioCandidateTable
+            curioItemId={curioItemId}
+            tierDistributionPriority={tierDistributionPriority}
+            heroicWeight={heroicWeight}
+            nonBisWeight={nonBisWeight}
+          />
         </div>
       )}
     </div>
