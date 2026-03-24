@@ -120,9 +120,12 @@ router.get('/items', async (c) => {
     }
     return c.json({
       instances,
-      currentInstance:   config.raid_instance      ?? '',
-      currentDifficulty: config.current_difficulty ?? 'Mythic',
-      curioItemId:       config.curio_item_id       ?? '',
+      currentInstance:          config.raid_instance               ?? '',
+      currentDifficulty:        config.current_difficulty          ?? 'Mythic',
+      curioItemId:              config.curio_item_id               ?? '',
+      tierDistributionPriority: config.tier_distribution_priority  || 'bonus-first',
+      heroicWeight:             parseFloat(config.council_heroic_weight ?? '0.2'),
+      nonBisWeight:             parseFloat(config.council_nonbis_weight ?? '0.333'),
     });
   } catch (err) {
     console.error('[council] GET /items error:', err);
@@ -317,32 +320,34 @@ router.get('/curio-candidates', async (c) => {
     for (const char of roster) {
       if (char.status === 'Inactive') continue;
       const canonSpec = toCanonical(char.spec);
+      const charKeyTier = char.charId || char.charName.toLowerCase();
       const tierSlotsWanted = [];
+      let overallTierWanted = false;
       for (const slot of TIER_SLOTS) {
-        const charKey2    = char.charId || char.charName.toLowerCase();
-      const personalSub = approvedBis[charKey2 + '|' + slot] ?? null;
+        const personalSub = approvedBis[charKeyTier + '|' + slot] ?? null;
         const defRow      = defaultBisMap[canonSpec + '|' + slot] ?? null;
         const effectiveTrueBis = personalSub?.trueBis ?? defRow?.trueBis ?? '';
         const effectiveRaidBis = personalSub?.raidBis ?? defRow?.raidBis ?? '';
         const resolvedRaidBis  = effectiveRaidBis || (effectiveTrueBis !== '<Crafted>' ? effectiveTrueBis : '');
+        if (effectiveTrueBis === '<Tier>') overallTierWanted = true;
         if (resolvedRaidBis === '<Tier>') tierSlotsWanted.push(slot);
       }
       const s    = stats[char.charId || char.charName.toLowerCase()]    ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
       const acct = acctStats[char.ownerId] ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
+
+      // BIS match: curio can fill any tier slot, so check across all tier slots
+      const overallBisMatch = overallTierWanted;
+      const raidBisMatch    = !overallTierWanted && tierSlotsWanted.length > 0;
+
       candidates.push({
         charName: char.charName, class: char.class, spec: char.spec, status: char.status, tierSlotsWanted,
         tierSlots: tierSnapshotMap.get(char.charId) ?? {},
         bisH: s.bisH, bisM: s.bisM, nonBisH: s.nonBisH, nonBisM: s.nonBisM,
         acctBisH: acct.bisH, acctBisM: acct.bisM, acctNonBisH: acct.nonBisH, acctNonBisM: acct.nonBisM,
         raidsAttended: raidsByOwner[char.ownerId] ?? 0,
+        overallBisMatch, raidBisMatch,
       });
     }
-
-    candidates.sort((a, b) => {
-      const diff = b.tierSlotsWanted.length - a.tierSlotsWanted.length;
-      if (diff !== 0) return diff;
-      return (a.bisN + a.bisH + a.bisM) - (b.bisN + b.bisH + b.bisM);
-    });
 
     log.verbose(`[council] /curio-candidates → ${candidates.length} candidates`);
     log.debug('[council] /curio-candidates results:', candidates.map(c => ({

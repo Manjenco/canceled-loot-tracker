@@ -1787,7 +1787,42 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .council-table tr:last-child td { border-bottom: none; }
 .council-table tr:hover td { background: var(--surface2); }
 
-.council-col-char  { min-width: 90px; }
+.council-col-char  { min-width: 90px; position: relative; }
+.council-char-cell { position: relative; display: block; }
+
+/* Score breakdown tooltip */
+.council-score-tooltip {
+  position: fixed; z-index: 200;
+  background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+  padding: 8px 12px; font-size: 11px; white-space: nowrap;
+  pointer-events: none; min-width: 220px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+.cst-title  { font-weight: 700; color: var(--text); margin-bottom: 6px; font-size: 11px; }
+.cst-row    { display: flex; justify-content: space-between; gap: 16px; color: var(--text-muted); margin: 2px 0; }
+.cst-row span:last-child { font-variant-numeric: tabular-nums; color: var(--text); }
+.cst-sub    { border-top: 1px solid #333; padding-top: 4px; margin-top: 4px; }
+.cst-divider { border-top: 1px solid #333; margin: 6px 0; }
+.cst-final  { font-weight: 700; color: var(--text); }
+
+/* Priority tags */
+.council-priority-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.council-ptag {
+  font-size: 0.68rem; font-weight: 600; padding: 1px 5px;
+  border-radius: 3px; letter-spacing: 0.02em; white-space: nowrap;
+}
+.ptag-overall-bis     { background: #CC1010; color: #fff; }
+.ptag-raid-bis        { background: #b45309; color: #fff; }
+.ptag-catalyst        { background: #0369a1; color: #fff; }
+.ptag-crafted-bis     { background: #374151; color: #9ca3af; }
+.ptag-has-0-tier, .ptag-has-1-tier, .ptag-has-2-tier,
+.ptag-has-3-tier, .ptag-has-4-tier, .ptag-has-5-tier { background: #374151; color: #9ca3af; }
+.ptag--1-track, .ptag--2-track, .ptag--3-track, .ptag--4-track,
+.ptag-1-track,  .ptag-2-track,  .ptag-3-track,  .ptag-4-track  { background: #1e3a5f; color: #93c5fd; }
+.ptag-has-veteran, .ptag-has-champion,
+.ptag-has-hero,    .ptag-has-mythic    { background: #374151; color: #9ca3af; }
+.ptag-wants-1-slot,  .ptag-wants-2-slots, .ptag-wants-3-slots,
+.ptag-wants-4-slots, .ptag-wants-5-slots { background: #1e3a5f; color: #93c5fd; }
 .council-col-spec  { min-width: 80px; }
 .council-col-stats { min-width: 50px; text-align: center; }
 .council-col-num   { min-width: 40px; text-align: center; }
