@@ -13,7 +13,7 @@ import {
   getEffectiveDefaultBis, getRaids, getConfig, getTierSnapshot,
   getWornBis, primeTeamCache,
 } from '../../../lib/sheets.js';
-import { toCanonical, getArmorType, canUseWeapon, getCharSpecs } from '../../../lib/specs.js';
+import { toCanonical, getArmorType, canUseWeapon, canDualWield, getCharSpecs } from '../../../lib/specs.js';
 import { matchesBis } from '../../../lib/bis-match.js';
 import { log } from '../../../lib/logger.js';
 
@@ -66,33 +66,56 @@ function computeSpecBisMatch(charKey, spec, item, itemSlot, approvedBis, default
   const canonSpec  = toCanonical(spec);
   const armorType  = getArmorType(canonSpec);
 
-  let personalSub = null;
-  for (const key of [charKey + '|' + itemSlot, charKey + '|' + itemSlot + ' 1', charKey + '|' + itemSlot + ' 2']) {
-    // Match approved BIS to this spec
-    const sub = approvedBis[key];
-    if (sub && (!sub.spec || sub.spec.toLowerCase() === spec.toLowerCase())) { personalSub = sub; break; }
+  // Build the full list of BIS submission slots that can be satisfied by this item.
+  // • Ring/Trinket: numbered pairs — check both ' 1' and ' 2' variants.
+  // • Weapon (dual-wield spec): a Weapon-slot item can fill both 'Weapon' and 'Off-Hand' BIS entries.
+  // • Everything else: just the bare slot name.
+  let slotVariants;
+  if (itemSlot === 'Ring' || itemSlot === 'Trinket') {
+    slotVariants = [itemSlot, itemSlot + ' 1', itemSlot + ' 2'];
+  } else if (itemSlot === 'Weapon' && canDualWield(canonSpec)) {
+    slotVariants = ['Weapon', 'Off-Hand'];
+  } else {
+    slotVariants = [itemSlot];
   }
 
-  const defRow = defaultBisMap[canonSpec + '|' + itemSlot]
-              ?? defaultBisMap[canonSpec + '|' + itemSlot + ' 1']
-              ?? defaultBisMap[canonSpec + '|' + itemSlot + ' 2']
-              ?? null;
+  const matchRank = v => v === true ? 3 : v === 'catalyst' ? 2 : v === 'crafted' ? 1 : 0;
 
-  const effectiveTrueBis   = personalSub?.trueBis      ?? defRow?.trueBis      ?? '';
-  const effectiveTrueBisId = personalSub?.trueBisItemId ?? defRow?.trueBisItemId ?? '';
-  const effectiveRaidBis   = personalSub?.raidBis      ?? defRow?.raidBis      ?? '';
-  const effectiveRaidBisId = personalSub?.raidBisItemId ?? defRow?.raidBisItemId ?? '';
+  let overallBisMatch  = false;
+  let raidBisMatch     = false;
+  let hasRaidBis       = false;
+  let effectiveTrueBis = '';
 
-  let overallBisMatch;
-  if (effectiveTrueBis === '<Crafted>') overallBisMatch = 'crafted';
-  else if (effectiveTrueBis === '<Catalyst>') overallBisMatch = 'catalyst';
-  else overallBisMatch = matchesBis(effectiveTrueBis, effectiveTrueBisId, item, armorType, itemSlot);
+  for (const slotVar of slotVariants) {
+    const sub = approvedBis[charKey + '|' + slotVar];
+    if (sub?.spec && sub.spec.toLowerCase() !== spec.toLowerCase()) continue;
 
-  const resolvedRaidBis   = effectiveRaidBis   || (effectiveTrueBis !== '<Crafted>' ? effectiveTrueBis   : '');
-  const resolvedRaidBisId = effectiveRaidBisId || (effectiveTrueBis !== '<Crafted>' ? effectiveTrueBisId : '');
-  const raidBisMatch      = resolvedRaidBis ? matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, itemSlot) : false;
+    const defRow = defaultBisMap[canonSpec + '|' + slotVar] ?? null;
 
-  return { overallBisMatch, raidBisMatch, hasRaidBis: Boolean(resolvedRaidBis), effectiveTrueBis };
+    const trueBis   = sub?.trueBis       ?? defRow?.trueBis       ?? '';
+    const trueBisId = sub?.trueBisItemId  ?? defRow?.trueBisItemId  ?? '';
+    const raidBis   = sub?.raidBis       ?? defRow?.raidBis       ?? '';
+    const raidBisId = sub?.raidBisItemId  ?? defRow?.raidBisItemId  ?? '';
+
+    if (!trueBis && !raidBis) continue;
+    if (!effectiveTrueBis) effectiveTrueBis = trueBis;
+
+    let slotOvMatch;
+    if      (trueBis === '<Crafted>')  slotOvMatch = 'crafted';
+    else if (trueBis === '<Catalyst>') slotOvMatch = 'catalyst';
+    else if (trueBis)                  slotOvMatch = matchesBis(trueBis, trueBisId, item, armorType, slotVar);
+    else                               slotOvMatch = false;
+
+    if (matchRank(slotOvMatch) > matchRank(overallBisMatch)) overallBisMatch = slotOvMatch;
+
+    const resolvedRaidBis   = raidBis   || (trueBis !== '<Crafted>' ? trueBis   : '');
+    const resolvedRaidBisId = raidBisId || (trueBis !== '<Crafted>' ? trueBisId : '');
+
+    if (resolvedRaidBis) hasRaidBis = true;
+    if (resolvedRaidBis && matchesBis(resolvedRaidBis, resolvedRaidBisId, item, armorType, slotVar)) raidBisMatch = true;
+  }
+
+  return { overallBisMatch, raidBisMatch, hasRaidBis, effectiveTrueBis };
 }
 
 router.get('/items', async (c) => {
