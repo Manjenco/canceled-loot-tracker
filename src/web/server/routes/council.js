@@ -13,7 +13,7 @@ import {
   getEffectiveDefaultBis, getRaids, getConfig, getTierSnapshot,
   getWornBis, primeTeamCache,
 } from '../../../lib/sheets.js';
-import { toCanonical, getArmorType, canUseWeapon, getCharSpecs } from '../../../lib/specs.js';
+import { toCanonical, getArmorType, canUseWeapon, canDualWield, getCharSpecs } from '../../../lib/specs.js';
 import { matchesBis } from '../../../lib/bis-match.js';
 import { log } from '../../../lib/logger.js';
 
@@ -66,10 +66,18 @@ function computeSpecBisMatch(charKey, spec, item, itemSlot, approvedBis, default
   const canonSpec  = toCanonical(spec);
   const armorType  = getArmorType(canonSpec);
 
-  // For paired slots (Ring, Trinket) a character has separate BIS entries for slot 1 and slot 2.
-  // We must check ALL slot variants and return the best match across them — stopping at the first
-  // variant would miss a match in the other slot (e.g. Trinket 1 has a non-match but Trinket 2 has one).
-  const slotVariants = [itemSlot, itemSlot + ' 1', itemSlot + ' 2'];
+  // Build the full list of BIS submission slots that can be satisfied by this item.
+  // • Ring/Trinket: numbered pairs — check both ' 1' and ' 2' variants.
+  // • Weapon (dual-wield spec): a Weapon-slot item can fill both 'Weapon' and 'Off-Hand' BIS entries.
+  // • Everything else: just the bare slot name.
+  let slotVariants;
+  if (itemSlot === 'Ring' || itemSlot === 'Trinket') {
+    slotVariants = [itemSlot, itemSlot + ' 1', itemSlot + ' 2'];
+  } else if (itemSlot === 'Weapon' && canDualWield(canonSpec)) {
+    slotVariants = ['Weapon', 'Off-Hand'];
+  } else {
+    slotVariants = [itemSlot];
+  }
 
   const matchRank = v => v === true ? 3 : v === 'catalyst' ? 2 : v === 'crafted' ? 1 : 0;
 
