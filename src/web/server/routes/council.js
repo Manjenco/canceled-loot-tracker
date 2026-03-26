@@ -39,16 +39,50 @@ function mergeTrack(a, b) {
   return (TRACK_ORDER[a] ?? -1) >= (TRACK_ORDER[b] ?? -1) ? a : b;
 }
 
+function minTrack(a, b) {
+  // For paired slots, otherTrack should reflect the WEAKER slot — that's where the new item goes.
+  // Treat empty ('') as "no item", which is weaker than any track.
+  const ra = TRACK_ORDER[a] ?? -1;
+  const rb = TRACK_ORDER[b] ?? -1;
+  if (ra === -1 && rb === -1) return '';   // both empty — no data
+  if (ra === -1) return b;                 // only b has data — b is the sole slot
+  if (rb === -1) return a;                 // only a has data — a is the sole slot
+  return ra <= rb ? a : b;                 // both have data — return the lower track
+}
+
 function getWornTracksForSlot(wornBisMap, charId, spec, itemSlot) {
-  const slots = SLOT_EXPANSIONS[itemSlot] ?? [itemSlot];
-  const best  = { overallBISTrack: '', raidBISTrack: '', otherTrack: '' };
+  const slots    = SLOT_EXPANSIONS[itemSlot] ?? [itemSlot];
+  const isPaired = slots.length > 1;
+  const best     = { overallBISTrack: '', raidBISTrack: '', otherTrack: '' };
+
+  // For paired slots, track the strict minimum of overallBISTrack across all slots.
+  // This tells the client whether EVERY slot is already covered by the character's Overall BIS.
+  // Uses strict comparison so '' (unsatisfied) always beats any real track.
+  let minOvBIS = null;
+
   for (const slot of slots) {
     const w = wornBisMap.get(`${charId}:${spec}:${slot}`);
+    if (isPaired) {
+      const slotOvBIS = w?.overallBISTrack ?? '';
+      if (minOvBIS === null) {
+        minOvBIS = slotOvBIS;
+      } else {
+        // Strict min: '' (rank -1) is always lower than any real track
+        minOvBIS = (TRACK_ORDER[slotOvBIS] ?? -1) < (TRACK_ORDER[minOvBIS] ?? -1)
+          ? slotOvBIS : minOvBIS;
+      }
+    }
     if (!w) continue;
     best.overallBISTrack = mergeTrack(best.overallBISTrack, w.overallBISTrack);
     best.raidBISTrack    = mergeTrack(best.raidBISTrack,    w.raidBISTrack);
-    best.otherTrack      = mergeTrack(best.otherTrack,      w.otherTrack);
+    // otherTrack: MIN for paired slots (weaker slot = where the new item goes),
+    // MAX for single slots (only one slot to consider).
+    best.otherTrack = isPaired
+      ? minTrack(best.otherTrack, w.otherTrack)
+      : mergeTrack(best.otherTrack, w.otherTrack);
   }
+
+  if (isPaired) best.minOverallBISTrack = minOvBIS ?? '';
   return best;
 }
 
