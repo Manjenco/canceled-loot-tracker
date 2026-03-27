@@ -54,16 +54,27 @@ function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroi
     const alreadyHasSlot = isTierToken && itemSlot && c.tierSlots[itemSlot] !== undefined;
     const tierDistPts  = isTierToken && !alreadyHasSlot ? (tierScores[Math.min(tierCount, 4)] ?? 0) : 0;
 
+    const wornS = c.wornBis ?? {};
+
+    // For paired slots (Ring, Trinket), minOverallBISTrack is the STRICT MIN of overallBISTrack
+    // across both slots. If it's >= itemTrackRank, every paired slot is already covered by the
+    // character's Overall BIS item — a Raid BIS match for one slot is meaningless (Anzhem case).
+    const minOvBISTrack = wornS.minOverallBISTrack ?? wornS.overallBISTrack ?? '';
+    const slotAlreadySatisfied = c.overallBisMatch !== true
+      && (TRACK_RANK[minOvBISTrack] ?? 0) >= itemTrackRank;
+
     const bisMatchPoints = c.overallBisMatch === true      ? 4
       : c.overallBisMatch === 'catalyst'                   ? 3
-      : c.raidBisMatch                                     ? 2
+      : (c.raidBisMatch && !slotAlreadySatisfied)          ? 2
       : 0;
 
-    const wornS = c.wornBis ?? {};
+    // Use per-match-slot tracks here too — the aggregate from the other paired slot would
+    // incorrectly inflate relevantTrackRank (e.g. Narestrasz has Hero in Trinket 2 but
+    // the dropping item goes into Trinket 1 which may have nothing).
     const relevantTrackRank = Math.max(
-      TRACK_RANK[wornS.overallBISTrack ?? ''] ?? 0,
-      TRACK_RANK[wornS.raidBISTrack    ?? ''] ?? 0,
-      TRACK_RANK[wornS.otherTrack      ?? ''] ?? 0,
+      TRACK_RANK[wornS.ovMatchWornTrack   ?? wornS.overallBISTrack ?? ''] ?? 0,
+      TRACK_RANK[wornS.raidMatchWornTrack ?? wornS.raidBISTrack    ?? ''] ?? 0,
+      TRACK_RANK[wornS.otherTrack ?? ''] ?? 0,
     );
     const trackDelta = itemTrackRank - relevantTrackRank;
 
@@ -76,8 +87,22 @@ function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroi
     const lootPerRaid = weightedLoot / Math.max(c.raidsAttended ?? 1, 1);
     const L           = 1 / (1 + lootPerRaid);
 
-    // If candidate already has this slot at or above the dropping item's track, sink to bottom
-    const finalScore = trackDelta <= 0 && relevantTrackRank > 0
+    // Sink to bottom if: strict downgrade OR already owns their BIS item at or above this track
+    // OR all paired slots are already covered by Overall BIS (slotAlreadySatisfied).
+    // Uses aggregate wornBis (max across paired slots) — overallBISTrack is '' when they have
+    // never worn the BIS item, so a non-BIS Hero item (otherTrack) does NOT trigger this
+    // (Culveron case). Only fires when they have specifically worn their BIS at this track.
+    // Use per-match-slot worn tracks (minimum across the specific slot(s) where the match was
+    // found) rather than the aggregate MAX across all paired slots. This prevents the aggregate
+    // raidBISTrack from Trinket 2 (a different item) from triggering a penalty on a Trinket 1
+    // match (Simlock case), and correctly handles "has it in slot 1 but needs slot 2" (Narestrasz).
+    // If overallBisMatch is set (true or 'catalyst'), only check overallBIS — raidBIS is irrelevant.
+    const hasOverallMatch = c.overallBisMatch === true || c.overallBisMatch === 'catalyst';
+    const alreadyOwnsBis =
+      (hasOverallMatch  && (TRACK_RANK[wornS.ovMatchWornTrack   ?? ''] ?? 0) >= itemTrackRank) ||
+      (!hasOverallMatch && c.raidBisMatch && (TRACK_RANK[wornS.raidMatchWornTrack ?? ''] ?? 0) >= itemTrackRank) ||
+      slotAlreadySatisfied;
+    const finalScore = (trackDelta < 0 && relevantTrackRank > 0) || alreadyOwnsBis
       ? -1_000_000_000
       : Math.round(baseScore * A * L * 1000);
     return {
@@ -88,7 +113,7 @@ function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroi
         tierDistPts, bisMatchPoints, trackDelta,
         baseScore, A, L,
         lootPerRaid: Math.round(lootPerRaid * 100) / 100,
-        finalScore,
+        finalScore, alreadyOwnsBis, slotAlreadySatisfied,
       },
     };
   }).sort((a, b) => b._score - a._score);
@@ -150,11 +175,12 @@ function getPriorityTags(c, selectedDifficulty) {
 
   const itemTrackRank  = TRACK_RANK[DIFFICULTY_TO_TRACK[selectedDifficulty] ?? 'Hero'];
   const worn           = c.wornBis ?? {};
-  // For tag display, compare against the best item they currently have in the slot
+  // Use per-match-slot tracks (not aggregate) so the tag reflects the slot where this item
+  // would actually go — not a different paired slot that happens to have a higher worn track.
   const currentBestRank = Math.max(
-    TRACK_RANK[worn.overallBISTrack ?? ''] ?? 0,
-    TRACK_RANK[worn.raidBISTrack    ?? ''] ?? 0,
-    TRACK_RANK[worn.otherTrack      ?? ''] ?? 0,
+    TRACK_RANK[worn.ovMatchWornTrack   ?? worn.overallBISTrack ?? ''] ?? 0,
+    TRACK_RANK[worn.raidMatchWornTrack ?? worn.raidBISTrack    ?? ''] ?? 0,
+    TRACK_RANK[worn.otherTrack         ?? ''] ?? 0,
     1, // no data → assume Veteran baseline
   );
   const currentBestTrack = TRACK_BY_RANK[currentBestRank] ?? '';
@@ -442,6 +468,12 @@ function ScoreTooltip({ b, isTierToken, pos }) {
       <div className="cst-divider" />
       <div className="cst-row"><span>Attendance</span><span>× {b.A.toFixed(2)}</span></div>
       <div className="cst-row"><span>Loot density</span><span>× {b.L.toFixed(3)} ({b.lootPerRaid.toFixed(2)}/raid)</span></div>
+      {b.slotAlreadySatisfied && (
+        <div className="cst-row cst-penalty"><span>Slots covered by Overall BIS</span><span>→ penalised</span></div>
+      )}
+      {b.alreadyOwnsBis && !b.slotAlreadySatisfied && (
+        <div className="cst-row cst-penalty"><span>Already owns BIS</span><span>→ penalised</span></div>
+      )}
       <div className="cst-row cst-final"><span>Final</span><span>{b.finalScore.toLocaleString()}</span></div>
     </div>,
     document.body
@@ -506,8 +538,8 @@ function CandidateRow({ c, isTierToken, itemSlot, tags, isOfficer }) {
         <td className="council-col-stats" title="Account total"><span className="council-stat-bis">{c.acctBisH}/{c.acctBisM}</span></td>
         <td className="council-col-stats" title="Account total"><span className="council-stat-nonbis">{c.acctNonBisH}/{c.acctNonBisM}</span></td>
         <td className="council-col-num">{c.raidsAttended}</td>
-        <td className="council-col-bis"><BisIndicator match={c.overallBisMatch} track={worn.overallBISTrack} /></td>
-        <td className="council-col-bis"><BisIndicator match={c.raidBisMatch} track={worn.raidBISTrack} /></td>
+        <td className="council-col-bis"><BisIndicator match={c.overallBisMatch} track={worn.ovMatchWornTrack ?? worn.overallBISTrack} /></td>
+        <td className="council-col-bis"><BisIndicator match={c.raidBisMatch} track={worn.raidMatchWornTrack ?? worn.raidBISTrack} /></td>
         <td className="council-col-bis"><MiniTrackBadge track={worn.otherTrack} /></td>
       </tr>
       {expanded && c.secondarySpecCandidates?.map(sc => {

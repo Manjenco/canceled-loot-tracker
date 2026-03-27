@@ -1801,9 +1801,10 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .cst-title  { font-weight: 700; color: var(--text); margin-bottom: 6px; font-size: 11px; }
 .cst-row    { display: flex; justify-content: space-between; gap: 16px; color: var(--text-muted); margin: 2px 0; }
 .cst-row span:last-child { font-variant-numeric: tabular-nums; color: var(--text); }
-.cst-sub    { border-top: 1px solid #333; padding-top: 4px; margin-top: 4px; }
+.cst-sub     { border-top: 1px solid #333; padding-top: 4px; margin-top: 4px; }
 .cst-divider { border-top: 1px solid #333; margin: 6px 0; }
-.cst-final  { font-weight: 700; color: var(--text); }
+.cst-penalty { color: #e05; font-style: italic; }
+.cst-final   { font-weight: 700; color: var(--text); }
 
 /* Priority tags */
 .council-priority-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
