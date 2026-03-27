@@ -114,14 +114,6 @@ function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroi
         baseScore, A, L,
         lootPerRaid: Math.round(lootPerRaid * 100) / 100,
         finalScore, alreadyOwnsBis, slotAlreadySatisfied,
-        // debug: worn track values fed into scoring
-        dbg_ovBIS:         wornS.overallBISTrack    ?? '(none)',
-        dbg_minOvBIS:      wornS.minOverallBISTrack ?? '(absent)',
-        dbg_minUsed:       minOvBISTrack,
-        dbg_ovMatchWorn:   wornS.ovMatchWornTrack   ?? '(absent)',
-        dbg_raidMatchWorn: wornS.raidMatchWornTrack ?? '(absent)',
-        dbg_raidBIS:       wornS.raidBISTrack       ?? '(none)',
-        dbg_other:         wornS.otherTrack         ?? '(none)',
       },
     };
   }).sort((a, b) => b._score - a._score);
@@ -482,13 +474,6 @@ function ScoreTooltip({ b, isTierToken, pos }) {
       {b.alreadyOwnsBis && !b.slotAlreadySatisfied && (
         <div className="cst-row cst-penalty"><span>Already owns BIS</span><span>→ penalised</span></div>
       )}
-      <div className="cst-divider" />
-      <div className="cst-row cst-sub"><span>ovBIS (agg)</span><span>{b.dbg_ovBIS}</span></div>
-      <div className="cst-row cst-sub"><span>ovMatch worn</span><span>{b.dbg_ovMatchWorn}</span></div>
-      <div className="cst-row cst-sub"><span>raidMatch worn</span><span>{b.dbg_raidMatchWorn}</span></div>
-      <div className="cst-row cst-sub"><span>minOvBIS</span><span>{b.dbg_minUsed}</span></div>
-      <div className="cst-row cst-sub"><span>raidBIS (agg)</span><span>{b.dbg_raidBIS}</span></div>
-      <div className="cst-row cst-sub"><span>other</span><span>{b.dbg_other}</span></div>
       <div className="cst-row cst-final"><span>Final</span><span>{b.finalScore.toLocaleString()}</span></div>
     </div>,
     document.body
