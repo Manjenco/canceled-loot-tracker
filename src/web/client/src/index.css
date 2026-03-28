@@ -1867,3 +1867,47 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .loading { padding: 48px; text-align: center; color: var(--text-muted); }
 .error   { padding: 48px; text-align: center; color: var(--primary); }
 .empty   { color: var(--text-muted); padding: 12px 0; }
+
+/* ── Loot History page ──────────────────────────────────────────────────────── */
+
+.loot-history-page .page-header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 16px; }
+.loot-history-page .page-subtitle { font-size: 0.85rem; }
+
+.lh-table { width: 100%; border-collapse: collapse; }
+.lh-table th {
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+.lh-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.lh-table tr:last-child > td { border-bottom: none; }
+.lh-col-total { text-align: right; }
+
+.lh-row { cursor: pointer; transition: background 0.1s; }
+.lh-row:hover td { background: var(--surface2); }
+.lh-row-open td  { background: var(--surface2); }
+.lh-row-inactive { opacity: 0.6; }
+
+.lh-cell-char { display: flex; align-items: center; gap: 8px; }
+.lh-chevron { font-size: 10px; color: var(--text-muted); transition: transform 0.15s; display: inline-block; }
+.lh-chevron-open { transform: rotate(90deg); color: var(--accent, #CC1010); }
+.lh-char-name { font-weight: 600; }
+.lh-spec { font-size: 0.8rem; }
+.lh-status-badge { font-size: 10px; }
+
+.lh-diff-counts { display: flex; gap: 4px; }
+.lh-diff { font-size: 12px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+.lh-diff-mythic  { background: rgba(204,16,16,0.2);  color: #e06060; }
+.lh-diff-heroic  { background: rgba(255,180,0,0.15); color: #e0b840; }
+.lh-diff-normal  { background: rgba(100,180,100,0.15); color: #80c880; }
+
+.lh-detail-row td { background: #0a0a0a; }
+.lh-detail-table { width: 100%; }
+.lh-detail-table th { background: #0f0f0f; }
+.lh-detail-table tr:last-child td { border-bottom: none; }

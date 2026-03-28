@@ -1,19 +1,102 @@
 /**
  * routes/loot.js — Loot Log endpoints.
  *
- * POST /api/loot/import   Officer — import a RCLC CSV export
+ * GET  /api/loot/history   Officer — per-player loot totals + itemised history
+ * POST /api/loot/import    Officer — import a RCLC CSV export
  */
 
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
+  primeTeamCache,
   getRoster, getRclcResponseMap,
   getLootLog, appendLootEntries,
+  getGlobalConfig,
 } from '../../../lib/sheets.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
 
+const COUNTED = new Set(['BIS', 'Non-BIS']);
+
 const router = new Hono();
 router.use('*', requireAuth);
+
+// ── GET /history ──────────────────────────────────────────────────────────────
+
+router.get('/history', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+
+  const { teamSheetId } = c.get('session').user;
+
+  const [globalConfig] = await Promise.all([
+    getGlobalConfig(),
+    primeTeamCache(teamSheetId, ['roster', 'lootLog']),
+  ]);
+
+  const [roster, lootLog] = await Promise.all([
+    getRoster(teamSheetId),
+    getLootLog(teamSheetId),
+  ]);
+
+  const seasonStart = globalConfig.season_start ?? '';
+
+  // Lookup maps for joining loot → roster
+  const charById   = new Map(roster.map(r => [r.charId,                    r]));
+  const charByName = new Map(roster.map(r => [r.charName.toLowerCase(),    r]));
+
+  // Filter to current season
+  const entries = seasonStart
+    ? lootLog.filter(e => e.date >= seasonStart)
+    : lootLog;
+
+  // Group by character (charId preferred, charName fallback for old rows)
+  const grouped = new Map(); // charId → { char, entries[] }
+  for (const entry of entries) {
+    const char = (entry.recipientCharId && charById.get(entry.recipientCharId))
+      ?? charByName.get(entry.recipientChar.toLowerCase());
+    if (!char) continue; // pug or deleted roster entry — skip
+
+    if (!grouped.has(char.charId)) grouped.set(char.charId, { char, entries: [] });
+    grouped.get(char.charId).entries.push(entry);
+  }
+
+  const players = [...grouped.values()].map(({ char, entries: charEntries }) => {
+    // Per-difficulty counts for BIS and Non-BIS; flat count for Tertiary
+    const counts = { BIS: {}, 'Non-BIS': {}, Tertiary: 0 };
+    for (const e of charEntries) {
+      if (e.upgradeType === 'Tertiary') {
+        counts.Tertiary++;
+      } else if (COUNTED.has(e.upgradeType)) {
+        const d = e.difficulty || 'Unknown';
+        counts[e.upgradeType][d] = (counts[e.upgradeType][d] ?? 0) + 1;
+      }
+    }
+
+    const total = charEntries.filter(e => COUNTED.has(e.upgradeType)).length;
+
+    // Newest first for the detail panel
+    const loot = [...charEntries].sort((a, b) => b.date.localeCompare(a.date));
+
+    return {
+      charId:   char.charId,
+      charName: char.charName,
+      class:    char.class,
+      spec:     char.spec,
+      status:   char.status,
+      counts,
+      total,
+      loot,
+    };
+  });
+
+  // Primary sort: counted loot desc. Secondary: charName alpha.
+  players.sort((a, b) => b.total - a.total || a.charName.localeCompare(b.charName));
+
+  return c.json({ players, seasonStart });
+});
+
+// ── POST /import ──────────────────────────────────────────────────────────────
 
 router.post('/import', async (c) => {
   if (!c.get('session').user?.isOfficer) {

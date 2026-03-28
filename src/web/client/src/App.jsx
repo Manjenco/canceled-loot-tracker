@@ -8,6 +8,7 @@ import AdminDefaultBis  from './pages/AdminDefaultBis.jsx';
 import AdminBisReview   from './pages/AdminBisReview.jsx';
 import Council          from './pages/Council.jsx';
 import LootImport       from './pages/LootImport.jsx';
+import LootHistory      from './pages/LootHistory.jsx';
 import RosterPage       from './pages/Roster.jsx';
 import Layout           from './components/Layout.jsx';
 
@@ -66,6 +67,11 @@ export default function App() {
       <Route path="/import" element={
         <OfficerRoute>
           <Layout><LootImport /></Layout>
+        </OfficerRoute>
+      } />
+      <Route path="/loot-history" element={
+        <OfficerRoute>
+          <Layout><LootHistory /></Layout>
         </OfficerRoute>
       } />
       <Route path="/roster" element={
