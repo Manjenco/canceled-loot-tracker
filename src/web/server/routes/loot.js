@@ -50,8 +50,10 @@ router.get('/history', async (c) => {
   // Heroic and Mythic only — loot data is expected to be wiped between seasons
   const entries = lootLog.filter(e => TRACKED_DIFF.has(e.difficulty));
 
-  // Group by character (charId preferred, charName fallback for old rows)
+  // Seed every roster member so characters with no loot still appear
   const grouped = new Map(); // charId → { char, entries[] }
+  for (const char of roster) grouped.set(char.charId, { char, entries: [] });
+
   for (const entry of entries) {
     const char = (entry.recipientCharId && charById.get(entry.recipientCharId))
       ?? charByName.get(entry.recipientChar.toLowerCase());
