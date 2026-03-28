@@ -5,9 +5,8 @@ import { apiPath } from '../lib/api.js';
 const DIFFICULTY_ORDER = ['Mythic', 'Heroic'];
 
 const UPGRADE_BADGE = {
-  'BIS':      { label: 'BIS',      cls: 'badge-bis'     },
-  'Non-BIS':  { label: 'Non-BIS',  cls: 'badge-nonbis'  },
-  'Tertiary': { label: 'Tertiary', cls: 'badge-tertiary' },
+  'BIS':     { label: 'BIS',     cls: 'badge-bis'    },
+  'Non-BIS': { label: 'Non-BIS', cls: 'badge-nonbis' },
 };
 
 // ── Difficulty breakdown cell ─────────────────────────────────────────────────
@@ -100,8 +99,8 @@ export default function LootHistory() {
               <th>Character</th>
               <th>BIS</th>
               <th>Non-BIS</th>
-              <th>Tertiary</th>
-              <th className="lh-col-total">Total</th>
+              <th className="lh-col-num">Raids</th>
+              <th className="lh-col-num">Loot/Raid</th>
             </tr>
           </thead>
           <tbody>
@@ -123,8 +122,8 @@ export default function LootHistory() {
                   </td>
                   <td><DiffCounts counts={p.counts.BIS} /></td>
                   <td><DiffCounts counts={p.counts['Non-BIS']} /></td>
-                  <td>{p.counts.Tertiary > 0 ? p.counts.Tertiary : <span className="text-muted">—</span>}</td>
-                  <td className="lh-col-total"><strong>{p.total}</strong></td>
+                  <td className="lh-col-num">{p.raidsAttended}</td>
+                  <td className="lh-col-num"><strong>{p.lootPerRaid.toFixed(2)}</strong></td>
                 </tr>,
                 isOpen && (
                   <tr key={`${p.charId}-detail`} className="lh-detail-row">

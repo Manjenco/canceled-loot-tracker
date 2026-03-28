@@ -10,13 +10,14 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   primeTeamCache,
   getRoster, getRclcResponseMap,
-  getLootLog, appendLootEntries,
-
+  getLootLog, appendLootEntries, getRaids,
 } from '../../../lib/sheets.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
 
-const COUNTED      = new Set(['BIS', 'Non-BIS']);
-const TRACKED_DIFF = new Set(['Heroic', 'Mythic']);
+const COUNTED        = new Set(['BIS', 'Non-BIS']);
+const TRACKED_DIFF   = new Set(['Heroic', 'Mythic']);
+const HEROIC_WEIGHT  = 0.2;
+const NON_BIS_WEIGHT = 0.333;
 
 const router = new Hono();
 router.use('*', requireAuth);
@@ -30,12 +31,17 @@ router.get('/history', async (c) => {
 
   const { teamSheetId } = c.get('session').user;
 
-  await primeTeamCache(teamSheetId, ['roster', 'lootLog']);
+  await primeTeamCache(teamSheetId, ['roster', 'lootLog', 'raids']);
 
-  const [roster, lootLog] = await Promise.all([
+  const [roster, lootLog, raids] = await Promise.all([
     getRoster(teamSheetId),
     getLootLog(teamSheetId),
+    getRaids(teamSheetId),
   ]);
+
+  // Attendance count by Discord user ID
+  const raidsByOwner = {};
+  for (const raid of raids) for (const id of raid.attendeeIds) raidsByOwner[id] = (raidsByOwner[id] ?? 0) + 1;
 
   // Lookup maps for joining loot → roster
   const charById   = new Map(roster.map(r => [r.charId,                    r]));
@@ -56,36 +62,46 @@ router.get('/history', async (c) => {
   }
 
   const players = [...grouped.values()].map(({ char, entries: charEntries }) => {
-    // Per-difficulty counts for BIS and Non-BIS; flat count for Tertiary
-    const counts = { BIS: {}, 'Non-BIS': {}, Tertiary: 0 };
+    // Per-difficulty counts for BIS and Non-BIS (Tertiary excluded from display)
+    const counts = { BIS: {}, 'Non-BIS': {} };
     for (const e of charEntries) {
-      if (e.upgradeType === 'Tertiary') {
-        counts.Tertiary++;
-      } else if (COUNTED.has(e.upgradeType)) {
+      if (COUNTED.has(e.upgradeType)) {
         const d = e.difficulty || 'Unknown';
         counts[e.upgradeType][d] = (counts[e.upgradeType][d] ?? 0) + 1;
       }
     }
 
-    const total = charEntries.filter(e => COUNTED.has(e.upgradeType)).length;
+    const raidsAttended = raidsByOwner[char.ownerId] ?? 0;
 
-    // Newest first for the detail panel
-    const loot = [...charEntries].sort((a, b) => b.date.localeCompare(a.date));
+    // Same weighted formula as the council loot-density multiplier
+    const bisM      = counts.BIS['Mythic']      ?? 0;
+    const bisH      = counts.BIS['Heroic']      ?? 0;
+    const nonBisM   = counts['Non-BIS']['Mythic'] ?? 0;
+    const nonBisH   = counts['Non-BIS']['Heroic'] ?? 0;
+    const weighted  = bisM + bisH * HEROIC_WEIGHT
+      + (nonBisM + nonBisH * HEROIC_WEIGHT) * NON_BIS_WEIGHT;
+    const lootPerRaid = weighted / Math.max(raidsAttended, 1);
+
+    // Newest first for the detail panel; exclude Tertiary
+    const loot = [...charEntries]
+      .filter(e => COUNTED.has(e.upgradeType))
+      .sort((a, b) => b.date.localeCompare(a.date));
 
     return {
-      charId:   char.charId,
-      charName: char.charName,
-      class:    char.class,
-      spec:     char.spec,
-      status:   char.status,
+      charId:       char.charId,
+      charName:     char.charName,
+      class:        char.class,
+      spec:         char.spec,
+      status:       char.status,
       counts,
-      total,
+      raidsAttended,
+      lootPerRaid,
       loot,
     };
   });
 
-  // Primary sort: counted loot desc. Secondary: charName alpha.
-  players.sort((a, b) => b.total - a.total || a.charName.localeCompare(b.charName));
+  // Primary sort: lootPerRaid desc. Secondary: charName alpha.
+  players.sort((a, b) => b.lootPerRaid - a.lootPerRaid || a.charName.localeCompare(b.charName));
 
   return c.json({ players });
 });
