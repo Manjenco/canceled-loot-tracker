@@ -66,7 +66,9 @@ export default function LootHistory() {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
-  const [expanded, setExpanded] = useState(new Set());
+  const [expanded,     setExpanded]     = useState(new Set());
+  const [showInactive, setShowInactive] = useState(false);
+  const [showBench,    setShowBench]    = useState(true);
 
   useEffect(() => {
     fetch(apiPath('/api/loot/history'), { credentials: 'include' })
@@ -86,10 +88,24 @@ export default function LootHistory() {
 
   const { players } = data;
 
+  const visible = players.filter(p => {
+    if (p.status === 'Inactive' && !showInactive) return false;
+    if (p.status === 'Bench'    && !showBench)    return false;
+    return true;
+  });
+
   return (
     <div className="loot-history-page">
       <div className="page-header">
         <h2 className="page-title">Loot History</h2>
+        <label className="lh-filter-check">
+          <input type="checkbox" checked={showBench} onChange={e => setShowBench(e.target.checked)} />
+          Bench
+        </label>
+        <label className="lh-filter-check">
+          <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} />
+          Inactive
+        </label>
       </div>
 
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -111,7 +127,7 @@ export default function LootHistory() {
             </tr>
           </thead>
           <tbody>
-            {players.flatMap(p => {
+            {visible.flatMap(p => {
               const isOpen = expanded.has(p.charId);
               return [
                 <tr
@@ -141,7 +157,7 @@ export default function LootHistory() {
                 ),
               ].filter(Boolean);
             })}
-            {players.length === 0 && (
+            {visible.length === 0 && (
               <tr><td colSpan={5} className="empty" style={{ textAlign: 'center', padding: 24 }}>No loot recorded this season.</td></tr>
             )}
           </tbody>

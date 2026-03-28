@@ -1873,6 +1873,9 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .loot-history-page .page-header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 16px; }
 .loot-history-page .page-subtitle { font-size: 0.85rem; }
 
+.lh-filter-check { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-muted); cursor: pointer; user-select: none; }
+.lh-filter-check input { accent-color: var(--accent, #CC1010); cursor: pointer; }
+
 .lh-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .lh-table th {
   padding: 10px 14px;
