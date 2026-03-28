@@ -114,8 +114,8 @@ export default function LootHistory() {
           <colgroup>
             <col />
             {visibleDiffs.map(d => <col key={d} />)}
-            <col style={{ width: '6%' }} />
-            <col style={{ width: '6%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '9%' }} />
           </colgroup>
           <thead>
             <tr>
