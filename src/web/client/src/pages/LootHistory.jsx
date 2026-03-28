@@ -2,27 +2,23 @@ import { useState, useEffect, Fragment } from 'react';
 import ItemLink from '../components/ItemLink.jsx';
 import { apiPath } from '../lib/api.js';
 
-const DIFFICULTY_ORDER = ['Mythic', 'Heroic'];
+const DIFFICULTIES = ['Mythic', 'Heroic', 'Normal'];
 
 const UPGRADE_BADGE = {
   'BIS':     { label: 'BIS',     cls: 'badge-bis'    },
   'Non-BIS': { label: 'Non-BIS', cls: 'badge-nonbis' },
 };
 
-// ── Difficulty breakdown cell ─────────────────────────────────────────────────
+// ── BIS / Non-BIS breakdown within one difficulty column ──────────────────────
 
-function DiffCounts({ counts }) {
-  const parts = DIFFICULTY_ORDER
-    .map(d => ({ d, n: counts[d] ?? 0 }))
-    .filter(({ n }) => n > 0);
-  if (!parts.length) return <span className="text-muted">—</span>;
+function DiffColumn({ diff, counts }) {
+  const bis    = counts.BIS?.[diff]       ?? 0;
+  const nonBis = counts['Non-BIS']?.[diff] ?? 0;
+  if (!bis && !nonBis) return <span className="text-muted">—</span>;
   return (
-    <span className="lh-diff-counts">
-      {parts.map(({ d, n }) => (
-        <span key={d} className={`lh-diff lh-diff-${d.toLowerCase()}`}>
-          {n}{d[0]}
-        </span>
-      ))}
+    <span className="lh-diff-col">
+      {bis    > 0 && <span className="lh-diff-tag lh-diff-bis">{bis} BIS</span>}
+      {nonBis > 0 && <span className="lh-diff-tag lh-diff-nonbis">{nonBis} Non-BIS</span>}
     </span>
   );
 }
@@ -66,7 +62,9 @@ export default function LootHistory() {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
-  const [expanded, setExpanded] = useState(new Set());
+  const [expanded,       setExpanded]       = useState(new Set());
+  const [expandedGroups, setExpandedGroups] = useState({ Active: true, Bench: false, Inactive: false });
+  const [showDiff,       setShowDiff]       = useState({ Mythic: true, Heroic: true, Normal: true });
 
   useEffect(() => {
     fetch(apiPath('/api/loot/history'), { credentials: 'include' })
@@ -78,75 +76,106 @@ export default function LootHistory() {
   if (loading) return <div className="loading">Loading loot history…</div>;
   if (error)   return <div className="error">Failed to load loot history.</div>;
 
-  const toggle = (charId) => setExpanded(prev => {
-    const next = new Set(prev);
-    next.has(charId) ? next.delete(charId) : next.add(charId);
-    return next;
+  const toggle      = (charId) => setExpanded(prev => {
+    const next = new Set(prev); next.has(charId) ? next.delete(charId) : next.add(charId); return next;
   });
+  const toggleGroup = (label)  => setExpandedGroups(prev => ({ ...prev, [label]: !prev[label] }));
 
-  const { players } = data;
+  const { players, heroicWeight = 0.2, normalWeight = 0, nonBisWeight = 0.333 } = data;
+
+  const groups = ['Active', 'Bench', 'Inactive']
+    .map(status => ({
+      label:   status,
+      players: players
+        .filter(p => p.status === status)
+        .sort((a, b) => b.lootPerRaid - a.lootPerRaid || a.charName.localeCompare(b.charName)),
+    }))
+    .filter(g => g.players.length > 0);
 
   return (
     <div className="loot-history-page">
       <div className="page-header">
         <h2 className="page-title">Loot History</h2>
+        <span className="lh-filter-divider" />
+        {DIFFICULTIES.map(d => (
+          <label key={d} className={`lh-filter-check lh-filter-diff lh-col-${d.toLowerCase()}`}>
+            <input type="checkbox" checked={showDiff[d]} onChange={e => setShowDiff(prev => ({ ...prev, [d]: e.target.checked }))} />
+            {d}
+          </label>
+        ))}
       </div>
 
+      {(() => {
+        const visibleDiffs = DIFFICULTIES.filter(d => showDiff[d]);
+        const colSpan = 3 + visibleDiffs.length; // char + visible diffs + raids + loot/raid
+        return (
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <table className="lh-table">
           <colgroup>
-            <col style={{ width: '38%' }} />
-            <col style={{ width: '22%' }} />
-            <col style={{ width: '22%' }} />
-            <col style={{ width: '9%' }} />
-            <col style={{ width: '9%' }} />
+            <col />
+            {visibleDiffs.map(d => <col key={d} />)}
+            <col style={{ width: '5%' }} />
+            <col style={{ width: '13%' }} />
           </colgroup>
           <thead>
             <tr>
               <th>Character</th>
-              <th>BIS</th>
-              <th>Non-BIS</th>
+              {visibleDiffs.map(d => (
+                <th key={d} className={`lh-col-diff lh-col-${d.toLowerCase()}`}>{d}</th>
+              ))}
               <th className="lh-col-num">Raids</th>
-              <th className="lh-col-num" title="Weighted loot per raid attended&#10;= (BIS-M + BIS-H×0.2 + (NonBIS-M + NonBIS-H×0.2)×0.333) ÷ raids">Loot/Raid ⓘ</th>
+              <th className="lh-col-num" title={`Weighted loot per raid attended\n= (BIS-M + BIS-H×${heroicWeight}${normalWeight ? ` + BIS-N×${normalWeight}` : ''} + (NonBIS-M + NonBIS-H×${heroicWeight}${normalWeight ? ` + NonBIS-N×${normalWeight}` : ''})×${nonBisWeight}) ÷ raids`}>Loot/Raid ⓘ</th>
             </tr>
           </thead>
           <tbody>
-            {players.flatMap(p => {
-              const isOpen = expanded.has(p.charId);
-              return [
-                <tr
-                  key={p.charId}
-                  className={`lh-row${isOpen ? ' lh-row-open' : ''}${p.status !== 'Active' ? ' lh-row-inactive' : ''}`}
-                  onClick={() => toggle(p.charId)}
-                >
-                  <td className="lh-cell-char">
-                    <span className={`lh-chevron${isOpen ? ' lh-chevron-open' : ''}`}>▶</span>
-                    <span className="lh-char-name">{p.charName}</span>
-                    <span className="lh-spec text-muted">{p.spec}</span>
-                    {p.status !== 'Active' && (
-                      <span className="badge badge-status lh-status-badge">{p.status}</span>
-                    )}
-                  </td>
-                  <td><DiffCounts counts={p.counts.BIS} /></td>
-                  <td><DiffCounts counts={p.counts['Non-BIS']} /></td>
-                  <td className="lh-col-num">{p.raidsAttended}</td>
-                  <td className="lh-col-num"><strong>{p.lootPerRaid.toFixed(2)}</strong></td>
-                </tr>,
-                isOpen && (
-                  <tr key={`${p.charId}-detail`} className="lh-detail-row">
-                    <td colSpan={5} style={{ padding: 0 }}>
-                      <PlayerLootDetail loot={p.loot} />
-                    </td>
-                  </tr>
-                ),
-              ].filter(Boolean);
-            })}
-            {players.length === 0 && (
-              <tr><td colSpan={5} className="empty" style={{ textAlign: 'center', padding: 24 }}>No loot recorded this season.</td></tr>
+            {groups.length === 0 && (
+              <tr><td colSpan={colSpan} className="empty" style={{ textAlign: 'center', padding: 24 }}>No loot recorded this season.</td></tr>
             )}
+            {groups.flatMap(group => {
+              const groupOpen = expandedGroups[group.label] ?? false;
+              return [
+              <tr key={`group-${group.label}`} className="lh-group-header-row" onClick={() => toggleGroup(group.label)}>
+                <td colSpan={colSpan} className="lh-group-header">
+                  <span className={`lh-chevron${groupOpen ? ' lh-chevron-open' : ''}`}>▶</span>
+                  {group.label}
+                  <span className="lh-group-count">{group.players.length}</span>
+                </td>
+              </tr>,
+              ...(!groupOpen ? [] : group.players.flatMap(p => {
+                const isOpen = expanded.has(p.charId);
+                return [
+                  <tr
+                    key={p.charId}
+                    className={`lh-row${isOpen ? ' lh-row-open' : ''}${p.status !== 'Active' ? ' lh-row-inactive' : ''}`}
+                    onClick={() => toggle(p.charId)}
+                  >
+                    <td className="lh-cell-char">
+                      <span className={`lh-chevron${isOpen ? ' lh-chevron-open' : ''}`}>▶</span>
+                      <span className="lh-char-name">{p.charName}</span>
+                      <span className="lh-spec text-muted">{p.spec}</span>
+                    </td>
+                    {visibleDiffs.map(d => (
+                      <td key={d}><DiffColumn diff={d} counts={p.counts} /></td>
+                    ))}
+                    <td className="lh-col-num">{p.raidsAttended}</td>
+                    <td className="lh-col-num"><strong>{p.lootPerRaid.toFixed(2)}</strong></td>
+                  </tr>,
+                  isOpen && (
+                    <tr key={`${p.charId}-detail`} className="lh-detail-row">
+                      <td colSpan={colSpan} style={{ padding: 0 }}>
+                        <PlayerLootDetail loot={p.loot} />
+                      </td>
+                    </tr>
+                  ),
+                ].filter(Boolean);
+              })),
+            ];})}
+
           </tbody>
         </table>
       </div>
+        );
+      })()}
     </div>
   );
 }
