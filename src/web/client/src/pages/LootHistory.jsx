@@ -2,7 +2,7 @@ import { useState, useEffect, Fragment } from 'react';
 import ItemLink from '../components/ItemLink.jsx';
 import { apiPath } from '../lib/api.js';
 
-const DIFFICULTY_ORDER = ['Mythic', 'Heroic', 'Normal'];
+const DIFFICULTY_ORDER = ['Mythic', 'Heroic'];
 
 const UPGRADE_BADGE = {
   'BIS':      { label: 'BIS',      cls: 'badge-bis'     },

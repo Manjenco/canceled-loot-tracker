@@ -15,7 +15,8 @@ import {
 } from '../../../lib/sheets.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
 
-const COUNTED = new Set(['BIS', 'Non-BIS']);
+const COUNTED      = new Set(['BIS', 'Non-BIS']);
+const TRACKED_DIFF = new Set(['Heroic', 'Mythic']);
 
 const router = new Hono();
 router.use('*', requireAuth);
@@ -49,10 +50,11 @@ router.get('/history', async (c) => {
   const charById   = new Map(roster.map(r => [r.charId,                    r]));
   const charByName = new Map(roster.map(r => [r.charName.toLowerCase(),    r]));
 
-  // Filter to current season
-  const entries = seasonStart
-    ? lootLog.filter(e => e.date >= seasonStart)
-    : lootLog;
+  // Filter to current season, Heroic and Mythic only
+  const entries = lootLog.filter(e =>
+    TRACKED_DIFF.has(e.difficulty) &&
+    (!seasonStart || e.date >= seasonStart)
+  );
 
   // Group by character (charId preferred, charName fallback for old rows)
   const grouped = new Map(); // charId → { char, entries[] }
