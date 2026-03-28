@@ -1,19 +1,112 @@
 /**
  * routes/loot.js — Loot Log endpoints.
  *
- * POST /api/loot/import   Officer — import a RCLC CSV export
+ * GET  /api/loot/history   Officer — per-player loot totals + itemised history
+ * POST /api/loot/import    Officer — import a RCLC CSV export
  */
 
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
+  primeTeamCache,
   getRoster, getRclcResponseMap,
-  getLootLog, appendLootEntries,
+  getLootLog, appendLootEntries, getRaids,
 } from '../../../lib/sheets.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
 
+const COUNTED        = new Set(['BIS', 'Non-BIS']);
+const TRACKED_DIFF   = new Set(['Heroic', 'Mythic']);
+const HEROIC_WEIGHT  = 0.2;
+const NON_BIS_WEIGHT = 0.333;
+
 const router = new Hono();
 router.use('*', requireAuth);
+
+// ── GET /history ──────────────────────────────────────────────────────────────
+
+router.get('/history', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+
+  const { teamSheetId } = c.get('session').user;
+
+  await primeTeamCache(teamSheetId, ['roster', 'lootLog', 'raids']);
+
+  const [roster, lootLog, raids] = await Promise.all([
+    getRoster(teamSheetId),
+    getLootLog(teamSheetId),
+    getRaids(teamSheetId),
+  ]);
+
+  // Attendance count by Discord user ID
+  const raidsByOwner = {};
+  for (const raid of raids) for (const id of raid.attendeeIds) raidsByOwner[id] = (raidsByOwner[id] ?? 0) + 1;
+
+  // Lookup maps for joining loot → roster
+  const charById   = new Map(roster.map(r => [r.charId,                    r]));
+  const charByName = new Map(roster.map(r => [r.charName.toLowerCase(),    r]));
+
+  // Heroic and Mythic only — loot data is expected to be wiped between seasons
+  const entries = lootLog.filter(e => TRACKED_DIFF.has(e.difficulty));
+
+  // Group by character (charId preferred, charName fallback for old rows)
+  const grouped = new Map(); // charId → { char, entries[] }
+  for (const entry of entries) {
+    const char = (entry.recipientCharId && charById.get(entry.recipientCharId))
+      ?? charByName.get(entry.recipientChar.toLowerCase());
+    if (!char) continue; // pug or deleted roster entry — skip
+
+    if (!grouped.has(char.charId)) grouped.set(char.charId, { char, entries: [] });
+    grouped.get(char.charId).entries.push(entry);
+  }
+
+  const players = [...grouped.values()].map(({ char, entries: charEntries }) => {
+    // Per-difficulty counts for BIS and Non-BIS (Tertiary excluded from display)
+    const counts = { BIS: {}, 'Non-BIS': {} };
+    for (const e of charEntries) {
+      if (COUNTED.has(e.upgradeType)) {
+        const d = e.difficulty || 'Unknown';
+        counts[e.upgradeType][d] = (counts[e.upgradeType][d] ?? 0) + 1;
+      }
+    }
+
+    const raidsAttended = raidsByOwner[char.ownerId] ?? 0;
+
+    // Same weighted formula as the council loot-density multiplier
+    const bisM      = counts.BIS['Mythic']      ?? 0;
+    const bisH      = counts.BIS['Heroic']      ?? 0;
+    const nonBisM   = counts['Non-BIS']['Mythic'] ?? 0;
+    const nonBisH   = counts['Non-BIS']['Heroic'] ?? 0;
+    const weighted  = bisM + bisH * HEROIC_WEIGHT
+      + (nonBisM + nonBisH * HEROIC_WEIGHT) * NON_BIS_WEIGHT;
+    const lootPerRaid = weighted / Math.max(raidsAttended, 1);
+
+    // Newest first for the detail panel; exclude Tertiary
+    const loot = [...charEntries]
+      .filter(e => COUNTED.has(e.upgradeType))
+      .sort((a, b) => b.date.localeCompare(a.date));
+
+    return {
+      charId:       char.charId,
+      charName:     char.charName,
+      class:        char.class,
+      spec:         char.spec,
+      status:       char.status,
+      counts,
+      raidsAttended,
+      lootPerRaid,
+      loot,
+    };
+  });
+
+  // Primary sort: lootPerRaid desc. Secondary: charName alpha.
+  players.sort((a, b) => b.lootPerRaid - a.lootPerRaid || a.charName.localeCompare(b.charName));
+
+  return c.json({ players });
+});
+
+// ── POST /import ──────────────────────────────────────────────────────────────
 
 router.post('/import', async (c) => {
   if (!c.get('session').user?.isOfficer) {

@@ -55,6 +55,9 @@ export default function Layout({ children }) {
             <NavLink to="/roster" className="nav-tab">Roster</NavLink>
           )}
           {user?.isOfficer && (
+            <NavLink to="/loot-history" className="nav-tab">Loot History</NavLink>
+          )}
+          {user?.isOfficer && (
             <NavLink to="/import" className="nav-tab">Loot Import</NavLink>
           )}
           {user?.isGlobalOfficer && (
