@@ -347,6 +347,7 @@ function parseLootLogRows(rows) {
       upgradeType:     r[8] ?? '',
       notes:           r[9] ?? '',
       recipientCharId: String(r[10] ?? '').trim(),
+      ignored:         String(r[11] ?? '').trim().toUpperCase() === 'TRUE',
     }))
     .filter(e => e.id);
 }
@@ -427,7 +428,7 @@ function parseWornBisRows(rows) {
 // Maps cache key → { range, parse } for all tabs that can be batch-loaded.
 const TEAM_TAB_DEFS = {
   roster:         { range: 'Roster!A2:K',          parse: parseRosterRows },
-  lootLog:        { range: 'Loot Log!A2:K',         parse: parseLootLogRows },
+  lootLog:        { range: 'Loot Log!A2:L',         parse: parseLootLogRows },
   bisSubmissions: { range: 'BIS Submissions!A2:N',  parse: parseBisRows },
   config:         { range: 'Config!A2:B',           parse: parseConfigRows },
   raids:          { range: 'Raids!A2:E',            parse: parseRaidsRows },
@@ -750,7 +751,7 @@ export async function rejectPrimarySpecChange(sheetId, charId) {
  */
 export async function getLootLog(sheetId) {
   log.verbose(`[sheets] getLootLog (sheet ${sheetId.slice(-6)})`);
-  return cachedRead(sheetId, 'lootLog', async () => parseLootLogRows(await readRange(sheetId, 'Loot Log!A2:K')));
+  return cachedRead(sheetId, 'lootLog', async () => parseLootLogRows(await readRange(sheetId, 'Loot Log!A2:L')));
 }
 
 /**
@@ -774,6 +775,31 @@ export async function appendLootEntries(sheetId, entries) {
 }
 
 /**
+ * Set or clear the Ignored flag (col L) for a batch of Loot Log entries.
+ * Finds each entry by ID, then writes TRUE or FALSE to col L.
+ *
+ * @param {string}   sheetId
+ * @param {string[]} ids      Entry IDs to update
+ * @param {boolean}  ignored  TRUE to ignore, FALSE to unignore
+ * @returns {number} rows actually updated
+ */
+export async function patchLootEntryIgnored(sheetId, ids, ignored) {
+  log.verbose(`[sheets] patchLootEntryIgnored ${ids.length} IDs ignored=${ignored} (sheet ${sheetId.slice(-6)})`);
+  const idSet = new Set(ids);
+  const rows  = await readRange(sheetId, 'Loot Log!A2:A');
+  const updates = [];
+  for (let i = 0; i < rows.length; i++) {
+    const id = String(rows[i][0] ?? '').trim();
+    if (idSet.has(id)) updates.push({ range: `Loot Log!L${i + 2}`, values: [[ignored ? 'TRUE' : 'FALSE']] });
+  }
+  if (updates.length) {
+    await batchWriteRanges(sheetId, updates);
+    cacheInvalidate(sheetId, 'lootLog');
+  }
+  return updates.length;
+}
+
+/**
  * Backfill missing RecipientId (col G) and RecipientCharId (col K) in the Loot Log
  * by matching RecipientChar (col H) against the current roster.
  * Only writes to cells that are currently blank — never overwrites existing values.
@@ -789,7 +815,7 @@ export async function backfillLootEntryIds(sheetId) {
   const charIdByName  = new Map(roster.map(r => [r.charName.toLowerCase(), r.charId]));
   const ownerIdByName = new Map(roster.map(r => [r.charName.toLowerCase(), r.ownerId]));
 
-  const rows = await readRange(sheetId, 'Loot Log!A2:K');
+  const rows = await readRange(sheetId, 'Loot Log!A2:L');
   const charIdUpdates  = [];
   const ownerIdUpdates = [];
 

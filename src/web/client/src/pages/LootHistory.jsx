@@ -59,15 +59,18 @@ function PlayerLootDetail({ loot }) {
 // ── Skipped rows diagnostic ───────────────────────────────────────────────────
 
 const SKIP_SECTIONS = [
-  { key: 'noRosterMatch',   label: 'No Roster Match',    desc: 'Pugs, deleted characters, or unresolvable CharId/name.' },
-  { key: 'wrongDifficulty', label: 'Wrong Difficulty',   desc: 'Difficulty not in the tracked set (Normal / Heroic / Mythic). Select the correct value to fix.' },
-  { key: 'tertiary',        label: 'Tertiary',           desc: 'Tertiary drops — excluded from loot score but still recorded.' },
+  { key: 'noRosterMatch',    label: 'No Roster Match',    desc: 'Pugs, deleted characters, or unresolvable CharId/name.' },
+  { key: 'wrongDifficulty',  label: 'Wrong Difficulty',   desc: 'Difficulty not in the tracked set (Normal / Heroic / Mythic). Select the correct value to fix.' },
+  { key: 'manuallyIgnored',  label: 'Manually Ignored',   desc: 'Entries intentionally excluded from loot history.' },
+  { key: 'tertiary',         label: 'Tertiary',           desc: 'Tertiary drops — excluded from loot score but still recorded.' },
 ];
 
 const DIFF_OPTIONS = ['Normal', 'Heroic', 'Mythic'];
 
-function SkippedTable({ rows, corrections, onCorrect }) {
-  const editable = !!onCorrect;
+function SkippedTable({ rows, corrections, onCorrect, onIgnore, onUnignore }) {
+  const editable   = !!onCorrect;
+  const ignoreable = !!onIgnore;
+  const unignorable = !!onUnignore;
   return (
     <table className="loot-table lh-detail-table" style={{ marginTop: 8 }}>
       <thead>
@@ -78,6 +81,7 @@ function SkippedTable({ rows, corrections, onCorrect }) {
           <th>Diff</th>
           <th>Type</th>
           <th>Reason</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -102,6 +106,10 @@ function SkippedTable({ rows, corrections, onCorrect }) {
             </td>
             <td>{e.upgradeType || '—'}</td>
             <td className="text-muted" style={{ fontSize: '0.82em' }}>{e.skipReason}</td>
+            <td className="lh-action-cell">
+              {ignoreable  && <button className="lh-ignore-btn"   onClick={() => onIgnore(e.id)}>Ignore</button>}
+              {unignorable && <button className="lh-unignore-btn" onClick={() => onUnignore(e.id)}>Unignore</button>}
+            </td>
           </tr>
         ))}
       </tbody>
@@ -110,9 +118,26 @@ function SkippedTable({ rows, corrections, onCorrect }) {
 }
 
 function SkippedSection({ skipped, open, onToggle, sectionRef }) {
-  const [openSub,     setOpenSub]     = useState({});
+  const [openSub,      setOpenSub]      = useState({});
   const [reprocessing, setReprocessing] = useState(false);
   const [reprocessErr, setReprocessErr] = useState(null);
+  const [ignoring,     setIgnoring]     = useState(false);
+
+  const patchIgnored = async (ids, ignored) => {
+    setIgnoring(true);
+    try {
+      const r = await fetch(apiPath('/api/loot/ignored'), {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, ignored }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? r.status);
+      window.location.reload();
+    } catch (e) {
+      alert('Failed to update ignored state: ' + e.message);
+      setIgnoring(false);
+    }
+  };
   const [corrections, setCorrections] = useState({});
   const [saving,  setSaving]  = useState(false);
   const [saveErr, setSaveErr] = useState(null);
@@ -170,8 +195,10 @@ function SkippedSection({ skipped, open, onToggle, sectionRef }) {
             const rows = skipped[key] ?? [];
             if (!rows.length) return null;
             const subOpen = openSub[key] ?? false;
-            const isEditable = key === 'wrongDifficulty';
+            const isEditable    = key === 'wrongDifficulty';
             const isRosterMatch = key === 'noRosterMatch';
+            const isIgnorable   = key === 'noRosterMatch' || key === 'wrongDifficulty';
+            const isIgnored     = key === 'manuallyIgnored';
 
             const handleReprocess = async (e) => {
               e.stopPropagation();
@@ -200,7 +227,7 @@ function SkippedSection({ skipped, open, onToggle, sectionRef }) {
                     <>
                       <button
                         className="lh-reprocess-btn"
-                        disabled={reprocessing}
+                        disabled={reprocessing || ignoring}
                         onClick={handleReprocess}
                       >
                         {reprocessing ? 'Reprocessing…' : 'Reprocess'}
@@ -208,12 +235,23 @@ function SkippedSection({ skipped, open, onToggle, sectionRef }) {
                       {reprocessErr && <span className="lh-save-err">{reprocessErr}</span>}
                     </>
                   )}
+                  {isIgnorable && rows.length > 0 && (
+                    <button
+                      className="lh-ignore-all-btn"
+                      disabled={ignoring}
+                      onClick={e => { e.stopPropagation(); patchIgnored(rows.map(r => r.id), true); }}
+                    >
+                      {ignoring ? 'Ignoring…' : 'Ignore all'}
+                    </button>
+                  )}
                 </div>
                 {subOpen && (
                   <SkippedTable
                     rows={rows}
-                    corrections={isEditable ? corrections : undefined}
-                    onCorrect={isEditable ? handleCorrect : undefined}
+                    corrections={isEditable  ? corrections : undefined}
+                    onCorrect={isEditable    ? handleCorrect : undefined}
+                    onIgnore={isIgnorable    ? (id) => patchIgnored([id], true)  : undefined}
+                    onUnignore={isIgnored    ? (id) => patchIgnored([id], false) : undefined}
                   />
                 )}
               </div>

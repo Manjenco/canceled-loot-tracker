@@ -10,7 +10,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   primeTeamCache,
   getRoster, getRclcResponseMap,
-  getLootLog, appendLootEntries, patchLootEntryDifficulties, backfillLootEntryIds, getRaids,
+  getLootLog, appendLootEntries, patchLootEntryDifficulties, patchLootEntryIgnored, backfillLootEntryIds, getRaids,
   getConfig,
 } from '../../../lib/sheets.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
@@ -52,11 +52,15 @@ router.get('/history', async (c) => {
   const charByName = new Map(roster.map(r => [r.charName.toLowerCase(),    r]));
 
   // Track skipped rows for diagnostic display
-  const skipped = { wrongDifficulty: [], noRosterMatch: [], tertiary: [] };
+  const skipped = { wrongDifficulty: [], noRosterMatch: [], tertiary: [], manuallyIgnored: [] };
 
   // Normal/Heroic/Mythic only — loot data is expected to be wiped between seasons
   const entries = [];
   for (const e of lootLog) {
+    if (e.ignored) {
+      skipped.manuallyIgnored.push({ ...e, skipReason: 'Manually ignored' });
+      continue;
+    }
     if (!TRACKED_DIFF.has(e.difficulty)) {
       skipped.wrongDifficulty.push({ ...e, skipReason: `Difficulty "${e.difficulty || '(blank)'}" not tracked` });
     } else {
@@ -146,6 +150,22 @@ router.post('/reprocess', async (c) => {
   const { teamSheetId } = c.get('session').user;
   const result = await backfillLootEntryIds(teamSheetId);
   return c.json(result);
+});
+
+// ── PATCH /ignored ────────────────────────────────────────────────────────────
+// Set or clear the Ignored flag (col L) for a list of entry IDs.
+
+router.patch('/ignored', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+  const { ids, ignored } = await c.req.json();
+  if (!Array.isArray(ids) || !ids.length || typeof ignored !== 'boolean') {
+    return c.json({ error: 'ids (string[]) and ignored (boolean) are required.' }, 400);
+  }
+  const { teamSheetId } = c.get('session').user;
+  const updated = await patchLootEntryIgnored(teamSheetId, ids, ignored);
+  return c.json({ updated });
 });
 
 // ── PATCH /entries ────────────────────────────────────────────────────────────
