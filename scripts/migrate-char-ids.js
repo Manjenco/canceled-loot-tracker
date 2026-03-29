@@ -31,7 +31,13 @@ import { readRange, batchWriteRanges } from '../src/lib/sheets.js';
 // ── Resolve team sheet IDs ─────────────────────────────────────────────────────
 
 const masterSheetId = process.env.MASTER_SHEET_ID;
-const argSheetId    = process.argv[2];
+
+const args       = process.argv.slice(2).filter(a => !a.startsWith('--'));
+const flags      = new Set(process.argv.slice(2).filter(a => a.startsWith('--')));
+const DRY_RUN    = flags.has('--dry-run');
+const argSheetId = args[0];
+
+if (DRY_RUN) console.log('*** DRY RUN — no changes will be written ***\n');
 
 let teamSheetIds;
 
@@ -51,7 +57,7 @@ if (argSheetId) {
   }
   console.log(`Found ${teamSheetIds.length} team(s): ${teamSheetIds.map(t => t.name).join(', ')}\n`);
 } else {
-  console.error('Usage: node --env-file=.env scripts/migrate-char-ids.js [teamSheetId]');
+  console.error('Usage: node --env-file=.env scripts/migrate-char-ids.js [teamSheetId] [--dry-run]');
   console.error('       MASTER_SHEET_ID env var must be set if no teamSheetId is provided.');
   process.exit(1);
 }
@@ -60,6 +66,10 @@ if (argSheetId) {
 
 async function batchWriteChunked(sheetId, updates, label, chunkSize = 50) {
   if (!updates.length) { console.log(`  ${label}: nothing to write`); return; }
+  if (DRY_RUN) {
+    console.log(`  ${label}: [dry-run] would write ${updates.length} cells`);
+    return;
+  }
   console.log(`  ${label}: writing ${updates.length} cells in chunks of ${chunkSize}…`);
   for (let i = 0; i < updates.length; i += chunkSize) {
     await batchWriteRanges(sheetId, updates.slice(i, i + chunkSize));
