@@ -224,7 +224,13 @@ router.post('/import', async (c) => {
 
     if (entries.length) await appendLootEntries(teamSheetId, entries);
 
-    return c.json({ imported: entries.length, skipped, total: rows.length, warnings });
+    // Count error rows among the newly imported entries so the UI can warn the user
+    const errorRows = {
+      noRosterMatch:   entries.filter(e => !e.recipientCharId).length,
+      wrongDifficulty: entries.filter(e => !TRACKED_DIFF.has(e.difficulty)).length,
+    };
+
+    return c.json({ imported: entries.length, skipped, total: rows.length, warnings, errorRows });
   } catch (err) {
     console.error('[LOOT IMPORT]', err);
     return c.json({ error: 'Import failed. Check server logs.' }, 500);

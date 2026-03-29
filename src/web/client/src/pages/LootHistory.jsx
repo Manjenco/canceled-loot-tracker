@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import ItemLink from '../components/ItemLink.jsx';
 import { apiPath } from '../lib/api.js';
 
@@ -275,7 +276,8 @@ export default function LootHistory() {
   const [expanded,       setExpanded]       = useState(new Set());
   const [expandedGroups, setExpandedGroups] = useState({ Active: true, Bench: false, Inactive: false });
   const [skippedOpen, setSkippedOpen] = useState(false);
-  const skippedRef = useRef(null);
+  const skippedRef    = useRef(null);
+  const [searchParams] = useSearchParams();
   const [showDiff,       setShowDiff]       = useState({ Mythic: true, Heroic: true, Normal: true });
 
   useEffect(() => {
@@ -284,6 +286,13 @@ export default function LootHistory() {
       .then(d => { setData(d); setLoading(false); })
       .catch(e => { setError(e); setLoading(false); });
   }, []);
+
+  // Auto-open the skipped section and scroll to it when ?review=1 is in the URL
+  useEffect(() => {
+    if (!data || !searchParams.get('review')) return;
+    setSkippedOpen(true);
+    setTimeout(() => skippedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+  }, [data, searchParams]);
 
   if (loading) return <div className="loading">Loading loot history…</div>;
   if (error)   return <div className="error">Failed to load loot history.</div>;
