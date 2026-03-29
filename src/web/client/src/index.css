@@ -1926,3 +1926,22 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .lh-detail-table { width: 100%; }
 .lh-detail-table th { background: #0f0f0f; }
 .lh-detail-table tr:last-child td { border-bottom: none; }
+
+/* Skipped rows diagnostic */
+.lh-skipped-card { margin-top: 16px; padding: 0; overflow: hidden; }
+.lh-skipped-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 14px; cursor: pointer; font-size: 0.8rem;
+  font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted); background: var(--surface2, #111);
+}
+.lh-skipped-header:hover { background: #161616; }
+.lh-skipped-body { padding: 8px 12px 12px; }
+.lh-skip-group { margin-bottom: 4px; }
+.lh-skip-group-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 4px; cursor: pointer; font-size: 0.82rem;
+  border-radius: 4px;
+}
+.lh-skip-group-header:hover { background: rgba(255,255,255,0.04); }
+.lh-skip-desc { font-size: 0.75rem; font-weight: 400; margin-left: 4px; }

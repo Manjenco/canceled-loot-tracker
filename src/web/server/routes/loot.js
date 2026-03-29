@@ -51,8 +51,18 @@ router.get('/history', async (c) => {
   const charById   = new Map(roster.map(r => [r.charId,                    r]));
   const charByName = new Map(roster.map(r => [r.charName.toLowerCase(),    r]));
 
+  // Track skipped rows for diagnostic display
+  const skipped = { wrongDifficulty: [], noRosterMatch: [], tertiary: [] };
+
   // Normal/Heroic/Mythic only — loot data is expected to be wiped between seasons
-  const entries = lootLog.filter(e => TRACKED_DIFF.has(e.difficulty));
+  const entries = [];
+  for (const e of lootLog) {
+    if (!TRACKED_DIFF.has(e.difficulty)) {
+      skipped.wrongDifficulty.push({ ...e, skipReason: `Difficulty "${e.difficulty || '(blank)'}" not tracked` });
+    } else {
+      entries.push(e);
+    }
+  }
 
   // Seed every roster member so characters with no loot still appear
   const grouped = new Map(); // charId → { char, entries[] }
@@ -61,7 +71,10 @@ router.get('/history', async (c) => {
   for (const entry of entries) {
     const char = (entry.recipientCharId && charById.get(entry.recipientCharId))
       ?? charByName.get(entry.recipientChar.toLowerCase());
-    if (!char) continue; // pug or deleted roster entry — skip
+    if (!char) {
+      skipped.noRosterMatch.push({ ...entry, skipReason: `No roster match for "${entry.recipientChar}"${entry.recipientCharId ? ` (charId: ${entry.recipientCharId})` : ''}` });
+      continue;
+    }
 
     if (!grouped.has(char.charId)) grouped.set(char.charId, { char, entries: [] });
     grouped.get(char.charId).entries.push(entry);
@@ -90,6 +103,13 @@ router.get('/history', async (c) => {
       + (nonBisM + nonBisH * heroicWeight + nonBisN * normalWeight) * nonBisWeight;
     const lootPerRaid = weighted / Math.max(raidsAttended, 1);
 
+    // Collect Tertiary rows into skipped (only once — use char's first pass)
+    for (const e of charEntries) {
+      if (!COUNTED.has(e.upgradeType)) {
+        skipped.tertiary.push({ ...e, skipReason: `Upgrade type "${e.upgradeType}" excluded from loot score` });
+      }
+    }
+
     // Newest first for the detail panel; exclude Tertiary
     const loot = [...charEntries]
       .filter(e => COUNTED.has(e.upgradeType))
@@ -111,7 +131,7 @@ router.get('/history', async (c) => {
   // Primary sort: lootPerRaid desc. Secondary: charName alpha.
   players.sort((a, b) => b.lootPerRaid - a.lootPerRaid || a.charName.localeCompare(b.charName));
 
-  return c.json({ players, heroicWeight, normalWeight, nonBisWeight });
+  return c.json({ players, heroicWeight, normalWeight, nonBisWeight, skipped });
 });
 
 // ── POST /import ──────────────────────────────────────────────────────────────

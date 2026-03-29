@@ -56,6 +56,81 @@ function PlayerLootDetail({ loot }) {
   );
 }
 
+// ── Skipped rows diagnostic ───────────────────────────────────────────────────
+
+const SKIP_SECTIONS = [
+  { key: 'noRosterMatch',   label: 'No Roster Match',    desc: 'Pugs, deleted characters, or unresolvable CharId/name.' },
+  { key: 'wrongDifficulty', label: 'Wrong Difficulty',   desc: 'Difficulty not in the tracked set (Normal / Heroic / Mythic).' },
+  { key: 'tertiary',        label: 'Tertiary',           desc: 'Tertiary drops — excluded from loot score but still recorded.' },
+];
+
+function SkippedTable({ rows }) {
+  return (
+    <table className="loot-table lh-detail-table" style={{ marginTop: 8 }}>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Recipient</th>
+          <th>Item</th>
+          <th>Diff</th>
+          <th>Type</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(e => (
+          <tr key={e.id}>
+            <td>{e.date}</td>
+            <td>{e.recipientChar}</td>
+            <td><ItemLink name={e.itemName} /></td>
+            <td>{e.difficulty || '—'}</td>
+            <td>{e.upgradeType || '—'}</td>
+            <td className="text-muted" style={{ fontSize: '0.82em' }}>{e.skipReason}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function SkippedSection({ skipped }) {
+  const [open, setOpen] = useState(false);
+  const [openSub, setOpenSub] = useState({});
+
+  const total = SKIP_SECTIONS.reduce((n, s) => n + (skipped[s.key]?.length ?? 0), 0);
+  if (total === 0) return null;
+
+  return (
+    <div className="card lh-skipped-card">
+      <div className="lh-skipped-header" onClick={() => setOpen(o => !o)}>
+        <span className={`lh-chevron${open ? ' lh-chevron-open' : ''}`}>▶</span>
+        <span>Skipped / Ignored Rows</span>
+        <span className="lh-group-count">{total}</span>
+      </div>
+      {open && (
+        <div className="lh-skipped-body">
+          {SKIP_SECTIONS.map(({ key, label, desc }) => {
+            const rows = skipped[key] ?? [];
+            if (!rows.length) return null;
+            const subOpen = openSub[key] ?? false;
+            return (
+              <div key={key} className="lh-skip-group">
+                <div className="lh-skip-group-header" onClick={() => setOpenSub(p => ({ ...p, [key]: !p[key] }))}>
+                  <span className={`lh-chevron${subOpen ? ' lh-chevron-open' : ''}`}>▶</span>
+                  <strong>{label}</strong>
+                  <span className="lh-group-count">{rows.length}</span>
+                  <span className="text-muted lh-skip-desc">{desc}</span>
+                </div>
+                {subOpen && <SkippedTable rows={rows} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function LootHistory() {
@@ -81,7 +156,7 @@ export default function LootHistory() {
   });
   const toggleGroup = (label)  => setExpandedGroups(prev => ({ ...prev, [label]: !prev[label] }));
 
-  const { players, heroicWeight = 0.2, normalWeight = 0, nonBisWeight = 0.333 } = data;
+  const { players, heroicWeight = 0.2, normalWeight = 0, nonBisWeight = 0.333, skipped = {} } = data;
 
   const groups = ['Active', 'Bench', 'Inactive']
     .map(status => ({
@@ -176,6 +251,8 @@ export default function LootHistory() {
       </div>
         );
       })()}
+
+      <SkippedSection skipped={skipped} />
     </div>
   );
 }
