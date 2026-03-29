@@ -1,5 +1,6 @@
 import { apiPath } from '../lib/api.js';
 import { useState, useRef } from 'react';
+import { Link } from 'react-router-dom';
 
 export default function LootImport() {
   const [file, setFile]         = useState(null);
@@ -109,8 +110,24 @@ export default function LootImport() {
         <div className="error">{error}</div>
       )}
 
-      {result && (
+      {result && (() => {
+        const { noRosterMatch = 0, wrongDifficulty = 0 } = result.errorRows ?? {};
+        const totalErrors = noRosterMatch + wrongDifficulty;
+        return (
         <div className="loot-import-result">
+          {totalErrors > 0 && (
+            <div className="loot-import-error-notice">
+              <span className="loot-import-error-icon">⚠</span>
+              <span className="loot-import-error-msg">
+                <strong>{totalErrors}</strong> imported {totalErrors === 1 ? 'entry has' : 'entries have'} errors
+                {noRosterMatch   > 0 && <span> — <strong>{noRosterMatch}</strong> no roster match</span>}
+                {wrongDifficulty > 0 && <span> — <strong>{wrongDifficulty}</strong> wrong difficulty</span>}
+              </span>
+              <Link className="loot-import-error-btn" to="/loot-history?review=1">
+                Review &amp; Fix ↗
+              </Link>
+            </div>
+          )}
           <div className="loot-import-stats">
             <div className="loot-import-stat">
               <span className="loot-import-stat-value">{result.imported}</span>
@@ -139,7 +156,8 @@ export default function LootImport() {
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

@@ -31,7 +31,13 @@ import { readRange, batchWriteRanges } from '../src/lib/sheets.js';
 // ── Resolve team sheet IDs ─────────────────────────────────────────────────────
 
 const masterSheetId = process.env.MASTER_SHEET_ID;
-const argSheetId    = process.argv[2];
+
+const args       = process.argv.slice(2).filter(a => !a.startsWith('--'));
+const flags      = new Set(process.argv.slice(2).filter(a => a.startsWith('--')));
+const DRY_RUN    = flags.has('--dry-run');
+const argSheetId = args[0];
+
+if (DRY_RUN) console.log('*** DRY RUN — no changes will be written ***\n');
 
 let teamSheetIds;
 
@@ -51,7 +57,7 @@ if (argSheetId) {
   }
   console.log(`Found ${teamSheetIds.length} team(s): ${teamSheetIds.map(t => t.name).join(', ')}\n`);
 } else {
-  console.error('Usage: node --env-file=.env scripts/migrate-char-ids.js [teamSheetId]');
+  console.error('Usage: node --env-file=.env scripts/migrate-char-ids.js [teamSheetId] [--dry-run]');
   console.error('       MASTER_SHEET_ID env var must be set if no teamSheetId is provided.');
   process.exit(1);
 }
@@ -60,6 +66,10 @@ if (argSheetId) {
 
 async function batchWriteChunked(sheetId, updates, label, chunkSize = 50) {
   if (!updates.length) { console.log(`  ${label}: nothing to write`); return; }
+  if (DRY_RUN) {
+    console.log(`  ${label}: [dry-run] would write ${updates.length} cells`);
+    return;
+  }
   console.log(`  ${label}: writing ${updates.length} cells in chunks of ${chunkSize}…`);
   for (let i = 0; i < updates.length; i += chunkSize) {
     await batchWriteRanges(sheetId, updates.slice(i, i + chunkSize));
@@ -79,17 +89,21 @@ async function migrateTeam(sheetId, teamName = '') {
   console.log('Step 1: Roster — generating charIds for un-migrated rows…');
 
   // Schema (new): A=CharName B=Class C=Spec D=Role E=Status F=OwnerId G=OwnerNick H=CharId
-  const rosterRows   = await readRange(sheetId, 'Roster!A2:H');
-  const charIdByName = new Map();  // charName.toLowerCase() → charId
+  const rosterRows    = await readRange(sheetId, 'Roster!A2:H');
+  const charIdByName  = new Map();  // charName.toLowerCase() → charId
+  const ownerIdByName = new Map();  // charName.toLowerCase() → ownerId
   const rosterUpdates = [];
 
   for (let i = 0; i < rosterRows.length; i++) {
     const r        = rosterRows[i];
     const charName = String(r[0] ?? '').trim();
+    const ownerId  = String(r[5] ?? '').trim(); // col F
     const status   = String(r[4] ?? '').trim().toLowerCase();
     const existing = String(r[7] ?? '').trim(); // col H
 
     if (!charName || status === 'deleted') continue;
+
+    if (ownerId) ownerIdByName.set(charName.toLowerCase(), ownerId);
 
     if (existing) {
       // Already has a charId — just record it for downstream steps
@@ -135,42 +149,51 @@ async function migrateTeam(sheetId, teamName = '') {
   if (bisMissing.size) console.warn(`  ⚠  ${bisMissing.size} BIS rows could not be linked (char not in roster): ${[...bisMissing].sort().join(', ')}`);
   console.log();
 
-  // ── Step 3: Loot Log — fill col K from recipientChar lookup ─────────────────
+  // ── Step 3: Loot Log — fill col G (RecipientId) and col K (RecipientCharId) ──
 
-  console.log('Step 3: Loot Log — writing recipientCharId to col K…');
+  console.log('Step 3: Loot Log — writing recipientId (col G) and recipientCharId (col K)…');
 
-  // Schema (new): A=Id … H=RecipientChar … J=Notes K=RecipientCharId
-  const lootRows    = await readRange(sheetId, 'Loot Log!A2:K');
-  const lootUpdates  = [];
-  const lootMissing  = new Set(); // charNames that couldn't be linked
+  // Schema: A=Id B=RaidId C=Date D=Boss E=ItemName F=Difficulty G=RecipientId
+  //         H=RecipientChar I=UpgradeType J=Notes K=RecipientCharId
+  const lootRows       = await readRange(sheetId, 'Loot Log!A2:K');
+  const charIdUpdates  = [];
+  const ownerIdUpdates = [];
+  const lootMissing    = new Set(); // charNames that couldn't be linked
 
   for (let i = 0; i < lootRows.length; i++) {
     const r             = lootRows[i];
     const id            = String(r[0]  ?? '').trim();
     const recipientChar = String(r[7]  ?? '').trim(); // col H
-    const existing      = String(r[10] ?? '').trim(); // col K
+    const existingOwner = String(r[6]  ?? '').trim(); // col G
+    const existingChar  = String(r[10] ?? '').trim(); // col K
 
-    if (!id || !recipientChar || existing) continue;
+    if (!id || !recipientChar) continue;
 
-    const charId = charIdByName.get(recipientChar.toLowerCase());
-    if (!charId) {
+    const nameKey = recipientChar.toLowerCase();
+    const charId  = charIdByName.get(nameKey);
+    const ownerId = ownerIdByName.get(nameKey);
+
+    if (!charId && !ownerId) {
       lootMissing.add(recipientChar);
       continue;
     }
 
-    lootUpdates.push({ range: `Loot Log!K${i + 2}`, values: [[charId]] });
+    if (charId  && !existingChar)  charIdUpdates.push({ range: `Loot Log!K${i + 2}`, values: [[charId]]  });
+    if (ownerId && !existingOwner) ownerIdUpdates.push({ range: `Loot Log!G${i + 2}`, values: [[ownerId]] });
   }
 
-  await batchWriteChunked(sheetId, lootUpdates, 'Loot Log!K (recipientCharId)');
+  await batchWriteChunked(sheetId, charIdUpdates,  'Loot Log!K (recipientCharId)');
+  await batchWriteChunked(sheetId, ownerIdUpdates, 'Loot Log!G (recipientId)');
   if (lootMissing.size) console.warn(`  ⚠  ${lootMissing.size} loot rows could not be linked (char not in roster): ${[...lootMissing].sort().join(', ')}`);
   console.log();
 
   // ── Summary ─────────────────────────────────────────────────────────────────
 
   console.log(`--- ${teamName || sheetId.slice(-6)} complete ---`);
-  console.log(`  Roster charIds written:     ${rosterUpdates.length}`);
-  console.log(`  BIS charIds written:        ${bisUpdates.length}`);
-  console.log(`  Loot log charIds written:   ${lootUpdates.length}`);
+  console.log(`  Roster charIds written:         ${rosterUpdates.length}`);
+  console.log(`  BIS charIds written:            ${bisUpdates.length}`);
+  console.log(`  Loot log charIds written:       ${charIdUpdates.length}`);
+  console.log(`  Loot log ownerIds written:      ${ownerIdUpdates.length}`);
 
   const allMissing = new Set([...bisMissing, ...lootMissing]);
   if (allMissing.size) {
@@ -186,25 +209,27 @@ async function migrateTeam(sheetId, teamName = '') {
   }
   console.log();
 
-  return { rosterUpdates: rosterUpdates.length, bisUpdates: bisUpdates.length, lootUpdates: lootUpdates.length, bisMissing: allMissing.size, lootMissing: lootMissing.size };
+  return { rosterUpdates: rosterUpdates.length, bisUpdates: bisUpdates.length, charIdUpdates: charIdUpdates.length, ownerIdUpdates: ownerIdUpdates.length, missing: allMissing.size };
 }
 
 // ── Run ────────────────────────────────────────────────────────────────────────
 
-let totalRoster = 0, totalBis = 0, totalLoot = 0;
+let totalRoster = 0, totalBis = 0, totalCharId = 0, totalOwnerId = 0;
 
 for (const { name, sheetId } of teamSheetIds) {
   const result = await migrateTeam(sheetId, name);
-  totalRoster += result.rosterUpdates;
-  totalBis    += result.bisUpdates;
-  totalLoot   += result.lootUpdates;
+  totalRoster   += result.rosterUpdates;
+  totalBis      += result.bisUpdates;
+  totalCharId   += result.charIdUpdates;
+  totalOwnerId  += result.ownerIdUpdates;
 }
 
 if (teamSheetIds.length > 1) {
   console.log('=== All teams migrated ===');
-  console.log(`  Total roster charIds written:     ${totalRoster}`);
-  console.log(`  Total BIS charIds written:        ${totalBis}`);
-  console.log(`  Total loot log charIds written:   ${totalLoot}`);
+  console.log(`  Total roster charIds written:         ${totalRoster}`);
+  console.log(`  Total BIS charIds written:            ${totalBis}`);
+  console.log(`  Total loot log charIds written:       ${totalCharId}`);
+  console.log(`  Total loot log ownerIds written:      ${totalOwnerId}`);
 } else {
   console.log('=== Migration complete ===');
 }

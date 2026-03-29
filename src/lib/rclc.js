@@ -221,8 +221,16 @@ export function buildLootEntries(rows, roster, responseMap, existingKeys) {
       rosterEntry = rosterByNameServer.get(`${nameKey}|${charServer.toLowerCase()}`) ?? null;
     }
     if (!rosterEntry) {
-      // Name-only fallback: only for entries without a server set (assumed unique)
-      rosterEntry = candidates.find(r => !r.server) ?? null;
+      if (candidates.length === 1) {
+        // Only one character with this name on the roster — use them regardless of
+        // whether they have a server field set. Server disambiguation only matters
+        // when two characters share a name across different realms.
+        rosterEntry = candidates[0];
+      } else {
+        // Multiple same-named characters: name-only match only for entries without
+        // a server set (those are assumed to be unique within the team).
+        rosterEntry = candidates.find(r => !r.server) ?? null;
+      }
     }
 
     const recipientId    = rosterEntry?.ownerId ?? '';

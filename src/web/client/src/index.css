@@ -255,6 +255,20 @@ a:hover { color: var(--primary-h); }
 .loot-import-stat-value   { font-size: 28px; font-weight: 700; color: var(--accent); }
 .loot-import-stat-label   { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
+.loot-import-error-notice {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; margin-bottom: 16px; border-radius: 6px;
+  background: rgba(204,16,16,0.15); border: 1px solid rgba(204,16,16,0.5);
+}
+.loot-import-error-icon { font-size: 1.1rem; color: #f87171; flex-shrink: 0; }
+.loot-import-error-msg  { flex: 1; font-size: 0.88rem; }
+.loot-import-error-btn  {
+  flex-shrink: 0; padding: 5px 14px; font-size: 0.82rem; font-weight: 600;
+  background: #CC1010; color: #fff; border-radius: 4px; text-decoration: none;
+  white-space: nowrap;
+}
+.loot-import-error-btn:hover { background: #aa0d0d; }
+
 .loot-import-warnings          { background: var(--surface); border-radius: 6px; padding: 12px 16px; }
 .loot-import-warnings-title    { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 .loot-import-warnings-list     { margin: 0; padding-left: 18px; }
@@ -1926,3 +1940,75 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .lh-detail-table { width: 100%; }
 .lh-detail-table th { background: #0f0f0f; }
 .lh-detail-table tr:last-child td { border-bottom: none; }
+
+/* Loot history error banner */
+.lh-error-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; margin-bottom: 16px; border-radius: 6px;
+  background: rgba(204, 16, 16, 0.15); border: 1px solid rgba(204, 16, 16, 0.5);
+}
+.lh-error-banner-icon { font-size: 1.1rem; color: #f87171; flex-shrink: 0; }
+.lh-error-banner-msg  { flex: 1; font-size: 0.88rem; color: var(--text); }
+.lh-error-banner-btn  {
+  flex-shrink: 0; padding: 5px 14px; font-size: 0.82rem; font-weight: 600;
+  background: #CC1010; color: #fff; border: none; border-radius: 4px; cursor: pointer;
+}
+.lh-error-banner-btn:hover { background: #aa0d0d; }
+
+/* Skipped rows diagnostic */
+.lh-skipped-card { margin-top: 16px; padding: 0; overflow: hidden; }
+.lh-skipped-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 14px; cursor: pointer; font-size: 0.8rem;
+  font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted); background: var(--surface2, #111);
+}
+.lh-skipped-header:hover { background: #161616; }
+.lh-skipped-body { padding: 8px 12px 12px; }
+.lh-skip-group { margin-bottom: 4px; }
+.lh-skip-group-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 4px; cursor: pointer; font-size: 0.82rem;
+  border-radius: 4px;
+}
+.lh-skip-group-header:hover { background: rgba(255,255,255,0.04); }
+.lh-skip-desc { font-size: 0.75rem; font-weight: 400; margin-left: 4px; }
+
+.lh-diff-select {
+  background: var(--surface2, #1a1a1a); color: var(--text-muted);
+  border: 1px solid var(--border, #333); border-radius: 4px;
+  padding: 2px 6px; font-size: 0.82rem; cursor: pointer;
+}
+.lh-diff-select-set { border-color: var(--primary, #CC1010); color: var(--text); }
+.lh-save-corrections-btn {
+  margin-left: auto; padding: 3px 12px; font-size: 0.78rem;
+  background: var(--primary, #CC1010); color: #fff; border: none;
+  border-radius: 4px; cursor: pointer; flex-shrink: 0;
+}
+.lh-save-corrections-btn:hover:not(:disabled) { background: #aa0d0d; }
+.lh-save-corrections-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.lh-save-err { font-size: 0.75rem; color: #f87171; margin-left: 8px; }
+.lh-reprocess-btn {
+  margin-left: auto; padding: 2px 10px; font-size: 0.76rem; font-weight: 600;
+  background: transparent; color: var(--primary, #CC1010);
+  border: 1px solid var(--primary, #CC1010); border-radius: 4px; cursor: pointer;
+  flex-shrink: 0;
+}
+.lh-reprocess-btn:hover:not(:disabled) { background: rgba(204,16,16,0.12); }
+.lh-reprocess-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.lh-ignore-all-btn {
+  padding: 2px 10px; font-size: 0.76rem; font-weight: 600;
+  background: transparent; color: var(--text-muted);
+  border: 1px solid var(--border, #444); border-radius: 4px; cursor: pointer;
+  flex-shrink: 0;
+}
+.lh-ignore-all-btn:hover:not(:disabled) { border-color: var(--text-muted); }
+.lh-ignore-all-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.lh-action-cell { white-space: nowrap; width: 1%; padding: 0 8px; }
+.lh-ignore-btn, .lh-unignore-btn {
+  padding: 2px 8px; font-size: 0.74rem; border-radius: 3px; cursor: pointer; border: none;
+}
+.lh-ignore-btn   { background: rgba(204,16,16,0.15); color: #f87171; }
+.lh-ignore-btn:hover   { background: rgba(204,16,16,0.3); }
+.lh-unignore-btn { background: rgba(255,255,255,0.07); color: var(--text-muted); }
+.lh-unignore-btn:hover { background: rgba(255,255,255,0.14); }

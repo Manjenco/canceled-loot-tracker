@@ -10,7 +10,8 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   primeTeamCache,
   getRoster, getRclcResponseMap,
-  getLootLog, appendLootEntries, getRaids,
+  getLootLog, appendLootEntries, patchLootEntryDifficulties, patchLootEntryIgnored,
+  reassignLootEntries, backfillLootEntryIds, getRaids,
   getConfig,
 } from '../../../lib/sheets.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
@@ -51,8 +52,22 @@ router.get('/history', async (c) => {
   const charById   = new Map(roster.map(r => [r.charId,                    r]));
   const charByName = new Map(roster.map(r => [r.charName.toLowerCase(),    r]));
 
+  // Track skipped rows for diagnostic display
+  const skipped = { wrongDifficulty: [], noRosterMatch: [], tertiary: [], manuallyIgnored: [] };
+
   // Normal/Heroic/Mythic only — loot data is expected to be wiped between seasons
-  const entries = lootLog.filter(e => TRACKED_DIFF.has(e.difficulty));
+  const entries = [];
+  for (const e of lootLog) {
+    if (e.ignored) {
+      skipped.manuallyIgnored.push({ ...e, skipReason: 'Manually ignored' });
+      continue;
+    }
+    if (!TRACKED_DIFF.has(e.difficulty)) {
+      skipped.wrongDifficulty.push({ ...e, skipReason: `Difficulty "${e.difficulty || '(blank)'}" not tracked` });
+    } else {
+      entries.push(e);
+    }
+  }
 
   // Seed every roster member so characters with no loot still appear
   const grouped = new Map(); // charId → { char, entries[] }
@@ -61,7 +76,10 @@ router.get('/history', async (c) => {
   for (const entry of entries) {
     const char = (entry.recipientCharId && charById.get(entry.recipientCharId))
       ?? charByName.get(entry.recipientChar.toLowerCase());
-    if (!char) continue; // pug or deleted roster entry — skip
+    if (!char) {
+      skipped.noRosterMatch.push({ ...entry, skipReason: `No roster match for "${entry.recipientChar}"${entry.recipientCharId ? ` (charId: ${entry.recipientCharId})` : ''}` });
+      continue;
+    }
 
     if (!grouped.has(char.charId)) grouped.set(char.charId, { char, entries: [] });
     grouped.get(char.charId).entries.push(entry);
@@ -90,6 +108,13 @@ router.get('/history', async (c) => {
       + (nonBisM + nonBisH * heroicWeight + nonBisN * normalWeight) * nonBisWeight;
     const lootPerRaid = weighted / Math.max(raidsAttended, 1);
 
+    // Collect Tertiary rows into skipped (only once — use char's first pass)
+    for (const e of charEntries) {
+      if (!COUNTED.has(e.upgradeType)) {
+        skipped.tertiary.push({ ...e, skipReason: `Upgrade type "${e.upgradeType}" excluded from loot score` });
+      }
+    }
+
     // Newest first for the detail panel; exclude Tertiary
     const loot = [...charEntries]
       .filter(e => COUNTED.has(e.upgradeType))
@@ -111,7 +136,100 @@ router.get('/history', async (c) => {
   // Primary sort: lootPerRaid desc. Secondary: charName alpha.
   players.sort((a, b) => b.lootPerRaid - a.lootPerRaid || a.charName.localeCompare(b.charName));
 
-  return c.json({ players, heroicWeight, normalWeight, nonBisWeight });
+  // Send active + bench roster so the client can populate the reassignment dropdown
+  const rosterMembers = roster
+    .filter(r => r.status === 'Active' || r.status === 'Bench')
+    .map(r => ({ charId: r.charId, charName: r.charName, spec: r.spec, status: r.status }))
+    .sort((a, b) => a.charName.localeCompare(b.charName));
+
+  return c.json({ players, heroicWeight, normalWeight, nonBisWeight, skipped, rosterMembers });
+});
+
+// ── POST /reprocess ───────────────────────────────────────────────────────────
+// Re-runs the roster ID backfill over the entire loot log. Call this after adding
+// missing roster entries so that previously-unresolvable rows get their CharId and
+// RecipientId populated without a full sheet migration run.
+
+router.post('/reprocess', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+  const { teamSheetId } = c.get('session').user;
+  const result = await backfillLootEntryIds(teamSheetId);
+  return c.json(result);
+});
+
+// ── PATCH /entries/reassign ───────────────────────────────────────────────────
+// Manually reassign loot entries to a specific roster character (rename fix).
+
+router.patch('/entries/reassign', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+  const { assignments } = await c.req.json();
+  if (!Array.isArray(assignments) || !assignments.length) {
+    return c.json({ error: 'assignments must be a non-empty array of { id, charId }.' }, 400);
+  }
+
+  const { teamSheetId } = c.get('session').user;
+  const roster  = await getRoster(teamSheetId);
+  const charById = new Map(roster.map(r => [r.charId, r]));
+
+  const resolved = assignments
+    .map(({ id, charId }) => {
+      const char = charById.get(charId);
+      return char ? { id, charId, charName: char.charName, ownerId: char.ownerId } : null;
+    })
+    .filter(Boolean);
+
+  if (!resolved.length) return c.json({ error: 'No valid charIds found in roster.' }, 400);
+
+  const updated = await reassignLootEntries(teamSheetId, resolved);
+  return c.json({ updated });
+});
+
+// ── PATCH /ignored ────────────────────────────────────────────────────────────
+// Set or clear the Ignored flag (col L) for a list of entry IDs.
+
+router.patch('/ignored', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+  const { ids, ignored } = await c.req.json();
+  if (!Array.isArray(ids) || !ids.length || typeof ignored !== 'boolean') {
+    return c.json({ error: 'ids (string[]) and ignored (boolean) are required.' }, 400);
+  }
+  const { teamSheetId } = c.get('session').user;
+  const updated = await patchLootEntryIgnored(teamSheetId, ids, ignored);
+  return c.json({ updated });
+});
+
+// ── PATCH /entries ────────────────────────────────────────────────────────────
+
+router.patch('/entries', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+
+  const { corrections } = await c.req.json();
+  if (!Array.isArray(corrections) || !corrections.length) {
+    return c.json({ error: 'corrections must be a non-empty array of { id, difficulty }.' }, 400);
+  }
+
+  const VALID_DIFF = new Set(['Normal', 'Heroic', 'Mythic']);
+  const correctionById = new Map();
+  for (const { id, difficulty } of corrections) {
+    if (id && VALID_DIFF.has(difficulty)) correctionById.set(id, difficulty);
+  }
+  if (!correctionById.size) {
+    return c.json({ error: 'No valid corrections supplied.' }, 400);
+  }
+
+  const { teamSheetId } = c.get('session').user;
+  const updated = await patchLootEntryDifficulties(teamSheetId, correctionById);
+  if (!updated) return c.json({ error: 'No matching loot log entries found.' }, 404);
+
+  return c.json({ updated });
 });
 
 // ── POST /import ──────────────────────────────────────────────────────────────
@@ -142,7 +260,13 @@ router.post('/import', async (c) => {
 
     if (entries.length) await appendLootEntries(teamSheetId, entries);
 
-    return c.json({ imported: entries.length, skipped, total: rows.length, warnings });
+    // Count error rows among the newly imported entries so the UI can warn the user
+    const errorRows = {
+      noRosterMatch:   entries.filter(e => !e.recipientCharId).length,
+      wrongDifficulty: entries.filter(e => !TRACKED_DIFF.has(e.difficulty)).length,
+    };
+
+    return c.json({ imported: entries.length, skipped, total: rows.length, warnings, errorRows });
   } catch (err) {
     console.error('[LOOT IMPORT]', err);
     return c.json({ error: 'Import failed. Check server logs.' }, 500);

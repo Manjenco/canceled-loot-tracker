@@ -343,10 +343,11 @@ function parseLootLogRows(rows) {
       itemName:        r[4] ?? '',
       difficulty:      r[5] ?? '',
       recipientId:     r[6] ?? '',
-      recipientChar:   r[7] ?? '',
+      recipientChar:   String(r[7] ?? '').trim(),
       upgradeType:     r[8] ?? '',
       notes:           r[9] ?? '',
       recipientCharId: String(r[10] ?? '').trim(),
+      ignored:         String(r[11] ?? '').trim().toUpperCase() === 'TRUE',
     }))
     .filter(e => e.id);
 }
@@ -427,7 +428,7 @@ function parseWornBisRows(rows) {
 // Maps cache key → { range, parse } for all tabs that can be batch-loaded.
 const TEAM_TAB_DEFS = {
   roster:         { range: 'Roster!A2:K',          parse: parseRosterRows },
-  lootLog:        { range: 'Loot Log!A2:K',         parse: parseLootLogRows },
+  lootLog:        { range: 'Loot Log!A2:L',         parse: parseLootLogRows },
   bisSubmissions: { range: 'BIS Submissions!A2:N',  parse: parseBisRows },
   config:         { range: 'Config!A2:B',           parse: parseConfigRows },
   raids:          { range: 'Raids!A2:E',            parse: parseRaidsRows },
@@ -750,7 +751,7 @@ export async function rejectPrimarySpecChange(sheetId, charId) {
  */
 export async function getLootLog(sheetId) {
   log.verbose(`[sheets] getLootLog (sheet ${sheetId.slice(-6)})`);
-  return cachedRead(sheetId, 'lootLog', async () => parseLootLogRows(await readRange(sheetId, 'Loot Log!A2:K')));
+  return cachedRead(sheetId, 'lootLog', async () => parseLootLogRows(await readRange(sheetId, 'Loot Log!A2:L')));
 }
 
 /**
@@ -771,6 +772,136 @@ export async function appendLootEntries(sheetId, entries) {
   ]);
   await appendRows(sheetId, 'Loot Log!A:K', rows);
   cacheInvalidate(sheetId, 'lootLog');
+}
+
+/**
+ * Set or clear the Ignored flag (col L) for a batch of Loot Log entries.
+ * Finds each entry by ID, then writes TRUE or FALSE to col L.
+ *
+ * @param {string}   sheetId
+ * @param {string[]} ids      Entry IDs to update
+ * @param {boolean}  ignored  TRUE to ignore, FALSE to unignore
+ * @returns {number} rows actually updated
+ */
+export async function patchLootEntryIgnored(sheetId, ids, ignored) {
+  log.verbose(`[sheets] patchLootEntryIgnored ${ids.length} IDs ignored=${ignored} (sheet ${sheetId.slice(-6)})`);
+  const idSet = new Set(ids);
+  const rows  = await readRange(sheetId, 'Loot Log!A2:A');
+  const updates = [];
+  for (let i = 0; i < rows.length; i++) {
+    const id = String(rows[i][0] ?? '').trim();
+    if (idSet.has(id)) updates.push({ range: `Loot Log!L${i + 2}`, values: [[ignored ? 'TRUE' : 'FALSE']] });
+  }
+  if (updates.length) {
+    await batchWriteRanges(sheetId, updates);
+    cacheInvalidate(sheetId, 'lootLog');
+  }
+  return updates.length;
+}
+
+/**
+ * Backfill missing RecipientId (col G) and RecipientCharId (col K) in the Loot Log
+ * by matching RecipientChar (col H) against the current roster.
+ * Only writes to cells that are currently blank — never overwrites existing values.
+ * Used by the "Reprocess" action on the loot history page after new roster entries
+ * have been added.
+ *
+ * @param {string} sheetId
+ * @returns {{ charIdUpdates: number, ownerIdUpdates: number }}
+ */
+export async function backfillLootEntryIds(sheetId) {
+  log.verbose(`[sheets] backfillLootEntryIds (sheet ${sheetId.slice(-6)})`);
+  const roster = await getRoster(sheetId);
+  const charIdByName  = new Map(roster.map(r => [r.charName.toLowerCase(), r.charId]));
+  const ownerIdByName = new Map(roster.map(r => [r.charName.toLowerCase(), r.ownerId]));
+
+  const rows = await readRange(sheetId, 'Loot Log!A2:L');
+  const charIdUpdates  = [];
+  const ownerIdUpdates = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r             = rows[i];
+    const id            = String(r[0]  ?? '').trim();
+    const recipientChar = String(r[7]  ?? '').trim(); // col H
+    const existingOwner = String(r[6]  ?? '').trim(); // col G
+    const existingChar  = String(r[10] ?? '').trim(); // col K
+
+    if (!id || !recipientChar) continue;
+    if (existingOwner && existingChar) continue; // already fully populated
+
+    const nameKey = recipientChar.toLowerCase();
+    const charId  = charIdByName.get(nameKey);
+    const ownerId = ownerIdByName.get(nameKey);
+    if (!charId && !ownerId) continue; // still unresolvable
+
+    if (charId  && !existingChar)  charIdUpdates.push({ range: `Loot Log!K${i + 2}`, values: [[charId]]  });
+    if (ownerId && !existingOwner) ownerIdUpdates.push({ range: `Loot Log!G${i + 2}`, values: [[ownerId]] });
+  }
+
+  const updates = [...charIdUpdates, ...ownerIdUpdates];
+  if (updates.length) {
+    await batchWriteRanges(sheetId, updates);
+    cacheInvalidate(sheetId, 'lootLog');
+  }
+  return { charIdUpdates: charIdUpdates.length, ownerIdUpdates: ownerIdUpdates.length };
+}
+
+/**
+ * Manually reassign Loot Log entries to specific roster characters, overwriting
+ * RecipientId (col G), RecipientChar (col H), and RecipientCharId (col K).
+ * Used when a character was renamed and the old name no longer matches the roster.
+ *
+ * @param {string}   sheetId
+ * @param {{ id: string, charId: string, charName: string, ownerId: string }[]} assignments
+ * @returns {number} count of entries updated
+ */
+export async function reassignLootEntries(sheetId, assignments) {
+  log.verbose(`[sheets] reassignLootEntries ${assignments.length} entries (sheet ${sheetId.slice(-6)})`);
+  const byId  = new Map(assignments.map(a => [a.id, a]));
+  const rows  = await readRange(sheetId, 'Loot Log!A2:A');
+  const updates = [];
+  for (let i = 0; i < rows.length; i++) {
+    const id = String(rows[i][0] ?? '').trim();
+    if (!byId.has(id)) continue;
+    const { charName, ownerId, charId } = byId.get(id);
+    const row = i + 2;
+    updates.push(
+      { range: `Loot Log!G${row}`, values: [[ownerId]]  },
+      { range: `Loot Log!H${row}`, values: [[charName]] },
+      { range: `Loot Log!K${row}`, values: [[charId]]   },
+    );
+  }
+  if (updates.length) {
+    await batchWriteRanges(sheetId, updates);
+    cacheInvalidate(sheetId, 'lootLog');
+  }
+  return updates.length / 3;
+}
+
+/**
+ * Patch the Difficulty field (col F) for a set of Loot Log entries identified by ID.
+ * Used by the loot history page to correct entries that were imported with a missing
+ * or unrecognised difficulty value.
+ *
+ * @param {string}   sheetId
+ * @param {Map<string,string>} correctionById  entry ID → new difficulty string
+ * @returns {number} count of rows actually updated
+ */
+export async function patchLootEntryDifficulties(sheetId, correctionById) {
+  log.verbose(`[sheets] patchLootEntryDifficulties ${correctionById.size} entries (sheet ${sheetId.slice(-6)})`);
+  const rows = await readRange(sheetId, 'Loot Log!A2:A');
+  const updates = [];
+  for (let i = 0; i < rows.length; i++) {
+    const id = String(rows[i][0] ?? '').trim();
+    if (correctionById.has(id)) {
+      updates.push({ range: `Loot Log!F${i + 2}`, values: [[correctionById.get(id)]] });
+    }
+  }
+  if (updates.length) {
+    await batchWriteRanges(sheetId, updates);
+    cacheInvalidate(sheetId, 'lootLog');
+  }
+  return updates.length;
 }
 
 /**
