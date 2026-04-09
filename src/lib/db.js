@@ -25,19 +25,23 @@ const run   = (db, sql, ...args) => db.prepare(sql).bind(...args).run();
 // effectively caches across rapid sequential requests from the same user/team.
 //
 // TTLs — tuned to how often each table changes in practice:
-//   LONG   (5 min)  item_db, default_bis, spec_bis_config, tier_items
-//   MEDIUM (2 min)  global_config, default_bis_overrides
-//   SHORT  (60 s)   team_config, roster, rclc_map, raids, tier_snapshot, worn_bis
-//   BRIEF  (30 s)   bis_submissions, loot_log
+//   LONG   (4 h)   item_db, default_bis, spec_bis_config, tier_items
+//   MEDIUM (1 h)   global_config, default_bis_overrides
+//   SHORT  (30 m)  team_config, roster, rclc_map, raids, tier_snapshot, worn_bis
+//   BRIEF  (10 m)  bis_submissions, loot_log
+//
+// Writes through this app call cacheInvalidate(), so the same isolate always
+// sees fresh data after a write. The TTL only affects other isolates seeing
+// stale data — acceptable for this low-write guild tool.
 
 const _cache    = new Map(); // key → { value, expiresAt }
 const _inflight = new Map(); // key → Promise  (in-flight dedup: concurrent reads share one query)
 
 const TTL = {
-  LONG:   5 * 60_000,
-  MEDIUM: 2 * 60_000,
-  SHORT:  60_000,
-  BRIEF:  30_000,
+  LONG:   4 * 60 * 60_000,
+  MEDIUM: 1 * 60 * 60_000,
+  SHORT:  30 * 60_000,
+  BRIEF:  10 * 60_000,
 };
 
 function cacheGet(key) {
