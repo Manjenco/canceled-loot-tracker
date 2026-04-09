@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { useMe, refreshMe } from '../hooks/useMe.js';
 import { apiPath } from '../lib/api.js';
+import DbDebugPanel from './DbDebugPanel.jsx';
 
 export default function Layout({ children }) {
   const { user } = useMe();
@@ -76,6 +77,7 @@ export default function Layout({ children }) {
       </header>
 
       <main className="main">{children}</main>
+      <DbDebugPanel />
     </div>
   );
 }

@@ -2078,3 +2078,84 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
   line-height: 1;
 }
 .btn-icon-danger:hover { color: #f87171; background: rgba(204,16,16,0.15); }
+
+/* ── DB Debug Panel ────────────────────────────────────────────────────────── */
+.db-debug-panel {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 9999;
+  font-size: 12px;
+  font-family: monospace;
+}
+.db-debug-toggle {
+  background: #1a1a1a;
+  border: 1px solid #CC1010;
+  color: #f5f5f5;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: monospace;
+  white-space: nowrap;
+}
+.db-debug-toggle:hover { background: #2a1a1a; }
+.db-debug-body {
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  min-width: 480px;
+  max-height: 400px;
+  overflow-y: auto;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+}
+.db-debug-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #222;
+  gap: 12px;
+}
+.db-debug-summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.db-debug-stat { color: #ccc; }
+.db-debug-age  { color: #666; }
+.db-debug-reset {
+  background: #CC1010;
+  border: none;
+  color: #fff;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: monospace;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.db-debug-reset:disabled { opacity: 0.5; cursor: default; }
+.db-debug-reset:hover:not(:disabled) { background: #e01515; }
+.db-debug-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.db-debug-table th {
+  padding: 4px 10px;
+  text-align: left;
+  color: #666;
+  font-weight: normal;
+  border-bottom: 1px solid #1e1e1e;
+  white-space: nowrap;
+}
+.db-debug-table th:not(:first-child) { text-align: right; }
+.db-debug-table td { padding: 3px 10px; border-bottom: 1px solid #1a1a1a; }
+.db-debug-table tr:last-child td { border-bottom: none; }
+.db-debug-key  { color: #aaa; word-break: break-all; }
+.db-debug-num  { text-align: right; color: #ddd; font-variant-numeric: tabular-nums; }
+.db-debug-miss { color: #f87171; }
+.db-debug-hit  { color: #4ade80; }

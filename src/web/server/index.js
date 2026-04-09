@@ -20,6 +20,7 @@ import adminRouter     from './routes/admin.js';
 import councilRouter   from './routes/council.js';
 import lootRouter      from './routes/loot.js';
 import rosterRouter    from './routes/roster.js';
+import debugRouter     from './routes/debug.js';
 
 // ── Base path ──────────────────────────────────────────────────────────────────
 // APP_BASE_PATH controls the URL prefix the app is mounted under.
@@ -56,6 +57,7 @@ app.route('/api/admin',     adminRouter);
 app.route('/api/council',   councilRouter);
 app.route('/api/loot',      lootRouter);
 app.route('/api/roster',    rosterRouter);
+app.route('/api/debug',     debugRouter);
 
 // ── SPA fallback ────────────────────────────────────────────────────────────
 // For any non-API route (e.g. /login, /bis, /council), serve the React app.

@@ -12,6 +12,7 @@
  */
 
 import { specToRole } from './specs.js';
+import { trackCacheHit, trackCacheMiss } from './db-debug.js';
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -67,11 +68,22 @@ function cacheInvalidatePrefix(prefix) {
 
 async function cachedRead(key, ttl, loader) {
   const hit = cacheGet(key);
-  if (hit !== null) return hit;
+  if (hit !== null) {
+    if (process.env.DB_DEBUG) trackCacheHit(key);
+    return hit;
+  }
   if (_inflight.has(key)) return _inflight.get(key);
   const promise = loader()
-    .then(value => { cacheSet(key, value, ttl); _inflight.delete(key); return value; })
-    .catch(err  => { _inflight.delete(key); throw err; });
+    .then(value => {
+      cacheSet(key, value, ttl);
+      _inflight.delete(key);
+      if (process.env.DB_DEBUG) {
+        const count = Array.isArray(value) ? value.length : value instanceof Map ? value.size : 1;
+        trackCacheMiss(key, count);
+      }
+      return value;
+    })
+    .catch(err => { _inflight.delete(key); throw err; });
   _inflight.set(key, promise);
   return promise;
 }
@@ -337,7 +349,13 @@ export async function backfillLootEntryIds(db, teamId) {
 export async function getBisSubmissions(db, teamId) {
   return cachedRead(`bis_submissions:${teamId}`, TTL.BRIEF, () =>
     all(db,
-      'SELECT * FROM bis_submissions WHERE team_id = ? ORDER BY submitted_at DESC',
+      `SELECT s.*,
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id
+       FROM bis_submissions s
+       LEFT JOIN item_db i1 ON i1.id = s.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = s.raid_bis_item_id
+       WHERE s.team_id = ? ORDER BY s.submitted_at DESC`,
       teamId
     )
   );
@@ -446,7 +464,15 @@ export async function writeItemDb(db, items, { replace = false } = {}) {
 
 export async function getDefaultBis(db) {
   return cachedRead('default_bis', TTL.LONG, () =>
-    all(db, 'SELECT * FROM default_bis ORDER BY spec, slot')
+    all(db,
+      `SELECT d.*,
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id
+       FROM default_bis d
+       LEFT JOIN item_db i1 ON i1.id = d.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = d.raid_bis_item_id
+       ORDER BY d.spec, d.slot`
+    )
   );
 }
 
@@ -494,7 +520,14 @@ export async function getEffectiveDefaultBis(db) {
 
 export async function getDefaultBisOverrides(db) {
   return cachedRead('default_bis_overrides', TTL.MEDIUM, () =>
-    all(db, 'SELECT * FROM default_bis_overrides')
+    all(db,
+      `SELECT o.*,
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id
+       FROM default_bis_overrides o
+       LEFT JOIN item_db i1 ON i1.id = o.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = o.raid_bis_item_id`
+    )
   );
 }
 
