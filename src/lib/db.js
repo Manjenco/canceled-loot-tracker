@@ -12,6 +12,7 @@
  */
 
 import { specToRole } from './specs.js';
+import { trackCacheHit, trackCacheMiss } from './db-debug.js';
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -25,19 +26,23 @@ const run   = (db, sql, ...args) => db.prepare(sql).bind(...args).run();
 // effectively caches across rapid sequential requests from the same user/team.
 //
 // TTLs — tuned to how often each table changes in practice:
-//   LONG   (5 min)  item_db, default_bis, spec_bis_config, tier_items
-//   MEDIUM (2 min)  global_config, default_bis_overrides
-//   SHORT  (60 s)   team_config, roster, rclc_map, raids, tier_snapshot, worn_bis
-//   BRIEF  (30 s)   bis_submissions, loot_log
+//   LONG   (4 h)   item_db, default_bis, spec_bis_config, tier_items
+//   MEDIUM (1 h)   global_config, default_bis_overrides
+//   SHORT  (30 m)  team_config, roster, rclc_map, raids, tier_snapshot, worn_bis
+//   BRIEF  (10 m)  bis_submissions, loot_log
+//
+// Writes through this app call cacheInvalidate(), so the same isolate always
+// sees fresh data after a write. The TTL only affects other isolates seeing
+// stale data — acceptable for this low-write guild tool.
 
 const _cache    = new Map(); // key → { value, expiresAt }
 const _inflight = new Map(); // key → Promise  (in-flight dedup: concurrent reads share one query)
 
 const TTL = {
-  LONG:   5 * 60_000,
-  MEDIUM: 2 * 60_000,
-  SHORT:  60_000,
-  BRIEF:  30_000,
+  LONG:   4 * 60 * 60_000,
+  MEDIUM: 1 * 60 * 60_000,
+  SHORT:  30 * 60_000,
+  BRIEF:  10 * 60_000,
 };
 
 function cacheGet(key) {
@@ -63,11 +68,22 @@ function cacheInvalidatePrefix(prefix) {
 
 async function cachedRead(key, ttl, loader) {
   const hit = cacheGet(key);
-  if (hit !== null) return hit;
+  if (hit !== null) {
+    if (process.env.DB_DEBUG) trackCacheHit(key);
+    return hit;
+  }
   if (_inflight.has(key)) return _inflight.get(key);
   const promise = loader()
-    .then(value => { cacheSet(key, value, ttl); _inflight.delete(key); return value; })
-    .catch(err  => { _inflight.delete(key); throw err; });
+    .then(value => {
+      cacheSet(key, value, ttl);
+      _inflight.delete(key);
+      if (process.env.DB_DEBUG) {
+        const count = Array.isArray(value) ? value.length : value instanceof Map ? value.size : 1;
+        trackCacheMiss(key, count);
+      }
+      return value;
+    })
+    .catch(err => { _inflight.delete(key); throw err; });
   _inflight.set(key, promise);
   return promise;
 }
@@ -162,9 +178,25 @@ export async function getRoster(db, teamId) {
   });
 }
 
+/**
+ * Returns only roster members with a pending primary spec change request.
+ * Used by the BIS review page — avoids loading the full roster.
+ */
+export async function getRosterPendingSpecChanges(db, teamId) {
+  return cachedRead(`roster_pending_spec:${teamId}`, TTL.BRIEF, async () => {
+    const rows = await all(db,
+      `SELECT * FROM roster WHERE team_id = ? AND pending_primary_spec IS NOT NULL AND pending_primary_spec != '' ORDER BY char_name`,
+      teamId
+    );
+    return rows.map(parseRosterRow);
+  });
+}
+
 export async function getRosterMember(db, id) {
-  const row = await first(db, 'SELECT * FROM roster WHERE id = ?', id);
-  return row ? parseRosterRow(row) : null;
+  return cachedRead(`roster_member:${id}`, TTL.SHORT, async () => {
+    const row = await first(db, 'SELECT * FROM roster WHERE id = ?', id);
+    return row ? parseRosterRow(row) : null;
+  });
 }
 
 export async function getRosterByOwnerId(db, teamId, ownerId) {
@@ -248,7 +280,35 @@ export async function rejectPrimarySpecChange(db, id) {
 // ── Loot log ──────────────────────────────────────────────────────────────────
 
 function parseLootRow(r) {
-  return { ...r, ignored: r.ignored === 1 };
+  return {
+    ...r,
+    // camelCase aliases so client and route code works without knowing column names
+    itemName:      r.item_name      ?? r.itemName      ?? '',
+    upgradeType:   r.upgrade_type   ?? r.upgradeType   ?? '',
+    recipientName: r.recipient_name ?? r.recipientName ?? '',
+    ignored:       r.ignored === 1,
+  };
+}
+
+/**
+ * Narrow variant: returns loot log entries for a single character.
+ * Matches by charId (FK) with name fallback for pre-migration rows.
+ * Use this on the dashboard; keep getLootLog() for council/loot-history pages.
+ */
+export async function getLootLogForChar(db, teamId, charId, charName) {
+  const cacheKey = `loot_log_char:${charId || charName}`;
+  return cachedRead(cacheKey, TTL.BRIEF, async () => {
+    const rows = await all(db,
+      `SELECT l.*, COALESCE(i.item_id, '') AS item_blizzard_id
+       FROM loot_log l
+       LEFT JOIN item_db i ON LOWER(i.name) = LOWER(l.item_name)
+       WHERE l.team_id = ?
+         AND (l.recipient_char_id = ? OR (l.recipient_char_id IS NULL AND LOWER(l.recipient_name) = LOWER(?)))
+       ORDER BY l.date DESC`,
+      teamId, charId || null, charName
+    );
+    return rows.map(parseLootRow);
+  });
 }
 
 export async function getLootLog(db, teamId) {
@@ -330,10 +390,90 @@ export async function backfillLootEntryIds(db, teamId) {
 
 // ── BIS submissions ───────────────────────────────────────────────────────────
 
+/**
+ * Narrow variant: returns BIS submissions for a single character only.
+ * Use this on the dashboard; keep getBisSubmissions() for review/roster pages.
+ */
+export async function getBisSubmissionsForChar(db, teamId, charId, charName) {
+  return cachedRead(`bis_sub_char:${charId || charName}`, TTL.BRIEF, () =>
+    all(db,
+      `SELECT s.*,
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id,
+              i3.item_id     AS true_bis_blizzard_id,
+              i3.difficulty  AS true_bis_difficulty,
+              i3.source_type AS true_bis_source_type,
+              i3.source_name AS true_bis_source_name,
+              i4.item_id     AS raid_bis_blizzard_id,
+              i4.difficulty  AS raid_bis_difficulty,
+              i4.source_type AS raid_bis_source_type,
+              i4.source_name AS raid_bis_source_name
+       FROM bis_submissions s
+       LEFT JOIN item_db i1 ON i1.id = s.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = s.raid_bis_item_id
+       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)
+       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)
+       WHERE s.team_id = ?
+         AND (s.char_id = ? OR (s.char_id IS NULL AND LOWER(s.char_name) = LOWER(?)))
+       ORDER BY s.submitted_at DESC`,
+      teamId, charId || null, charName
+    )
+  );
+}
+
+/**
+ * Returns only Pending submissions for a team — used by the BIS review page.
+ * Much smaller than getBisSubmissions() which loads all statuses for all chars.
+ */
+export async function getBisSubmissionsPending(db, teamId) {
+  return cachedRead(`bis_submissions_pending:${teamId}`, TTL.BRIEF, () =>
+    all(db,
+      `SELECT s.*,
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id,
+              i3.item_id     AS true_bis_blizzard_id,
+              i3.difficulty  AS true_bis_difficulty,
+              i3.source_type AS true_bis_source_type,
+              i3.source_name AS true_bis_source_name,
+              i4.item_id     AS raid_bis_blizzard_id,
+              i4.difficulty  AS raid_bis_difficulty,
+              i4.source_type AS raid_bis_source_type,
+              i4.source_name AS raid_bis_source_name
+       FROM bis_submissions s
+       LEFT JOIN item_db i1 ON i1.id = s.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = s.raid_bis_item_id
+       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)
+       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)
+       WHERE s.team_id = ? AND s.status = 'Pending'
+       ORDER BY s.submitted_at DESC`,
+      teamId
+    )
+  );
+}
+
 export async function getBisSubmissions(db, teamId) {
   return cachedRead(`bis_submissions:${teamId}`, TTL.BRIEF, () =>
     all(db,
-      'SELECT * FROM bis_submissions WHERE team_id = ? ORDER BY submitted_at DESC',
+      `SELECT s.*,
+              -- Blizzard item IDs via FK (existing)
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id,
+              -- Source info for true_bis item (by name) — used by BIS review
+              i3.item_id    AS true_bis_blizzard_id,
+              i3.difficulty AS true_bis_difficulty,
+              i3.source_type AS true_bis_source_type,
+              i3.source_name AS true_bis_source_name,
+              -- Source info for raid_bis item (by name) — used by BIS review
+              i4.item_id    AS raid_bis_blizzard_id,
+              i4.difficulty AS raid_bis_difficulty,
+              i4.source_type AS raid_bis_source_type,
+              i4.source_name AS raid_bis_source_name
+       FROM bis_submissions s
+       LEFT JOIN item_db i1 ON i1.id = s.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = s.raid_bis_item_id
+       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)
+       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)
+       WHERE s.team_id = ? ORDER BY s.submitted_at DESC`,
       teamId
     )
   );
@@ -354,6 +494,9 @@ export async function upsertBisSubmission(db, teamId, { charId, charName, spec, 
     rationale ?? '', submittedAt
   );
   cacheInvalidate(`bis_submissions:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
+  else        cacheInvalidate(`bis_sub_char:${charName}`);
 }
 
 export async function batchUpsertBisSubmissions(db, teamId, updates) {
@@ -362,20 +505,24 @@ export async function batchUpsertBisSubmissions(db, teamId, updates) {
   }
 }
 
-export async function approveBisSubmission(db, id, reviewedBy) {
+export async function approveBisSubmission(db, id, reviewedBy, charId = null) {
   await run(db,
     `UPDATE bis_submissions SET status = 'Approved', reviewed_by = ? WHERE id = ?`,
     reviewedBy, id
   );
   cacheInvalidatePrefix('bis_submissions:');
+  cacheInvalidatePrefix('bis_submissions_pending:');
+  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
 }
 
-export async function rejectBisSubmission(db, id, reviewedBy, officerNote = '') {
+export async function rejectBisSubmission(db, id, reviewedBy, officerNote = '', charId = null) {
   await run(db,
     `UPDATE bis_submissions SET status = 'Rejected', reviewed_by = ?, officer_note = ? WHERE id = ?`,
     reviewedBy, officerNote, id
   );
   cacheInvalidatePrefix('bis_submissions:');
+  cacheInvalidatePrefix('bis_submissions_pending:');
+  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
 }
 
 export async function clearBisSubmission(db, teamId, charId, slot) {
@@ -384,6 +531,8 @@ export async function clearBisSubmission(db, teamId, charId, slot) {
     teamId, charId, slot
   );
   cacheInvalidate(`bis_submissions:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
 }
 
 export async function clearPendingBisSubmission(db, teamId, charId, slot) {
@@ -392,6 +541,8 @@ export async function clearPendingBisSubmission(db, teamId, charId, slot) {
     teamId, charId, slot
   );
   cacheInvalidate(`bis_submissions:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
 }
 
 export async function clearRejectedBisSubmission(db, teamId, charId, slot) {
@@ -400,6 +551,8 @@ export async function clearRejectedBisSubmission(db, teamId, charId, slot) {
     teamId, charId, slot
   );
   cacheInvalidate(`bis_submissions:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
 }
 
 export async function resetBisRaidBisField(db, teamId, charId, slot) {
@@ -408,6 +561,8 @@ export async function resetBisRaidBisField(db, teamId, charId, slot) {
     teamId, charId, slot
   );
   cacheInvalidate(`bis_submissions:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
 }
 
 // ── Item DB ───────────────────────────────────────────────────────────────────
@@ -417,6 +572,22 @@ export async function getItemDb(db) {
     all(db, 'SELECT * FROM item_db ORDER BY id')
   );
 }
+
+/**
+ * Narrow variant: returns only items equippable by a given armor type.
+ * Includes Accessories (armor-type-agnostic) but excludes items for other
+ * armor types. Tier tokens are included (callers filter with is_tier_token).
+ * Used by the BIS submission form for per-slot dropdowns.
+ */
+export async function getItemDbForArmorType(db, armorType) {
+  return cachedRead(`item_db_armor:${armorType}`, TTL.LONG, () =>
+    all(db,
+      `SELECT * FROM item_db WHERE armor_type = ? OR armor_type = 'Accessory' OR armor_type = 'Tier Token' ORDER BY id`,
+      armorType
+    )
+  );
+}
+
 
 export async function writeItemDb(db, items, { replace = false } = {}) {
   if (replace) await run(db, 'DELETE FROM item_db');
@@ -442,7 +613,15 @@ export async function writeItemDb(db, items, { replace = false } = {}) {
 
 export async function getDefaultBis(db) {
   return cachedRead('default_bis', TTL.LONG, () =>
-    all(db, 'SELECT * FROM default_bis ORDER BY spec, slot')
+    all(db,
+      `SELECT d.*,
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id
+       FROM default_bis d
+       LEFT JOIN item_db i1 ON i1.id = d.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = d.raid_bis_item_id
+       ORDER BY d.spec, d.slot`
+    )
   );
 }
 
@@ -462,15 +641,83 @@ export async function setSpecBisSource(db, spec, source) {
   cacheInvalidate('spec_bis_config');
 }
 
+/**
+ * Narrow variant: returns effective default BIS rows for a single canonical spec.
+ * Reads ~16 rows instead of the full 1,249-row table. Use this on the dashboard;
+ * keep getEffectiveDefaultBis() for pages that need all specs (council, admin).
+ */
+export async function getEffectiveDefaultBisForSpec(db, canonicalSpec) {
+  return cachedRead(`effective_default_bis:${canonicalSpec}`, TTL.LONG, async () => {
+    const [rows, preferredSourceRow] = await Promise.all([
+      all(db,
+        // Override values (from default_bis_overrides) take priority over seed values.
+        // NULLIF converts '' to NULL so COALESCE falls through to the seed value.
+        `SELECT d.*,
+                COALESCE(NULLIF(o.true_bis, ''),  d.true_bis)  AS true_bis,
+                COALESCE(NULLIF(o.raid_bis, ''),  d.raid_bis)  AS raid_bis,
+                COALESCE(i1.item_id, '') AS true_bis_item_id,
+                COALESCE(i2.item_id, '') AS raid_bis_item_id,
+                i3.item_id     AS true_bis_blizzard_id,
+                i3.source_type AS true_bis_source_type,
+                i3.difficulty  AS true_bis_difficulty,
+                i3.source_name AS true_bis_source_name
+         FROM default_bis d
+         LEFT JOIN default_bis_overrides o
+                ON o.spec = d.spec AND o.slot = d.slot AND o.source = d.source
+         LEFT JOIN item_db i1
+                ON i1.id = COALESCE(o.true_bis_item_id, d.true_bis_item_id)
+         LEFT JOIN item_db i2
+                ON i2.id = COALESCE(o.raid_bis_item_id, d.raid_bis_item_id)
+         LEFT JOIN item_db i3
+                ON LOWER(i3.name) = LOWER(COALESCE(NULLIF(o.true_bis, ''), d.true_bis))
+         WHERE d.spec = ?`,
+        canonicalSpec),
+      first(db, 'SELECT source FROM spec_bis_config WHERE spec = ?', canonicalSpec),
+    ]);
+    const preferredSource = preferredSourceRow?.source ?? null;
+    const bySlot = new Map();
+    for (const row of rows) {
+      if (!bySlot.has(row.slot)) bySlot.set(row.slot, []);
+      bySlot.get(row.slot).push(row);
+    }
+    const result = [];
+    for (const candidates of bySlot.values()) {
+      const preferred = preferredSource && candidates.find(r => r.source === preferredSource);
+      result.push(preferred ?? candidates[0]);
+    }
+    return result;
+  });
+}
+
 export async function getEffectiveDefaultBis(db) {
-  const [allRows, specConfig] = await Promise.all([
+  const [allRows, overrideRows, specConfig] = await Promise.all([
     getDefaultBis(db),
+    getDefaultBisOverrides(db),
     getSpecBisConfig(db),
   ]);
 
+  // Index overrides by spec::slot::source for O(1) lookup
+  const overrideByKey = new Map();
+  for (const o of overrideRows) {
+    overrideByKey.set(`${o.spec}|${o.slot}|${o.source}`, o);
+  }
+
+  // Apply overrides to seed rows
+  const mergedRows = allRows.map(r => {
+    const ovr = overrideByKey.get(`${r.spec}|${r.slot}|${r.source}`);
+    if (!ovr) return r;
+    return {
+      ...r,
+      true_bis:         ovr.true_bis         || r.true_bis,
+      true_bis_item_id: ovr.true_bis_item_id || r.true_bis_item_id,
+      raid_bis:         ovr.raid_bis         || r.raid_bis,
+      raid_bis_item_id: ovr.raid_bis_item_id || r.raid_bis_item_id,
+    };
+  });
+
   // Group by spec+slot, pick preferred source
   const bySpecSlot = new Map();
-  for (const row of allRows) {
+  for (const row of mergedRows) {
     const key = `${row.spec}|${row.slot}`;
     if (!bySpecSlot.has(key)) bySpecSlot.set(key, []);
     bySpecSlot.get(key).push(row);
@@ -490,7 +737,14 @@ export async function getEffectiveDefaultBis(db) {
 
 export async function getDefaultBisOverrides(db) {
   return cachedRead('default_bis_overrides', TTL.MEDIUM, () =>
-    all(db, 'SELECT * FROM default_bis_overrides')
+    all(db,
+      `SELECT o.*,
+              COALESCE(i1.item_id, '') AS true_bis_item_id,
+              COALESCE(i2.item_id, '') AS raid_bis_item_id
+       FROM default_bis_overrides o
+       LEFT JOIN item_db i1 ON i1.id = o.true_bis_item_id
+       LEFT JOIN item_db i2 ON i2.id = o.raid_bis_item_id`
+    )
   );
 }
 
@@ -510,6 +764,8 @@ export async function updateDefaultBisOverrides(db, updates) {
     );
   }
   cacheInvalidate('default_bis_overrides');
+  // Bust per-spec effective caches so dashboard/bis page see the updated overrides immediately
+  cacheInvalidatePrefix('effective_default_bis:');
 }
 
 // ── Tier items ────────────────────────────────────────────────────────────────
@@ -635,6 +891,23 @@ export async function upsertTierSnapshot(db, teamId, snapshots) {
 }
 
 // ── Worn BIS ──────────────────────────────────────────────────────────────────
+
+/**
+ * Narrow variant: returns worn BIS rows for a single character.
+ * Reads ~16 rows instead of the full team table. Use this on the dashboard;
+ * keep getWornBis() for pages that need all characters (council, wcl-sync).
+ */
+export async function getWornBisForChar(db, charId) {
+  return cachedRead(`worn_bis_char:${charId}`, TTL.SHORT, async () => {
+    const rows = await all(db,
+      'SELECT * FROM worn_bis WHERE char_id = ?',
+      charId
+    );
+    const map = new Map();
+    for (const r of rows) map.set(`${r.char_id}:${r.spec}:${r.slot}`, r);
+    return map;
+  });
+}
 
 export async function getWornBis(db, teamId) {
   return cachedRead(`worn_bis:${teamId}`, TTL.SHORT, async () => {
