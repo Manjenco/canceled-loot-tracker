@@ -15,9 +15,10 @@ directory = "./src/web/client/dist/loot"
 binding = "ASSETS"
 
 [[d1_databases]]
-binding       = "DB"
-database_name = "canceled-loot-tracker"
-database_id   = "local"
+binding         = "DB"
+database_name   = "canceled-loot-tracker"
+database_id     = "local"
+migrations_dir  = "migrations"
 
 [triggers]
 crons = ["*/10 * * * *"]
@@ -77,6 +78,7 @@ BLIZZARD_CLIENT_ID = "cec2990ff08043058a1c11a3c417d4bc"
 BLIZZARD_REGION    = "us"
 
 [[env.production.d1_databases]]
-binding       = "DB"
-database_name = "canceled-loot-tracker"
-database_id   = "1c703d33-7491-4d5e-981f-a269e9578434"
+binding         = "DB"
+database_name   = "canceled-loot-tracker"
+database_id     = "1c703d33-7491-4d5e-981f-a269e9578434"
+migrations_dir  = "migrations"

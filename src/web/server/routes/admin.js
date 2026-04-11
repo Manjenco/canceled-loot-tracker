@@ -19,7 +19,7 @@ import {
   invalidateWornBisSlots, getRoster, approvePrimarySpecChange, rejectPrimarySpecChange,
   getEffectiveDefaultBis, getEffectiveDefaultBisForSpec, getAllTeams, getGlobalConfig, setGlobalConfigValue,
   getRclcResponseMapRows, setRclcResponseMap, getRosterPendingSpecChanges,
-  getBisSubmissionsPending, getBisSubmissionsForChar,
+  getBisSubmissionsPending, getBisSubmissionsForChar, rebuildLootSummary,
 } from '../../../lib/db.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
@@ -838,6 +838,23 @@ router.delete('/worn-bis', requireOfficer, async (c) => {
   } catch (err) {
     console.error('[admin] worn-bis reset error:', err);
     return c.json({ error: err.message ?? 'Reset failed' }, 500);
+  }
+});
+
+// ── POST /api/admin/rebuild-loot-summary ───────────────────────────────────────
+// Backfill / repair the loot_summary table from loot_log source of truth.
+// Run once after deploying this feature; also useful after any manual DB edits.
+
+router.post('/rebuild-loot-summary', requireOfficer, async (c) => {
+  const { teamId } = c.get('session').user;
+  if (!teamId) return c.json({ error: 'No team configured' }, 400);
+  const db = c.env.DB;
+  try {
+    await rebuildLootSummary(db, teamId);
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] rebuild-loot-summary error:', err);
+    return c.json({ error: err.message ?? 'Rebuild failed' }, 500);
   }
 });
 

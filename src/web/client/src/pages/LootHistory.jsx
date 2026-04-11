@@ -24,10 +24,26 @@ function DiffColumn({ diff, counts }) {
   );
 }
 
-// ── Expanded loot detail for one player ──────────────────────────────────────
+// ── Expanded loot detail for one player (lazy-loaded) ────────────────────────
 
-function PlayerLootDetail({ loot }) {
-  if (!loot.length) return <p className="empty" style={{ margin: '10px 16px' }}>No loot recorded.</p>;
+function PlayerLootDetail({ charId }) {
+  const [state, setState] = useState(null); // null = not yet fetched
+
+  useEffect(() => {
+    setState('loading');
+    fetch(apiPath(`/api/loot/history/${charId}`), { credentials: 'include' })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(d => setState(d.loot))
+      .catch(() => setState('error'));
+  }, [charId]);
+
+  if (state === null || state === 'loading')
+    return <p className="empty" style={{ margin: '10px 16px' }}>Loading…</p>;
+  if (state === 'error')
+    return <p className="empty" style={{ margin: '10px 16px' }}>Failed to load loot.</p>;
+  if (!state.length)
+    return <p className="empty" style={{ margin: '10px 16px' }}>No loot recorded.</p>;
+
   return (
     <table className="loot-table lh-detail-table">
       <thead>
@@ -40,7 +56,7 @@ function PlayerLootDetail({ loot }) {
         </tr>
       </thead>
       <tbody>
-        {loot.map(entry => {
+        {state.map(entry => {
           const badge = UPGRADE_BADGE[entry.upgradeType] ?? { label: entry.upgradeType, cls: '' };
           return (
             <tr key={entry.id}>
@@ -469,7 +485,7 @@ export default function LootHistory() {
                   isOpen && (
                     <tr key={`${p.charId}-detail`} className="lh-detail-row">
                       <td colSpan={colSpan} style={{ padding: 0 }}>
-                        <PlayerLootDetail loot={p.loot} />
+                        <PlayerLootDetail charId={p.charId} />
                       </td>
                     </tr>
                   ),

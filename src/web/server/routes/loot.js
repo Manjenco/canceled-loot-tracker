@@ -1,15 +1,17 @@
 /**
  * routes/loot.js — Loot Log endpoints.
  *
- * GET  /api/loot/history   Officer — per-player loot totals + itemised history
- * POST /api/loot/import    Officer — import a RCLC CSV export
+ * GET  /api/loot/history         Officer — per-player loot totals (no itemised loot)
+ * GET  /api/loot/history/:charId Officer — itemised loot for one character (lazy)
+ * POST /api/loot/import          Officer — import a RCLC CSV export
  */
 
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getRoster, getRclcResponseMap,
-  getLootLog, appendLootEntries, patchLootEntryDifficulties, patchLootEntryIgnored,
+  getLootLog, getLootLogForChar, getLootSummary,
+  appendLootEntries, patchLootEntryDifficulties, patchLootEntryIgnored,
   reassignLootEntries, backfillLootEntryIds, getRaids,
   getTeamConfig,
 } from '../../../lib/db.js';
@@ -31,9 +33,10 @@ router.get('/history', async (c) => {
   const { teamId } = c.get('session').user;
   const db = c.env.DB;
 
-  const [roster, lootLog, raids, config] = await Promise.all([
+  const [roster, lootLog, lootSummaryRows, raids, config] = await Promise.all([
     getRoster(db, teamId),
     getLootLog(db, teamId),
+    getLootSummary(db, teamId),
     getRaids(db, teamId),
     getTeamConfig(db, teamId),
   ]);
@@ -46,13 +49,15 @@ router.get('/history', async (c) => {
   const raidsByOwner = {};
   for (const raid of raids) for (const id of raid.attendeeIds) raidsByOwner[id] = (raidsByOwner[id] ?? 0) + 1;
 
-  // Lookup maps for joining loot → roster
-  const charById   = new Map(roster.map(r => [r.id,                          r]));
-  const charByName = new Map(roster.map(r => [r.char_name.toLowerCase(),     r]));
+  // Pre-aggregated counts from loot_summary — no JS-side aggregation loop needed
+  const summaryByChar = new Map(lootSummaryRows.map(s => [s.char_id, s]));
+
+  // Full loot log needed for skipped-entry audit only — itemised loot is lazy-loaded per char
+  const charById   = new Map(roster.map(r => [r.id,                      r]));
+  const charByName = new Map(roster.map(r => [r.char_name.toLowerCase(), r]));
 
   const skipped = { wrongDifficulty: [], noRosterMatch: [], tertiary: [], manuallyIgnored: [] };
 
-  const entries = [];
   for (const e of lootLog) {
     if (e.ignored) {
       skipped.manuallyIgnored.push({ ...e, skipReason: 'Manually ignored' });
@@ -60,68 +65,45 @@ router.get('/history', async (c) => {
     }
     if (!TRACKED_DIFF.has(e.difficulty)) {
       skipped.wrongDifficulty.push({ ...e, skipReason: `Difficulty "${e.difficulty || '(blank)'}" not tracked` });
-    } else {
-      entries.push(e);
-    }
-  }
-
-  // Seed every roster member so characters with no loot still appear
-  const grouped = new Map();
-  for (const char of roster) grouped.set(char.id, { char, entries: [] });
-
-  for (const entry of entries) {
-    const char = (entry.recipient_char_id && charById.get(entry.recipient_char_id))
-      ?? charByName.get((entry.recipient_name ?? '').toLowerCase());
-    if (!char) {
-      skipped.noRosterMatch.push({ ...entry, skipReason: `No roster match for "${entry.recipient_name}"${entry.recipient_char_id ? ` (charId: ${entry.recipient_char_id})` : ''}` });
       continue;
     }
-
-    if (!grouped.has(char.id)) grouped.set(char.id, { char, entries: [] });
-    grouped.get(char.id).entries.push(entry);
+    if (!COUNTED.has(e.upgrade_type)) {
+      skipped.tertiary.push({ ...e, skipReason: `Upgrade type "${e.upgrade_type}" excluded from loot score` });
+      continue;
+    }
+    const char = (e.recipient_char_id && charById.get(e.recipient_char_id))
+      ?? charByName.get((e.recipient_name ?? '').toLowerCase());
+    if (!char) {
+      skipped.noRosterMatch.push({ ...e, skipReason: `No roster match for "${e.recipient_name}"${e.recipient_char_id ? ` (charId: ${e.recipient_char_id})` : ''}` });
+    }
   }
 
-  const players = [...grouped.values()].map(({ char, entries: charEntries }) => {
-    const counts = { BIS: {}, 'Non-BIS': {} };
-    for (const e of charEntries) {
-      if (COUNTED.has(e.upgrade_type)) {
-        const d = e.difficulty || 'Unknown';
-        counts[e.upgrade_type][d] = (counts[e.upgrade_type][d] ?? 0) + 1;
-      }
-    }
-
+  const players = roster.map(char => {
+    const s           = summaryByChar.get(char.id);
     const raidsAttended = raidsByOwner[char.owner_id] ?? 0;
 
-    const bisM    = counts.BIS['Mythic']        ?? 0;
-    const bisH    = counts.BIS['Heroic']        ?? 0;
-    const bisN    = counts.BIS['Normal']        ?? 0;
-    const nonBisM = counts['Non-BIS']['Mythic'] ?? 0;
-    const nonBisH = counts['Non-BIS']['Heroic'] ?? 0;
-    const nonBisN = counts['Non-BIS']['Normal'] ?? 0;
-    const weighted = bisM + bisH * heroicWeight + bisN * normalWeight
+    const bisM    = s?.bis_mythic    ?? 0;
+    const bisH    = s?.bis_heroic    ?? 0;
+    const bisN    = s?.bis_normal    ?? 0;
+    const nonBisM = s?.nonbis_mythic ?? 0;
+    const nonBisH = s?.nonbis_heroic ?? 0;
+    const nonBisN = s?.nonbis_normal ?? 0;
+
+    const weighted    = bisM + bisH * heroicWeight + bisN * normalWeight
       + (nonBisM + nonBisH * heroicWeight + nonBisN * normalWeight) * nonBisWeight;
     const lootPerRaid = weighted / Math.max(raidsAttended, 1);
 
-    for (const e of charEntries) {
-      if (!COUNTED.has(e.upgrade_type)) {
-        skipped.tertiary.push({ ...e, skipReason: `Upgrade type "${e.upgrade_type}" excluded from loot score` });
-      }
-    }
-
-    const loot = [...charEntries]
-      .filter(e => COUNTED.has(e.upgrade_type))
-      .sort((a, b) => b.date.localeCompare(a.date));
+    // counts in the legacy shape expected by the client
+    const counts = {
+      BIS:       { Mythic: bisM,    Heroic: bisH,    Normal: bisN    },
+      'Non-BIS': { Mythic: nonBisM, Heroic: nonBisH, Normal: nonBisN },
+    };
 
     return {
-      charId:       char.id,
-      charName:     char.char_name,
-      class:        char.class,
-      spec:         char.spec,
-      status:       char.status,
-      counts,
-      raidsAttended,
-      lootPerRaid,
-      loot,
+      charId: char.id, charName: char.char_name, class: char.class,
+      spec: char.spec, status: char.status,
+      counts, raidsAttended, lootPerRaid,
+      // loot is NOT included here — fetched on demand via GET /api/loot/history/:charId
     };
   });
 
@@ -133,6 +115,32 @@ router.get('/history', async (c) => {
     .sort((a, b) => a.charName.localeCompare(b.charName));
 
   return c.json({ players, heroicWeight, normalWeight, nonBisWeight, skipped, rosterMembers });
+});
+
+// ── GET /history/:charId ──────────────────────────────────────────────────────
+// Lazy-loaded itemised loot for one character — called when a row is expanded.
+
+router.get('/history/:charId', async (c) => {
+  if (!c.get('session').user?.isOfficer) {
+    return c.json({ error: 'Officer access required.' }, 403);
+  }
+  const { teamId } = c.get('session').user;
+  const charId     = Number(c.req.param('charId'));
+  if (!charId) return c.json({ error: 'charId is required' }, 400);
+  const db = c.env.DB;
+  try {
+    const roster   = await getRoster(db, teamId);
+    const char     = roster.find(r => r.id === charId);
+    if (!char) return c.json({ error: 'Character not found' }, 404);
+    const entries  = await getLootLogForChar(db, teamId, charId, char.char_name);
+    const loot     = entries
+      .filter(e => COUNTED.has(e.upgrade_type))
+      .sort((a, b) => b.date.localeCompare(a.date));
+    return c.json({ loot });
+  } catch (err) {
+    console.error('[loot] GET /history/:charId error:', err);
+    return c.json({ error: 'Failed to load loot' }, 500);
+  }
 });
 
 // ── POST /reprocess ───────────────────────────────────────────────────────────
@@ -172,7 +180,7 @@ router.patch('/entries/reassign', async (c) => {
 
   if (!resolved.length) return c.json({ error: 'No valid charIds found in roster.' }, 400);
 
-  await reassignLootEntries(db, resolved);
+  await reassignLootEntries(db, teamId, resolved);
   return c.json({ updated: resolved.length });
 });
 
@@ -187,7 +195,8 @@ router.patch('/ignored', async (c) => {
     return c.json({ error: 'ids (number[]) and ignored (boolean) are required.' }, 400);
   }
   const db = c.env.DB;
-  await patchLootEntryIgnored(db, ids, ignored);
+  const { teamId } = c.get('session').user;
+  await patchLootEntryIgnored(db, teamId, ids, ignored);
   return c.json({ updated: ids.length });
 });
 
@@ -210,7 +219,8 @@ router.patch('/entries', async (c) => {
   }
 
   const db = c.env.DB;
-  await patchLootEntryDifficulties(db, valid);
+  const { teamId } = c.get('session').user;
+  await patchLootEntryDifficulties(db, teamId, valid);
   return c.json({ updated: valid.length });
 });
 

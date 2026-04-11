@@ -340,25 +340,28 @@ export async function appendLootEntries(db, teamId, entries) {
       e.upgradeType ?? '', e.notes ?? ''
     ).run();
   }
+  await rebuildLootSummary(db, teamId);
 }
 
-export async function patchLootEntryDifficulties(db, corrections) {
+export async function patchLootEntryDifficulties(db, teamId, corrections) {
   // corrections: [{ id, difficulty }]
   const stmt = db.prepare('UPDATE loot_log SET difficulty = ? WHERE id = ?');
   for (const { id, difficulty } of corrections) {
     await stmt.bind(difficulty, id).run();
   }
   cacheInvalidatePrefix('loot_log:');
+  await rebuildLootSummary(db, teamId);
 }
 
-export async function patchLootEntryIgnored(db, ids, ignored) {
+export async function patchLootEntryIgnored(db, teamId, ids, ignored) {
   const val = ignored ? 1 : 0;
   const placeholders = ids.map(() => '?').join(', ');
   await run(db, `UPDATE loot_log SET ignored = ? WHERE id IN (${placeholders})`, val, ...ids);
   cacheInvalidatePrefix('loot_log:');
+  await rebuildLootSummary(db, teamId);
 }
 
-export async function reassignLootEntries(db, assignments) {
+export async function reassignLootEntries(db, teamId, assignments) {
   // assignments: [{ id, rosterId }]  — rosterId is roster.id (integer)
   const stmt = db.prepare(
     `UPDATE loot_log SET recipient_char_id = ?,
@@ -370,6 +373,52 @@ export async function reassignLootEntries(db, assignments) {
     await stmt.bind(rosterId, rosterId, rosterId, id).run();
   }
   cacheInvalidatePrefix('loot_log:');
+  await rebuildLootSummary(db, teamId);
+}
+
+// ── Loot summary (pre-aggregated per character) ───────────────────────────────
+
+/**
+ * Rebuild the loot_summary table for a team from the loot_log source of truth.
+ * Runs a single GROUP BY query in SQLite — no JS-side aggregation.
+ * Called after every loot_log write; also exposed via POST /api/admin/rebuild-loot-summary.
+ */
+export async function rebuildLootSummary(db, teamId) {
+  await run(db, `
+    INSERT OR REPLACE INTO loot_summary
+      (team_id, char_id, owner_id,
+       bis_mythic, bis_heroic, bis_normal,
+       nonbis_mythic, nonbis_heroic, nonbis_normal,
+       tertiary, offspec, last_updated)
+    SELECT
+      l.team_id,
+      l.recipient_char_id,
+      COALESCE(r.owner_id, '')                                                                       AS owner_id,
+      SUM(CASE WHEN l.upgrade_type = 'BIS'     AND l.difficulty = 'Mythic'  AND l.ignored = 0 THEN 1 ELSE 0 END) AS bis_mythic,
+      SUM(CASE WHEN l.upgrade_type = 'BIS'     AND l.difficulty = 'Heroic'  AND l.ignored = 0 THEN 1 ELSE 0 END) AS bis_heroic,
+      SUM(CASE WHEN l.upgrade_type = 'BIS'     AND l.difficulty = 'Normal'  AND l.ignored = 0 THEN 1 ELSE 0 END) AS bis_normal,
+      SUM(CASE WHEN l.upgrade_type = 'Non-BIS' AND l.difficulty = 'Mythic'  AND l.ignored = 0 THEN 1 ELSE 0 END) AS nonbis_mythic,
+      SUM(CASE WHEN l.upgrade_type = 'Non-BIS' AND l.difficulty = 'Heroic'  AND l.ignored = 0 THEN 1 ELSE 0 END) AS nonbis_heroic,
+      SUM(CASE WHEN l.upgrade_type = 'Non-BIS' AND l.difficulty = 'Normal'  AND l.ignored = 0 THEN 1 ELSE 0 END) AS nonbis_normal,
+      SUM(CASE WHEN l.upgrade_type = 'Tertiary' AND l.ignored = 0 THEN 1 ELSE 0 END)               AS tertiary,
+      SUM(CASE WHEN l.upgrade_type = 'Offspec'  AND l.ignored = 0 THEN 1 ELSE 0 END)               AS offspec,
+      datetime('now')
+    FROM loot_log l
+    LEFT JOIN roster r ON r.id = l.recipient_char_id
+    WHERE l.team_id = ? AND l.recipient_char_id IS NOT NULL
+    GROUP BY l.recipient_char_id
+  `, teamId);
+  cacheInvalidate(`loot_summary:${teamId}`);
+}
+
+/**
+ * Returns the pre-aggregated loot counts for all characters on a team.
+ * Missing rows (chars with no loot) return 0s via nullish coalescing at call site.
+ */
+export async function getLootSummary(db, teamId) {
+  return cachedRead(`loot_summary:${teamId}`, TTL.BRIEF, () =>
+    all(db, `SELECT * FROM loot_summary WHERE team_id = ? ORDER BY char_id`, teamId)
+  );
 }
 
 export async function backfillLootEntryIds(db, teamId) {
