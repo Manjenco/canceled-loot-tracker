@@ -9,7 +9,7 @@
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
-  getItemDb, getRoster, getLootLog, getBisSubmissions,
+  getItemDb, getRoster, getLootSummary, getBisSubmissions,
   getEffectiveDefaultBis, getRaids, getTeamConfig, getGlobalConfig, getTierSnapshot,
   getWornBis,
 } from '../../../lib/db.js';
@@ -215,9 +215,9 @@ router.get('/candidates', async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const [itemDb, effectiveBis, roster, lootLog, bisSubmissions, raids, wornBisMap] = await Promise.all([
+    const [itemDb, effectiveBis, roster, lootSummary, bisSubmissions, raids, wornBisMap] = await Promise.all([
       getItemDb(db), getEffectiveDefaultBis(db),
-      getRoster(db, teamId), getLootLog(db, teamId),
+      getRoster(db, teamId), getLootSummary(db, teamId),
       getBisSubmissions(db, teamId), getRaids(db, teamId),
       getWornBis(db, teamId),
     ]);
@@ -234,29 +234,20 @@ router.get('/candidates', async (c) => {
       }
     }
 
-    const stats = {};
-    for (const entry of lootLog) {
-      const n = entry.recipient_char_id ?? null;
-      if (!n) continue;
-      if (!stats[n]) stats[n] = { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0, tertiary: 0, offspec: 0 };
-      const s = stats[n]; const d = entry.difficulty ?? ''; const t = entry.upgrade_type;
-      if (t === 'BIS')          { if (d === 'Normal') s.bisN++; else if (d === 'Heroic') s.bisH++; else if (d === 'Mythic') s.bisM++; }
-      else if (t === 'Non-BIS') { if (d === 'Normal') s.nonBisN++; else if (d === 'Heroic') s.nonBisH++; else if (d === 'Mythic') s.nonBisM++; }
-      else if (t === 'Tertiary') s.tertiary++;
-      else if (t === 'Offspec')  s.offspec++;
-    }
+    // Pre-aggregated counts from loot_summary — no JS-side loot log iteration
+    const statsByChar = new Map(lootSummary.map(s => [s.char_id, s]));
 
     const raidsByOwner = {};
     for (const raid of raids) for (const id of raid.attendeeIds) raidsByOwner[id] = (raidsByOwner[id] ?? 0) + 1;
 
+    // Account-level totals: sum summary rows by owner_id
     const acctStats = {};
-    for (const r of roster) {
-      if (!r.owner_id) continue;
-      const s = stats[r.id] ?? {};
-      if (!acctStats[r.owner_id]) acctStats[r.owner_id] = { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
-      const a = acctStats[r.owner_id];
-      a.bisN += s.bisN ?? 0; a.bisH += s.bisH ?? 0; a.bisM += s.bisM ?? 0;
-      a.nonBisN += s.nonBisN ?? 0; a.nonBisH += s.nonBisH ?? 0; a.nonBisM += s.nonBisM ?? 0;
+    for (const row of lootSummary) {
+      if (!row.owner_id) continue;
+      if (!acctStats[row.owner_id]) acctStats[row.owner_id] = { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
+      const a = acctStats[row.owner_id];
+      a.bisM += row.bis_mythic; a.bisH += row.bis_heroic; a.bisN += row.bis_normal;
+      a.nonBisM += row.nonbis_mythic; a.nonBisH += row.nonbis_heroic; a.nonBisN += row.nonbis_normal;
     }
 
     const approvedBis = {};
@@ -284,7 +275,7 @@ router.get('/candidates', async (c) => {
       const { overallBisMatch, raidBisMatch, hasRaidBis, overallMatchSlots, raidMatchSlots } =
         computeSpecBisMatch(char.id, charSpec.primary, item, itemSlot, approvedBis, defaultBisMap);
 
-      const s    = stats[char.id] ?? { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
+      const s    = statsByChar.get(char.id);
       const acct = acctStats[char.owner_id] ?? { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
 
       const ovMatchWornTrack   = minWornTrackForSlots(wornBisMap, char.id, char.spec, overallMatchSlots, 'overall_bis_track');
@@ -305,7 +296,8 @@ router.get('/candidates', async (c) => {
 
       candidates.push({
         charName: char.char_name, class: char.class, spec: char.spec, role: char.role, status: char.status,
-        bisN: s.bisN, bisH: s.bisH, bisM: s.bisM, nonBisN: s.nonBisN, nonBisH: s.nonBisH, nonBisM: s.nonBisM,
+        bisN: s?.bis_normal ?? 0, bisH: s?.bis_heroic ?? 0, bisM: s?.bis_mythic ?? 0,
+        nonBisN: s?.nonbis_normal ?? 0, nonBisH: s?.nonbis_heroic ?? 0, nonBisM: s?.nonbis_mythic ?? 0,
         acctBisN: acct.bisN, acctBisH: acct.bisH, acctBisM: acct.bisM, acctNonBisN: acct.nonBisN, acctNonBisH: acct.nonBisH, acctNonBisM: acct.nonBisM,
         raidsAttended: raidsByOwner[char.owner_id] ?? 0,
         overallBisMatch, raidBisMatch, hasRaidBis,
@@ -333,9 +325,9 @@ router.get('/curio-candidates', async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const [effectiveBis, roster, lootLog, bisSubmissions, raids, globalConfig, tierSnapshots] = await Promise.all([
+    const [effectiveBis, roster, lootSummary, bisSubmissions, raids, globalConfig, tierSnapshots] = await Promise.all([
       getEffectiveDefaultBis(db),
-      getRoster(db, teamId), getLootLog(db, teamId), getBisSubmissions(db, teamId),
+      getRoster(db, teamId), getLootSummary(db, teamId), getBisSubmissions(db, teamId),
       getRaids(db, teamId), getGlobalConfig(db), getTierSnapshot(db, teamId),
     ]);
 
@@ -344,27 +336,20 @@ router.get('/curio-candidates', async (c) => {
       if (snap.char_id) tierSnapshotMap.set(snap.char_id, parseTierDetail(snap.tier_detail));
     }
 
-    const stats = {};
-    for (const entry of lootLog) {
-      const n = entry.recipient_char_id ?? null; if (!n) continue;
-      if (!stats[n]) stats[n] = { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0, tertiary: 0, offspec: 0 };
-      const s = stats[n]; const d = entry.difficulty ?? ''; const t = entry.upgrade_type;
-      if (t === 'BIS')          { if (d === 'Normal') s.bisN++; else if (d === 'Heroic') s.bisH++; else if (d === 'Mythic') s.bisM++; }
-      else if (t === 'Non-BIS') { if (d === 'Normal') s.nonBisN++; else if (d === 'Heroic') s.nonBisH++; else if (d === 'Mythic') s.nonBisM++; }
-      else if (t === 'Tertiary') s.tertiary++; else if (t === 'Offspec') s.offspec++;
-    }
+    // Pre-aggregated counts from loot_summary — no JS-side loot log iteration
+    const statsByChar = new Map(lootSummary.map(s => [s.char_id, s]));
 
     const raidsByOwner = {};
     for (const raid of raids) for (const id of raid.attendeeIds) raidsByOwner[id] = (raidsByOwner[id] ?? 0) + 1;
 
+    // Account-level totals: sum summary rows by owner_id
     const acctStats = {};
-    for (const r of roster) {
-      if (!r.owner_id) continue;
-      const s = stats[r.id] ?? {};
-      if (!acctStats[r.owner_id]) acctStats[r.owner_id] = { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
-      const a = acctStats[r.owner_id];
-      a.bisN += s.bisN ?? 0; a.bisH += s.bisH ?? 0; a.bisM += s.bisM ?? 0;
-      a.nonBisN += s.nonBisN ?? 0; a.nonBisH += s.nonBisH ?? 0; a.nonBisM += s.nonBisM ?? 0;
+    for (const row of lootSummary) {
+      if (!row.owner_id) continue;
+      if (!acctStats[row.owner_id]) acctStats[row.owner_id] = { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
+      const a = acctStats[row.owner_id];
+      a.bisM += row.bis_mythic; a.bisH += row.bis_heroic; a.bisN += row.bis_normal;
+      a.nonBisM += row.nonbis_mythic; a.nonBisH += row.nonbis_heroic; a.nonBisN += row.nonbis_normal;
     }
 
     const approvedBis = {};
@@ -394,7 +379,7 @@ router.get('/curio-candidates', async (c) => {
         if (effectiveTrueBis === '<Tier>') overallTierWanted = true;
         if (resolvedRaidBis === '<Tier>') tierSlotsWanted.push(slot);
       }
-      const s    = stats[char.id] ?? { bisH: 0, bisM: 0, nonBisH: 0, nonBisM: 0 };
+      const s    = statsByChar.get(char.id);
       const acct = acctStats[char.owner_id] ?? { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
 
       const overallBisMatch = overallTierWanted;
@@ -403,7 +388,8 @@ router.get('/curio-candidates', async (c) => {
       candidates.push({
         charName: char.char_name, class: char.class, spec: char.spec, status: char.status, tierSlotsWanted,
         tierSlots: tierSnapshotMap.get(char.id) ?? {},
-        bisN: s.bisN, bisH: s.bisH, bisM: s.bisM, nonBisN: s.nonBisN, nonBisH: s.nonBisH, nonBisM: s.nonBisM,
+        bisN: s?.bis_normal ?? 0, bisH: s?.bis_heroic ?? 0, bisM: s?.bis_mythic ?? 0,
+        nonBisN: s?.nonbis_normal ?? 0, nonBisH: s?.nonbis_heroic ?? 0, nonBisM: s?.nonbis_mythic ?? 0,
         acctBisN: acct.bisN, acctBisH: acct.bisH, acctBisM: acct.bisM, acctNonBisN: acct.nonBisN, acctNonBisH: acct.nonBisH, acctNonBisM: acct.nonBisM,
         raidsAttended: raidsByOwner[char.owner_id] ?? 0,
         overallBisMatch, raidBisMatch,

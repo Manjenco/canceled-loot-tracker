@@ -149,6 +149,7 @@ export default function Admin() {
             {resetResult.ok ? 'Worn BIS data cleared.' : `Error: ${resetResult.error}`}
           </p>
         )}
+
       </div>
     </div>
   );

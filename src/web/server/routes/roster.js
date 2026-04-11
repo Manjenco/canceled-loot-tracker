@@ -17,9 +17,9 @@
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
 import {
-  getRoster, getLootLog, getBisSubmissions,
-  getEffectiveDefaultBis, getItemDb,
-  getWornBis,
+  getRoster, getLootLogForChar, getBisSubmissionsForChar,
+  getEffectiveDefaultBisForSpec, getItemDb,
+  getWornBisForChar,
   setRosterStatus, setOwnerNick, setRosterOwner, addRosterChar, deleteRosterChar,
   renameRosterChar, setRosterServer, setSecondarySpecs,
   approvePrimarySpecChange, rejectPrimarySpecChange,
@@ -174,9 +174,10 @@ router.get('/:charId', async (c) => {
   if (!teamId || !charId) return c.json({ error: 'No team' }, 404);
   const db = c.env.DB;
   try {
-    const [roster, lootLog, bisSubmissions, wornBisMap, effectiveBis, itemDb] = await Promise.all([
-      getRoster(db, teamId), getLootLog(db, teamId), getBisSubmissions(db, teamId),
-      getWornBis(db, teamId), getEffectiveDefaultBis(db), getItemDb(db),
+    // Phase 1 — roster + item db (long-cached; needed to identify char before narrow queries)
+    const [roster, itemDb] = await Promise.all([
+      getRoster(db, teamId),
+      getItemDb(db),
     ]);
     const rosterChar = roster.find(r => r.id === charId);
     if (!rosterChar) return c.json({ error: 'Character not found' }, 404);
@@ -184,38 +185,41 @@ router.get('/:charId', async (c) => {
     const itemIdByName = new Map();
     for (const item of itemDb) if (item.name) itemIdByName.set(item.name.toLowerCase(), item.item_id);
 
-    const accountCharIds = rosterChar.owner_id
-      ? roster.filter(r => r.owner_id === rosterChar.owner_id).map(r => r.id)
-      : [rosterChar.id];
-    const accountCharNames = rosterChar.owner_id
-      ? roster.filter(r => r.owner_id === rosterChar.owner_id).map(r => r.char_name)
-      : [rosterChar.char_name];
+    const charSpecs    = getCharSpecs(rosterChar);
+    const accountChars = rosterChar.owner_id
+      ? roster.filter(r => r.owner_id === rosterChar.owner_id)
+      : [rosterChar];
+    const accountCharNames = accountChars.map(r => r.char_name);
 
-    const loot = lootLog
-      .filter(e => e.recipient_char_id === rosterChar.id)
-      .sort((a, b) => new Date(b.date) - new Date(a.date))
-      .map(e => ({ ...e, itemId: itemIdByName.get((e.item_name ?? '').toLowerCase()) ?? '' }));
+    // Phase 2 — all narrow, all parallel: BIS subs + worn BIS + per-spec defaults + per-char loot
+    const [bisRows, wornBisMap, ...rest] = await Promise.all([
+      getBisSubmissionsForChar(db, teamId, charId, rosterChar.char_name),
+      getWornBisForChar(db, charId),
+      ...charSpecs.all.map(spec => getEffectiveDefaultBisForSpec(db, toCanonical(spec))),
+      ...accountChars.map(ac => getLootLogForChar(db, teamId, ac.id, ac.char_name)),
+    ]);
+    const specResults = rest.slice(0, charSpecs.all.length);
+    const lootArrays  = rest.slice(charSpecs.all.length);
 
-    const accountLoot = accountCharIds.length > 1
-      ? lootLog
-          .filter(e => accountCharIds.includes(e.recipient_char_id))
-          .sort((a, b) => new Date(b.date) - new Date(a.date))
-          .map(e => ({ ...e, itemId: itemIdByName.get((e.item_name ?? '').toLowerCase()) ?? '' }))
+    const addItemId = e => ({ ...e, itemId: itemIdByName.get((e.item_name ?? '').toLowerCase()) ?? '' });
+
+    const charIdx = accountChars.findIndex(ac => ac.id === rosterChar.id);
+    const loot    = (lootArrays[charIdx] ?? []).map(addItemId);
+
+    const accountLoot = accountChars.length > 1
+      ? lootArrays.flat().sort((a, b) => b.date.localeCompare(a.date)).map(addItemId)
       : [];
 
-    const charSpecs = getCharSpecs(rosterChar);
-
-    // All approved BIS for this character, normalised to camelCase for the client
-    const charApprovedBis = bisSubmissions
-      .filter(s => s.status === 'Approved' && s.char_id === rosterChar.id)
+    // bisRows is already scoped to this character — filter to Approved for display
+    const charApprovedBis = bisRows
+      .filter(s => s.status === 'Approved')
       .map(normalizeBisSub);
 
     const bisBySpec      = {};
     const defaultsBySpec = {};
-    for (const spec of charSpecs.all) {
-      const canonSpec = toCanonical(spec);
-      const specRows  = effectiveBis.filter(d => d.spec === canonSpec);
-      defaultsBySpec[spec] = applyRaidBisInference(specRows, itemDb); // already camelCase
+    for (let i = 0; i < charSpecs.all.length; i++) {
+      const spec = charSpecs.all[i];
+      defaultsBySpec[spec] = applyRaidBisInference(specResults[i], itemDb);
       bisBySpec[spec] = charApprovedBis.filter(s =>
         s.spec ? s.spec.toLowerCase() === spec.toLowerCase() : spec === charSpecs.primary
       );
@@ -224,9 +228,9 @@ router.get('/:charId', async (c) => {
     const approvedBis  = bisBySpec[charSpecs.primary] ?? [];
     const specDefaults = defaultsBySpec[charSpecs.primary] ?? [];
 
+    // wornBisMap is already scoped to this char — no char_id filter needed
     const wornBisBySpec = {};
-    for (const [key, row] of wornBisMap) {
-      if (row.char_id !== rosterChar.id) continue;
+    for (const [, row] of wornBisMap) {
       if (!wornBisBySpec[row.spec]) wornBisBySpec[row.spec] = {};
       wornBisBySpec[row.spec][row.slot] = {
         overallBISTrack: row.overall_bis_track ?? '',

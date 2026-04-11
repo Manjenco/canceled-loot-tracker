@@ -84,6 +84,10 @@ export default function AdminTeamConfig() {
   const [rclcResult,  setRclcResult]  = useState(null);
   const [rclcSaving,  setRclcSaving]  = useState(false);
 
+  // Loot Summary
+  const [rebuildingLoot,    setRebuildingLoot]    = useState(false);
+  const [rebuildLootResult, setRebuildLootResult] = useState(null);
+
   // ── Load ────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -180,6 +184,22 @@ export default function AdminTeamConfig() {
 
   function removeRclcRow(i) {
     setRclcRows(prev => prev.filter((_, idx) => idx !== i));
+  }
+
+  async function handleRebuildLootSummary() {
+    setRebuildingLoot(true);
+    setRebuildLootResult(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/rebuild-loot-summary'), {
+        method: 'POST', credentials: 'include',
+      });
+      const d = await r.json();
+      setRebuildLootResult(d.ok ? { ok: true } : { error: d.error ?? 'Unknown error' });
+    } catch {
+      setRebuildLootResult({ error: 'Request failed' });
+    } finally {
+      setRebuildingLoot(false);
+    }
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -347,6 +367,23 @@ export default function AdminTeamConfig() {
           </button>
         </div>
         <ResultMsg result={rclcResult} />
+      </div>
+
+      {/* ── Loot Summary ──────────────────────────────────────────────────── */}
+      <div className="card" style={{ marginTop: 24 }}>
+        <div className="card-title">Loot Summary</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+          Rebuilds the pre-aggregated loot counts table from the full loot log.
+          Run once after first deploying, or after any manual database edits.
+        </p>
+        <button
+          className="btn-secondary"
+          onClick={handleRebuildLootSummary}
+          disabled={rebuildingLoot}
+        >
+          {rebuildingLoot ? 'Rebuilding…' : 'Rebuild Loot Summary'}
+        </button>
+        <ResultMsg result={rebuildLootResult} />
       </div>
     </div>
   );
