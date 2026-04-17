@@ -808,9 +808,10 @@ export default function RosterPage() {
   const [expandedGroups, setExpandedGroups] = useState(new Set(['Active']));
   const [toggling, setToggling]             = useState(null); // charName being status-toggled
   const [copiedChar, setCopiedChar]         = useState(null); // charName whose Discord ID was just copied
-  const [editingOwnerChar, setEditingOwnerChar]     = useState(null); // charName whose player name is being edited
+  const [editingOwnerChar, setEditingOwnerChar]     = useState(null); // charName whose player info is being edited
   const [editingOwnerCharId, setEditingOwnerCharId] = useState(null); // charId of the char being edited
   const [editOwnerValue, setEditOwnerValue]         = useState('');
+  const [editOwnerIdValue, setEditOwnerIdValue]     = useState('');
   const [linkingOwnerChar, setLinkingOwnerChar]     = useState(null); // charName being linked to a Discord ID
   const [linkingOwnerCharId, setLinkingOwnerCharId] = useState(null); // charId being linked
   const [linkOwnerIdValue, setLinkOwnerIdValue]     = useState('');
@@ -850,37 +851,61 @@ export default function RosterPage() {
     e.stopPropagation();
     setEditingOwnerChar(char.charName);
     setEditingOwnerCharId(char.charId);
+    setEditOwnerIdValue(char.ownerId || '');
     setEditOwnerValue(char.ownerNick || '');
   };
 
-  const handleSaveOwnerNick = async () => {
+  const handleSaveOwnerEdit = async () => {
     if (!editingOwnerChar) return;
-    const trimmed     = editOwnerValue.trim();
-    const char        = roster.find(c => c.charId === editingOwnerCharId);
-    const ownerId     = char?.ownerId;
-    const originalNick = char?.ownerNick;
+    const char         = roster.find(c => c.charId === editingOwnerCharId);
+    const charId       = editingOwnerCharId;
+    const newOwnerId   = editOwnerIdValue.trim();
+    const newNick      = editOwnerValue.trim();
+    const origOwnerId  = char?.ownerId  ?? '';
+    const origNick     = char?.ownerNick ?? '';
     setEditingOwnerChar(null);
     setEditingOwnerCharId(null);
-    if (!trimmed || !ownerId || trimmed === originalNick) return;
 
-    // Optimistic update — all chars sharing this ownerId
-    setRoster(prev => prev.map(c =>
-      c.ownerId === ownerId ? { ...c, ownerNick: trimmed } : c
-    ));
+    const idChanged   = newOwnerId !== origOwnerId;
+    const nickChanged = newNick    !== origNick;
+    if (!idChanged && !nickChanged) return;
 
-    try {
-      const res = await fetch(apiPath('/api/roster/owner-nick'), {
-        method:      'POST',
-        credentials: 'include',
-        headers:     { 'Content-Type': 'application/json' },
-        body:        JSON.stringify({ ownerId, ownerNick: trimmed }),
-      });
-      if (!res.ok) throw new Error(res.status);
-    } catch {
-      // Roll back
+    if (idChanged) {
+      // ID changed — update this specific character via /owner endpoint
       setRoster(prev => prev.map(c =>
-        c.ownerId === ownerId ? { ...c, ownerNick: originalNick } : c
+        c.charId === charId ? { ...c, ownerId: newOwnerId, ownerNick: newNick } : c
       ));
+      try {
+        const res = await fetch(apiPath(`/api/roster/${charId}/owner`), {
+          method:      'POST',
+          credentials: 'include',
+          headers:     { 'Content-Type': 'application/json' },
+          body:        JSON.stringify({ ownerId: newOwnerId, ownerNick: newNick }),
+        });
+        if (!res.ok) throw new Error(res.status);
+      } catch {
+        setRoster(prev => prev.map(c =>
+          c.charId === charId ? { ...c, ownerId: origOwnerId, ownerNick: origNick } : c
+        ));
+      }
+    } else {
+      // Nick-only change — update all chars sharing this ownerId (existing behaviour)
+      setRoster(prev => prev.map(c =>
+        c.ownerId === origOwnerId ? { ...c, ownerNick: newNick } : c
+      ));
+      try {
+        const res = await fetch(apiPath('/api/roster/owner-nick'), {
+          method:      'POST',
+          credentials: 'include',
+          headers:     { 'Content-Type': 'application/json' },
+          body:        JSON.stringify({ ownerId: origOwnerId, ownerNick: newNick }),
+        });
+        if (!res.ok) throw new Error(res.status);
+      } catch {
+        setRoster(prev => prev.map(c =>
+          c.ownerId === origOwnerId ? { ...c, ownerNick: origNick } : c
+        ));
+      }
     }
   };
 
@@ -1227,24 +1252,40 @@ export default function RosterPage() {
                       </button>
                     )
                   ) : editingOwnerChar === char.charName ? (
-                    <input
-                      className="roster-player-input"
-                      value={editOwnerValue}
-                      autoFocus
-                      onChange={e => setEditOwnerValue(e.target.value)}
-                      onBlur={handleSaveOwnerNick}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter')  { e.preventDefault(); handleSaveOwnerNick(); }
-                        if (e.key === 'Escape') setEditingOwnerChar(null);
-                      }}
-                    />
+                    <div className="roster-link-form">
+                      <input
+                        className="roster-player-input"
+                        placeholder="Discord ID"
+                        value={editOwnerIdValue}
+                        autoFocus
+                        onChange={e => setEditOwnerIdValue(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveOwnerEdit(); }
+                          if (e.key === 'Escape') setEditingOwnerChar(null);
+                        }}
+                      />
+                      <input
+                        className="roster-player-input"
+                        placeholder="Player name"
+                        value={editOwnerValue}
+                        onChange={e => setEditOwnerValue(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveOwnerEdit(); }
+                          if (e.key === 'Escape') setEditingOwnerChar(null);
+                        }}
+                      />
+                      <div className="roster-link-actions">
+                        <button className="btn-primary btn-sm" onClick={handleSaveOwnerEdit}>Save</button>
+                        <button className="btn-sm" onClick={() => setEditingOwnerChar(null)}>Cancel</button>
+                      </div>
+                    </div>
                   ) : (
                     <span className="roster-player-value">
                       <span className="text-muted">{char.ownerNick || '—'}</span>
                       <button
                         className="roster-edit-btn"
                         onClick={e => handleEditOwner(e, char)}
-                        title="Edit player name"
+                        title="Edit Discord ID / player name"
                       >✎</button>
                       <button
                         className={`roster-copy-btn ${copiedChar === char.charName ? 'roster-copy-btn-copied' : ''}`}
