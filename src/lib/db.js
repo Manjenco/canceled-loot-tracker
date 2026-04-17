@@ -514,6 +514,15 @@ export async function getBisSubmissions(db, teamId) {
   );
 }
 
+/**
+ * Bust all in-process cache entries for bis_submissions.
+ * Call after any bulk write that touches multiple teams/chars at once.
+ */
+export function invalidateBisSubmissionsCache() {
+  cacheInvalidatePrefix('bis_submissions');
+  cacheInvalidatePrefix('bis_sub_char:');
+}
+
 export async function upsertBisSubmission(db, teamId, { charId, charName, spec, slot, trueBis, trueBisItemId, raidBis, raidBisItemId, rationale }) {
   const submittedAt = new Date().toISOString();
   await run(db,
