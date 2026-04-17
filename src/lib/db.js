@@ -244,6 +244,14 @@ export async function setOwnerNick(db, teamId, ownerId, ownerNick) {
   cacheInvalidate(`roster:${teamId}`);
 }
 
+export async function setOwnerIdAllChars(db, teamId, oldOwnerId, newOwnerId, ownerNick) {
+  await run(db,
+    'UPDATE roster SET owner_id = ?, owner_nick = ? WHERE team_id = ? AND owner_id = ?',
+    newOwnerId, ownerNick, teamId, oldOwnerId
+  );
+  cacheInvalidate(`roster:${teamId}`);
+}
+
 export async function setRosterServer(db, id, server) {
   await run(db, 'UPDATE roster SET server = ? WHERE id = ?', server, id);
   cacheInvalidatePrefix('roster:');

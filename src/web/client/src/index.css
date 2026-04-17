@@ -611,6 +611,26 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .roster-copy-btn:hover                  { color: var(--text); }
 .roster-copy-btn.roster-copy-btn-copied { opacity: 1; color: #4caf50; }
 
+.roster-reassign-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+  line-height: 1;
+}
+.roster-row:hover .roster-reassign-btn { opacity: 1; }
+.roster-reassign-btn:hover             { color: #60a5fa; }
+
+.roster-link-form-scope {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
 .roster-clear-btn {
   background: none;
   border: none;

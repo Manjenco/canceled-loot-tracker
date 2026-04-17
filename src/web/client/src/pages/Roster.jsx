@@ -808,10 +808,18 @@ export default function RosterPage() {
   const [expandedGroups, setExpandedGroups] = useState(new Set(['Active']));
   const [toggling, setToggling]             = useState(null); // charName being status-toggled
   const [copiedChar, setCopiedChar]         = useState(null); // charName whose Discord ID was just copied
-  const [editingOwnerChar, setEditingOwnerChar]     = useState(null); // charName whose player info is being edited
-  const [editingOwnerCharId, setEditingOwnerCharId] = useState(null); // charId of the char being edited
-  const [editOwnerValue, setEditOwnerValue]         = useState('');
-  const [editOwnerIdValue, setEditOwnerIdValue]     = useState('');
+  // Edit player (account-wide: changes Discord ID + nick for ALL chars on this account)
+  const [editingPlayerId,    setEditingPlayerId]    = useState(null); // ownerId being edited
+  const [editPlayerIdDraft,  setEditPlayerIdDraft]  = useState('');
+  const [editPlayerNickDraft, setEditPlayerNickDraft] = useState('');
+
+  // Reassign character (char-specific: re-links this one character to a different Discord account)
+  const [reassigningCharId,   setReassigningCharId]   = useState(null);
+  const [reassigningCharName, setReassigningCharName] = useState(null);
+  const [reassignIdDraft,     setReassignIdDraft]     = useState('');
+  const [reassignNickDraft,   setReassignNickDraft]   = useState('');
+
+  // Link unlinked character
   const [linkingOwnerChar, setLinkingOwnerChar]     = useState(null); // charName being linked to a Discord ID
   const [linkingOwnerCharId, setLinkingOwnerCharId] = useState(null); // charId being linked
   const [linkOwnerIdValue, setLinkOwnerIdValue]     = useState('');
@@ -847,65 +855,89 @@ export default function RosterPage() {
     setSelectedChar(prev => prev === charId ? null : charId);
   };
 
-  const handleEditOwner = (e, char) => {
+  // ── Edit player (account-wide) ──────────────────────────────────────────────
+  const handleStartEditPlayer = (e, char) => {
     e.stopPropagation();
-    setEditingOwnerChar(char.charName);
-    setEditingOwnerCharId(char.charId);
-    setEditOwnerIdValue(char.ownerId || '');
-    setEditOwnerValue(char.ownerNick || '');
+    setEditingPlayerId(char.ownerId);
+    setEditPlayerIdDraft(char.ownerId || '');
+    setEditPlayerNickDraft(char.ownerNick || '');
   };
 
-  const handleSaveOwnerEdit = async () => {
-    if (!editingOwnerChar) return;
-    const char         = roster.find(c => c.charId === editingOwnerCharId);
-    const charId       = editingOwnerCharId;
-    const newOwnerId   = editOwnerIdValue.trim();
-    const newNick      = editOwnerValue.trim();
-    const origOwnerId  = char?.ownerId  ?? '';
-    const origNick     = char?.ownerNick ?? '';
-    setEditingOwnerChar(null);
-    setEditingOwnerCharId(null);
+  const handleSaveEditPlayer = async () => {
+    const oldOwnerId = editingPlayerId;
+    const newOwnerId = editPlayerIdDraft.trim();
+    const newNick    = editPlayerNickDraft.trim();
+    const origNick   = roster.find(c => c.ownerId === oldOwnerId)?.ownerNick ?? '';
+    setEditingPlayerId(null);
 
-    const idChanged   = newOwnerId !== origOwnerId;
+    const idChanged   = newOwnerId !== oldOwnerId;
     const nickChanged = newNick    !== origNick;
     if (!idChanged && !nickChanged) return;
 
-    if (idChanged) {
-      // ID changed — update this specific character via /owner endpoint
-      setRoster(prev => prev.map(c =>
-        c.charId === charId ? { ...c, ownerId: newOwnerId, ownerNick: newNick } : c
-      ));
-      try {
-        const res = await fetch(apiPath(`/api/roster/${charId}/owner`), {
+    // Optimistic: update all chars sharing this ownerId
+    setRoster(prev => prev.map(c =>
+      c.ownerId === oldOwnerId ? { ...c, ownerId: newOwnerId, ownerNick: newNick } : c
+    ));
+
+    try {
+      if (idChanged) {
+        const res = await fetch(apiPath('/api/roster/owner-id'), {
           method:      'POST',
           credentials: 'include',
           headers:     { 'Content-Type': 'application/json' },
-          body:        JSON.stringify({ ownerId: newOwnerId, ownerNick: newNick }),
+          body:        JSON.stringify({ oldOwnerId, newOwnerId, ownerNick: newNick }),
         });
         if (!res.ok) throw new Error(res.status);
-      } catch {
-        setRoster(prev => prev.map(c =>
-          c.charId === charId ? { ...c, ownerId: origOwnerId, ownerNick: origNick } : c
-        ));
-      }
-    } else {
-      // Nick-only change — update all chars sharing this ownerId (existing behaviour)
-      setRoster(prev => prev.map(c =>
-        c.ownerId === origOwnerId ? { ...c, ownerNick: newNick } : c
-      ));
-      try {
+      } else {
         const res = await fetch(apiPath('/api/roster/owner-nick'), {
           method:      'POST',
           credentials: 'include',
           headers:     { 'Content-Type': 'application/json' },
-          body:        JSON.stringify({ ownerId: origOwnerId, ownerNick: newNick }),
+          body:        JSON.stringify({ ownerId: oldOwnerId, ownerNick: newNick }),
         });
         if (!res.ok) throw new Error(res.status);
-      } catch {
-        setRoster(prev => prev.map(c =>
-          c.ownerId === origOwnerId ? { ...c, ownerNick: origNick } : c
-        ));
       }
+    } catch {
+      // Roll back
+      setRoster(prev => prev.map(c =>
+        c.ownerId === newOwnerId ? { ...c, ownerId: oldOwnerId, ownerNick: origNick } : c
+      ));
+    }
+  };
+
+  // ── Reassign character (this char only) ──────────────────────────────────────
+  const handleStartReassign = (e, char) => {
+    e.stopPropagation();
+    setReassigningCharId(char.charId);
+    setReassigningCharName(char.charName);
+    setReassignIdDraft(char.ownerId || '');
+    setReassignNickDraft(char.ownerNick || '');
+  };
+
+  const handleSaveReassign = async () => {
+    const charId     = reassigningCharId;
+    const newOwnerId = reassignIdDraft.trim();
+    const newNick    = reassignNickDraft.trim();
+    const orig       = roster.find(c => c.charId === charId);
+    setReassigningCharId(null);
+    setReassigningCharName(null);
+    if (!newOwnerId || (newOwnerId === orig?.ownerId && newNick === orig?.ownerNick)) return;
+
+    setRoster(prev => prev.map(c =>
+      c.charId === charId ? { ...c, ownerId: newOwnerId, ownerNick: newNick } : c
+    ));
+    try {
+      const res = await fetch(apiPath(`/api/roster/${charId}/owner`), {
+        method:      'POST',
+        credentials: 'include',
+        headers:     { 'Content-Type': 'application/json' },
+        body:        JSON.stringify({ ownerId: newOwnerId, ownerNick: newNick }),
+      });
+      if (!res.ok) throw new Error(res.status);
+    } catch {
+      setRoster(prev => prev.map(c =>
+        c.charId === charId ? { ...c, ownerId: orig?.ownerId ?? '', ownerNick: orig?.ownerNick ?? '' } : c
+      ));
     }
   };
 
@@ -1251,32 +1283,69 @@ export default function RosterPage() {
                         ⚠ Unlinked
                       </button>
                     )
-                  ) : editingOwnerChar === char.charName ? (
+                  ) : editingPlayerId === char.ownerId ? (
                     <div className="roster-link-form">
+                      <div className="roster-link-form-scope">
+                        All characters: {roster.filter(c => c.ownerId === char.ownerId).map(c => c.charName).join(', ')}
+                      </div>
                       <input
                         className="roster-player-input"
                         placeholder="Discord ID"
-                        value={editOwnerIdValue}
+                        value={editPlayerIdDraft}
                         autoFocus
-                        onChange={e => setEditOwnerIdValue(e.target.value)}
+                        onChange={e => setEditPlayerIdDraft(e.target.value)}
                         onKeyDown={e => {
-                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveOwnerEdit(); }
-                          if (e.key === 'Escape') setEditingOwnerChar(null);
+                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveEditPlayer(); }
+                          if (e.key === 'Escape') setEditingPlayerId(null);
                         }}
                       />
                       <input
                         className="roster-player-input"
                         placeholder="Player name"
-                        value={editOwnerValue}
-                        onChange={e => setEditOwnerValue(e.target.value)}
+                        value={editPlayerNickDraft}
+                        onChange={e => setEditPlayerNickDraft(e.target.value)}
                         onKeyDown={e => {
-                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveOwnerEdit(); }
-                          if (e.key === 'Escape') setEditingOwnerChar(null);
+                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveEditPlayer(); }
+                          if (e.key === 'Escape') setEditingPlayerId(null);
                         }}
                       />
                       <div className="roster-link-actions">
-                        <button className="btn-primary btn-sm" onClick={handleSaveOwnerEdit}>Save</button>
-                        <button className="btn-sm" onClick={() => setEditingOwnerChar(null)}>Cancel</button>
+                        <button className="btn-primary btn-sm" onClick={handleSaveEditPlayer}>Save</button>
+                        <button className="btn-sm" onClick={() => setEditingPlayerId(null)}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : reassigningCharId === char.charId ? (
+                    <div className="roster-link-form">
+                      <div className="roster-link-form-scope">This character only</div>
+                      <input
+                        className="roster-player-input"
+                        placeholder="Discord ID"
+                        value={reassignIdDraft}
+                        autoFocus
+                        onChange={e => {
+                          const val = e.target.value;
+                          setReassignIdDraft(val);
+                          const match = roster.find(c => c.ownerId === val.trim());
+                          if (match?.ownerNick) setReassignNickDraft(match.ownerNick);
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveReassign(); }
+                          if (e.key === 'Escape') { setReassigningCharId(null); setReassigningCharName(null); }
+                        }}
+                      />
+                      <input
+                        className="roster-player-input"
+                        placeholder="Player name"
+                        value={reassignNickDraft}
+                        onChange={e => setReassignNickDraft(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter')  { e.preventDefault(); handleSaveReassign(); }
+                          if (e.key === 'Escape') { setReassigningCharId(null); setReassigningCharName(null); }
+                        }}
+                      />
+                      <div className="roster-link-actions">
+                        <button className="btn-primary btn-sm" onClick={handleSaveReassign}>Save</button>
+                        <button className="btn-sm" onClick={() => { setReassigningCharId(null); setReassigningCharName(null); }}>Cancel</button>
                       </div>
                     </div>
                   ) : (
@@ -1284,14 +1353,19 @@ export default function RosterPage() {
                       <span className="text-muted">{char.ownerNick || '—'}</span>
                       <button
                         className="roster-edit-btn"
-                        onClick={e => handleEditOwner(e, char)}
-                        title="Edit Discord ID / player name"
+                        onClick={e => handleStartEditPlayer(e, char)}
+                        title="Edit player (Discord ID + name — all characters)"
                       >✎</button>
                       <button
                         className={`roster-copy-btn ${copiedChar === char.charName ? 'roster-copy-btn-copied' : ''}`}
                         onClick={e => handleCopyDiscordId(e, char)}
                         title={copiedChar === char.charName ? 'Copied!' : `Copy Discord ID (${char.ownerId})`}
                       >{copiedChar === char.charName ? '✓' : '⎘'}</button>
+                      <button
+                        className="roster-reassign-btn"
+                        onClick={e => handleStartReassign(e, char)}
+                        title="Reassign this character to a different player"
+                      >⇄</button>
                       <button
                         className="roster-clear-btn"
                         onClick={e => handleClearOwner(e, char)}
