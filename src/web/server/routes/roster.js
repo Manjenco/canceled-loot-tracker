@@ -5,6 +5,7 @@
  * POST   /api/roster
  * GET    /api/roster/:charId
  * POST   /api/roster/owner-nick
+ * POST   /api/roster/owner-id
  * POST   /api/roster/:charId/owner
  * DELETE /api/roster/:charId/owner
  * POST   /api/roster/:charId/status
@@ -20,7 +21,7 @@ import {
   getRoster, getLootLogForChar, getBisSubmissionsForChar,
   getEffectiveDefaultBisForSpec, getItemDb,
   getWornBisForChar,
-  setRosterStatus, setOwnerNick, setRosterOwner, addRosterChar, deleteRosterChar,
+  setRosterStatus, setOwnerNick, setOwnerIdAllChars, setRosterOwner, addRosterChar, deleteRosterChar,
   renameRosterChar, setRosterServer, setSecondarySpecs,
   approvePrimarySpecChange, rejectPrimarySpecChange,
 } from '../../../lib/db.js';
@@ -165,6 +166,22 @@ router.post('/owner-nick', async (c) => {
   } catch (err) {
     console.error('[ROSTER] Owner nick update error:', err);
     return c.json({ error: 'Failed to update player name' }, 500);
+  }
+});
+
+// Update the Discord ID (and optionally nick) for ALL characters belonging to a player.
+router.post('/owner-id', async (c) => {
+  const { teamId } = c.get('session').user;
+  const { oldOwnerId, newOwnerId, ownerNick = '' } = await c.req.json();
+  if (!oldOwnerId?.trim()) return c.json({ error: 'oldOwnerId is required' }, 400);
+  if (!newOwnerId?.trim()) return c.json({ error: 'newOwnerId is required' }, 400);
+  const db = c.env.DB;
+  try {
+    await setOwnerIdAllChars(db, teamId, oldOwnerId.trim(), newOwnerId.trim(), ownerNick.trim());
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('[ROSTER] Owner ID update error:', err);
+    return c.json({ error: 'Failed to update player Discord ID' }, 500);
   }
 });
 
