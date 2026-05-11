@@ -171,7 +171,7 @@ function parseRosterRow(r) {
 export async function getRoster(db, teamId) {
   return cachedRead(`roster:${teamId}`, TTL.SHORT, async () => {
     const rows = await all(db,
-      'SELECT * FROM roster WHERE team_id = ? ORDER BY char_name',
+      'SELECT * FROM roster WHERE team_id = ? AND deleted = 0 ORDER BY char_name',
       teamId
     );
     return rows.map(parseRosterRow);
@@ -185,7 +185,7 @@ export async function getRoster(db, teamId) {
 export async function getRosterPendingSpecChanges(db, teamId) {
   return cachedRead(`roster_pending_spec:${teamId}`, TTL.BRIEF, async () => {
     const rows = await all(db,
-      `SELECT * FROM roster WHERE team_id = ? AND pending_primary_spec IS NOT NULL AND pending_primary_spec != '' ORDER BY char_name`,
+      `SELECT * FROM roster WHERE team_id = ? AND deleted = 0 AND pending_primary_spec IS NOT NULL AND pending_primary_spec != '' ORDER BY char_name`,
       teamId
     );
     return rows.map(parseRosterRow);
@@ -201,7 +201,7 @@ export async function getRosterMember(db, id) {
 
 export async function getRosterByOwnerId(db, teamId, ownerId) {
   const rows = await all(db,
-    'SELECT * FROM roster WHERE team_id = ? AND owner_id = ?',
+    'SELECT * FROM roster WHERE team_id = ? AND owner_id = ? AND deleted = 0',
     teamId, ownerId
   );
   return rows.map(parseRosterRow);
@@ -217,7 +217,11 @@ export async function addRosterChar(db, teamId, { charName, cls, spec, role, sta
 }
 
 export async function deleteRosterChar(db, id) {
-  await run(db, 'DELETE FROM roster WHERE id = ?', id);
+  // Soft-delete: set deleted = 1 so the character can be restored if needed.
+  // All roster reads filter deleted = 0, so the character disappears from every
+  // view immediately. FK-referenced child rows (loot_log, bis_submissions, etc.)
+  // are left untouched — they remain queryable and the loot history is intact.
+  await run(db, 'UPDATE roster SET deleted = 1 WHERE id = ?', id);
   cacheInvalidatePrefix('roster:');
 }
 
@@ -956,7 +960,7 @@ export async function getTierSnapshot(db, teamId) {
     all(db,
       `SELECT ts.*, r.char_name FROM tier_snapshot ts
        JOIN roster r ON r.id = ts.char_id
-       WHERE r.team_id = ?`,
+       WHERE r.team_id = ? AND r.deleted = 0`,
       teamId
     )
   );
@@ -1003,7 +1007,7 @@ export async function getWornBis(db, teamId) {
     const rows = await all(db,
       `SELECT wb.* FROM worn_bis wb
        JOIN roster r ON r.id = wb.char_id
-       WHERE r.team_id = ?`,
+       WHERE r.team_id = ? AND r.deleted = 0`,
       teamId
     );
     const map = new Map();

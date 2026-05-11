@@ -94,4 +94,15 @@ CREATE INDEX IF NOT EXISTS idx_loot_summary_owner ON loot_summary(team_id, owner
     },
     sql: `ALTER TABLE roster ADD COLUMN attendance_adjustment INTEGER NOT NULL DEFAULT 0`,
   },
+  {
+    name: '0004_roster_soft_delete',
+    description: 'Add deleted flag to roster for soft-delete support',
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM pragma_table_info('roster') WHERE name = 'deleted'"
+      ).first();
+      return !!row;
+    },
+    sql: `ALTER TABLE roster ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`,
+  },
 ];
