@@ -99,7 +99,8 @@ CREATE TABLE roster (
   server              TEXT    NOT NULL DEFAULT '',  -- only set when name conflicts exist
   secondary_specs     TEXT    NOT NULL DEFAULT '',  -- pipe-separated spec names
   pending_primary_spec TEXT   NOT NULL DEFAULT '',  -- spec awaiting officer approval
-  attendance_adjustment INTEGER NOT NULL DEFAULT 0  -- manual correction added to WCL attendance count
+  attendance_adjustment INTEGER NOT NULL DEFAULT 0,  -- manual correction added to WCL attendance count
+  deleted               INTEGER NOT NULL DEFAULT 0   -- 1 = soft-deleted; hidden from all roster reads
 );
 
 CREATE UNIQUE INDEX idx_roster_name_server ON roster(team_id, char_name, server);
