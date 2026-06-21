@@ -71,6 +71,9 @@ export default function Layout({ children }) {
             <NavLink to="/admin/team-config" className="nav-tab">Team Config</NavLink>
           )}
           {user?.isGlobalOfficer && (
+            <NavLink to="/admin/item-db" className="nav-tab">Item DB</NavLink>
+          )}
+          {user?.isGlobalOfficer && (
             <NavLink to="/admin/global-config" className="nav-tab">Global Config</NavLink>
           )}
           {user?.isGlobalOfficer && (

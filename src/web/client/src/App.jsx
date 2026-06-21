@@ -8,6 +8,7 @@ import AdminDefaultBis  from './pages/AdminDefaultBis.jsx';
 import AdminTeamConfig  from './pages/AdminTeamConfig.jsx';
 import AdminGlobalConfig from './pages/AdminGlobalConfig.jsx';
 import AdminSeasons      from './pages/AdminSeasons.jsx';
+import AdminItemDb       from './pages/AdminItemDb.jsx';
 import AdminBisReview   from './pages/AdminBisReview.jsx';
 import Council          from './pages/Council.jsx';
 import LootImport       from './pages/LootImport.jsx';
@@ -100,6 +101,11 @@ export default function App() {
       <Route path="/admin/seasons" element={
         <GlobalOfficerRoute>
           <Layout><AdminSeasons /></Layout>
+        </GlobalOfficerRoute>
+      } />
+      <Route path="/admin/item-db" element={
+        <GlobalOfficerRoute>
+          <Layout><AdminItemDb /></Layout>
         </GlobalOfficerRoute>
       } />
       <Route path="*" element={<Navigate to="/" replace />} />
