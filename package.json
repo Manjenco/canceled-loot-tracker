@@ -8,7 +8,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "dev": "npm run dev --workspaces"
+    "dev": "npm run dev --workspaces",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "devDependencies": {
     "better-sqlite3": "^12.8.0"

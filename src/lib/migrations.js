@@ -224,11 +224,11 @@ CREATE TABLE tier_snapshot (
   PRIMARY KEY (season_id, char_id)
 );
 INSERT INTO tier_snapshot (season_id, char_id, raid_id, tier_count, tier_detail, updated_at)
-  SELECT 1, char_id,
-    CASE WHEN raid_id IS NOT NULL AND EXISTS (SELECT 1 FROM raids WHERE id = raid_id)
-         THEN raid_id ELSE NULL END,
-    tier_count, tier_detail, updated_at FROM _tier_snapshot_old
-  WHERE char_id IN (SELECT id FROM roster);
+  SELECT 1, ts.char_id,
+    CASE WHEN ts.raid_id IS NOT NULL AND EXISTS (SELECT 1 FROM raids rr WHERE rr.id = ts.raid_id)
+         THEN ts.raid_id ELSE NULL END,
+    ts.tier_count, ts.tier_detail, ts.updated_at FROM _tier_snapshot_old ts
+  WHERE ts.char_id IN (SELECT id FROM roster);
 DROP TABLE _tier_snapshot_old;
 ALTER TABLE worn_bis RENAME TO _worn_bis_old;
 CREATE TABLE worn_bis (
