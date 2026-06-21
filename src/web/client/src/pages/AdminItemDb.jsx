@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { apiPath } from '../lib/api.js';
+import ItemLink from '../components/ItemLink.jsx';
 
 const DIFFICULTIES = [
   { value: 'MYTHIC',           label: 'Mythic' },
@@ -559,6 +560,9 @@ function ManifestUpdateCard({ seasonId, onItemsChanged }) {
   // Clear any stale preview when the season changes.
   useEffect(() => { setDiff(null); setError(null); setApplyMsg(null); }, [seasonId]);
 
+  // Attach Wowhead tooltips to the freshly-rendered diff item links.
+  useEffect(() => { if (diff) window.$WowheadPower?.refreshLinks(); }, [diff]);
+
   async function preview() {
     setPreviewing(true); setError(null); setApplyMsg(null); setDiff(null);
     try {
@@ -670,7 +674,7 @@ function ManifestUpdateCard({ seasonId, onItemsChanged }) {
                 render={i => (
                   <tr key={i.itemId}>
                     <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text-muted)', width: 70 }}>{i.itemId}</td>
-                    <td style={td}>{i.name}</td>
+                    <td style={td}><ItemLink itemId={i.itemId} name={i.name} /></td>
                     <td style={{ ...td, color: 'var(--text-muted)' }}>{i.slot}</td>
                     <td style={{ ...td, color: 'var(--text-muted)' }}>{i.instance}</td>
                   </tr>
@@ -681,7 +685,7 @@ function ManifestUpdateCard({ seasonId, onItemsChanged }) {
                 render={i => (
                   <tr key={i.itemId}>
                     <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text-muted)', width: 70 }}>{i.itemId}</td>
-                    <td style={td}>{i.name}</td>
+                    <td style={td}><ItemLink itemId={i.itemId} name={i.name} /></td>
                     <td style={{ ...td, color: 'var(--text-muted)' }}>
                       {i.changedFields.map(f => `${f}: ${i.old[f]} → ${f === 'is_tier_token' ? (i.isTierToken ? 1 : 0) : (i[{ source_type: 'sourceType', source_name: 'sourceName', armor_type: 'armorType' }[f] ?? f])}`).join(', ')}
                     </td>
@@ -698,10 +702,10 @@ function ManifestUpdateCard({ seasonId, onItemsChanged }) {
                   : undefined
                 }
                 render={i => (
-                  <tr key={i.itemId}>
+                  <tr key={i.item_id}>
                     <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text-muted)', width: 70 }}>{i.item_id}</td>
                     <td style={td}>
-                      {i.name}
+                      <ItemLink itemId={i.item_id} name={i.name} />
                       {i.referenced && (
                         <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--danger, #e05)' }} title="Referenced by Default BIS — removal will be blocked">⚠ in Default BIS</span>
                       )}
@@ -748,6 +752,9 @@ function SeasonItemsCard({ seasonId, refreshNonce }) {
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [seasonId, refreshNonce]);
+
+  // Re-attach Wowhead tooltips whenever the rendered rows change (load or filter).
+  useEffect(() => { if (items) window.$WowheadPower?.refreshLinks(); }, [items, q, slot, instance, armor, tierOnly]);
 
   const all = items ?? [];
   const uniq = (vals) => [...new Set(vals.filter(Boolean))].sort();
@@ -830,7 +837,7 @@ function SeasonItemsCard({ seasonId, refreshNonce }) {
                 <tr key={i.id}>
                   <td style={{ ...td, paddingLeft: 10, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{i.item_id}</td>
                   <td style={td}>
-                    {i.name}
+                    <ItemLink itemId={i.item_id} name={i.name} />
                     {i.is_tier_token === 1 && (
                       <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 3, background: 'rgba(204,16,16,0.18)', color: 'var(--primary, #CC1010)' }}>
                         Tier
