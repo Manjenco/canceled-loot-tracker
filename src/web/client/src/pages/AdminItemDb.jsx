@@ -335,6 +335,58 @@ function TierItemsCard({ seasonId, onStatsChange }) {
   );
 }
 
+// ── Instance combobox (type-to-search) ─────────────────────────────────────────
+
+function InstanceCombobox({ instances, valueId, onSelect, disabled }) {
+  const [query, setQuery] = useState('');
+  const [open,  setOpen]  = useState(false);
+
+  const selected = instances.find(i => String(i.id) === String(valueId));
+  const needle   = query.trim().toLowerCase();
+  const filtered = (needle
+    ? instances.filter(i => i.name.toLowerCase().includes(needle) || String(i.id).includes(needle))
+    : instances
+  ).slice(0, 50);
+
+  return (
+    <div style={{ position: 'relative', minWidth: 280 }}>
+      <input
+        className="config-input"
+        value={query}
+        disabled={disabled}
+        placeholder={selected ? `${selected.name} (#${selected.id})` : 'Type to search instances…'}
+        onChange={e => { setQuery(e.target.value); setOpen(true); if (!e.target.value) onSelect(''); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        style={{ width: '100%' }}
+      />
+      {open && filtered.length > 0 && (
+        <div style={{
+          position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 2,
+          maxHeight: 260, overflowY: 'auto',
+          background: 'var(--card, #1A1A1A)', border: '1px solid var(--border, #333)', borderRadius: 4,
+          boxShadow: '0 6px 16px rgba(0,0,0,0.4)',
+        }}>
+          {filtered.map(i => (
+            <div
+              key={i.id}
+              // onMouseDown (not onClick) so selection fires before the input's blur closes the list
+              onMouseDown={() => { onSelect(String(i.id)); setQuery(i.name); setOpen(false); }}
+              style={{
+                padding: '5px 10px', cursor: 'pointer', fontSize: 13,
+                background: String(i.id) === String(valueId) ? 'rgba(204,16,16,0.15)' : 'transparent',
+              }}
+            >
+              <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', marginRight: 8 }}>#{i.id}</span>
+              {i.name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Source Manifest ───────────────────────────────────────────────────────────
 
 function SourceManifestCard({ seasonId }) {
@@ -465,10 +517,7 @@ function SourceManifestCard({ seasonId }) {
       {/* Add form */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
         {instances ? (
-          <select className="lh-diff-select" value={addId} onChange={e => setAddId(e.target.value)} style={{ minWidth: 240 }}>
-            <option value="">Select instance…</option>
-            {instances.map(i => <option key={i.id} value={i.id}>{i.name} (#{i.id})</option>)}
-          </select>
+          <InstanceCombobox instances={instances} valueId={addId} onSelect={setAddId} disabled={adding} />
         ) : (
           <>
             <input
