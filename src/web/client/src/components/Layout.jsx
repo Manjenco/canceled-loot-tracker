@@ -73,6 +73,9 @@ export default function Layout({ children }) {
           {user?.isGlobalOfficer && (
             <NavLink to="/admin/global-config" className="nav-tab">Global Config</NavLink>
           )}
+          {user?.isGlobalOfficer && (
+            <NavLink to="/admin/seasons" className="nav-tab">Seasons</NavLink>
+          )}
         </nav>
       </header>
 
