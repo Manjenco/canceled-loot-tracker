@@ -15,6 +15,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getGlobalConfig, writeItemDb, setTierItems, getTierItems, getItemDb, getCurrentSeasonId, getSeasons,
   getSeasonSources, addSeasonSource, removeSeasonSource, setSeasonSourceEnabled,
+  getDefaultBisItemRefs, deleteItemDbItems,
 } from '../../../lib/db.js';
 import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
@@ -66,6 +67,66 @@ async function getBlizzardCreds(db, env) {
     );
   }
   return { clientId, clientSecret, region };
+}
+
+// ── Manifest diff helpers ─────────────────────────────────────────────────────
+
+/**
+ * Fetch + map + dedupe the "desired" item set from every ENABLED manifest source.
+ * Returns { desired, perSource, errors }. A source that fails is recorded in errors
+ * (never throws for a single source) — callers use errors.length to gate removals.
+ */
+async function fetchManifestDesired(db, env, seasonId) {
+  const sources = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
+  const creds   = await getBlizzardCreds(db, env);
+  const perSource = [];
+  const errors    = [];
+  const items     = [];
+  for (const src of sources) {
+    try {
+      const raw    = await fetchRaidItems(Number(src.source_id), src.difficulty, creds);
+      const mapped = raw.map(mapItem).filter(Boolean);
+      items.push(...mapped);
+      perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: mapped.length });
+    } catch (err) {
+      errors.push(`${src.label || src.source_id} (${src.difficulty}): ${err.message}`);
+    }
+  }
+  const seen    = new Set();
+  const desired = items.filter(i => (seen.has(i.itemId) ? false : (seen.add(i.itemId), true)));
+  return { sources, desired, perSource, errors };
+}
+
+const DIFF_FIELDS = [
+  ['name',          d => d.name,                       r => r.name],
+  ['slot',          d => d.slot,                       r => r.slot],
+  ['source_type',   d => d.sourceType,                 r => r.source_type],
+  ['source_name',   d => d.sourceName,                 r => r.source_name],
+  ['instance',      d => d.instance,                   r => r.instance],
+  ['difficulty',    d => d.difficulty,                 r => r.difficulty],
+  ['armor_type',    d => d.armorType,                  r => r.armor_type],
+  ['is_tier_token', d => (d.isTierToken ? 1 : 0),      r => r.is_tier_token],
+];
+
+/** Compare desired (mapItem output) vs current (item_db rows). Keyed on Blizzard item_id. */
+function diffItems(desired, current) {
+  const curById = new Map(current.map(r => [String(r.item_id), r]));
+  const desById = new Map(desired.map(i => [String(i.itemId), i]));
+
+  const added = [];
+  const changed = [];
+  for (const d of desired) {
+    const cur = curById.get(String(d.itemId));
+    if (!cur) { added.push(d); continue; }
+    const fields = DIFF_FIELDS.filter(([, dv, cv]) => String(dv(d)) !== String(cv(cur))).map(([f]) => f);
+    if (fields.length) {
+      const oldVals = {};
+      for (const [f, , cv] of DIFF_FIELDS) if (fields.includes(f)) oldVals[f] = cv(cur);
+      changed.push({ ...d, changedFields: fields, old: oldVals });
+    }
+  }
+  const removed = current.filter(r => !desById.has(String(r.item_id)));
+  return { added, changed, removed };
 }
 
 // ── GET /stats ────────────────────────────────────────────────────────────────
@@ -245,45 +306,123 @@ router.delete('/sources/:id', async (c) => {
 });
 
 // ── POST /sync-manifest ───────────────────────────────────────────────────────
-// Additively re-pulls every ENABLED source in the season's manifest and upserts
-// the union into item_db. No removals — that's the diff/apply phase. A source that
-// errors is reported but does not abort the others.
+// Additively re-pulls every ENABLED source and upserts the union into item_db. No
+// removals (use /diff + /apply for those). A failing source is reported, not fatal.
 
 router.post('/sync-manifest', async (c) => {
   const db = c.env.DB;
   const { seasonId: reqSeason } = await c.req.json().catch(() => ({}));
   try {
     const seasonId = await resolveSeasonId(db, reqSeason);
-    const sources  = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
-    if (!sources.length) return c.json({ error: 'No enabled sources in this season’s manifest.' }, 400);
-
-    const creds = await getBlizzardCreds(db, c.env);
-
-    const perSource = [];
-    const allItems  = [];
-    const errors    = [];
-
-    for (const src of sources) {
-      try {
-        const raw   = await fetchRaidItems(Number(src.source_id), src.difficulty, creds);
-        const items = raw.map(mapItem).filter(Boolean);
-        allItems.push(...items);
-        perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: items.length });
-      } catch (err) {
-        errors.push(`${src.label || src.source_id} (${src.difficulty}): ${err.message}`);
-      }
+    const { perSource, desired, errors } = await fetchManifestDesired(db, c.env, seasonId);
+    if (!perSource.length && !errors.length) {
+      return c.json({ error: 'No enabled sources in this season’s manifest.' }, 400);
     }
-
-    // Global dedupe by Blizzard item ID (same item can appear in multiple sources).
-    const seen    = new Set();
-    const deduped = allItems.filter(i => (seen.has(i.itemId) ? false : (seen.add(i.itemId), true)));
-
-    if (deduped.length) await writeItemDb(db, deduped, seasonId, { replace: false });
-
-    return c.json({ ok: true, seasonId, total: deduped.length, sources: perSource, errors });
+    if (desired.length) await writeItemDb(db, desired, seasonId, { replace: false });
+    return c.json({ ok: true, seasonId, total: desired.length, sources: perSource, errors });
   } catch (err) {
     console.error('[admin-items] sync-manifest error:', err);
     return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── POST /diff ────────────────────────────────────────────────────────────────
+// Dry run: re-pull the manifest and compute added / changed / removed vs the
+// season's current item_db. No writes. Removals are only *offered* when the season
+// is not the live one AND every source fetched cleanly (partial pulls never remove).
+
+router.post('/diff', async (c) => {
+  const db = c.env.DB;
+  const { seasonId: reqSeason } = await c.req.json().catch(() => ({}));
+  try {
+    const seasonId        = await resolveSeasonId(db, reqSeason);
+    const currentSeasonId = await getCurrentSeasonId(db);
+    const isCurrent       = seasonId === currentSeasonId;
+
+    const { perSource, desired, errors } = await fetchManifestDesired(db, c.env, seasonId);
+    if (!perSource.length && !errors.length) {
+      return c.json({ error: 'No enabled sources in this season’s manifest.' }, 400);
+    }
+
+    const current = await getItemDb(db, seasonId);
+    const { added, changed, removed } = diffItems(desired, current);
+
+    const partial         = errors.length > 0;
+    const removalsAllowed = !isCurrent && !partial;
+
+    // Flag removed items that Default BIS hard-references (apply would block on these).
+    const refPks   = await getDefaultBisItemRefs(db, seasonId);
+    const removedA = removed.map(r => ({ ...r, referenced: refPks.has(r.id) }));
+
+    return c.json({
+      seasonId, isCurrent, partial, removalsAllowed,
+      sourceErrors: errors, perSource,
+      added, changed, removed: removedA,
+      counts: { added: added.length, changed: changed.length, removed: removed.length },
+    });
+  } catch (err) {
+    console.error('[admin-items] diff error:', err);
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── POST /apply ───────────────────────────────────────────────────────────────
+// Apply selected buckets of the diff. Recomputes the diff server-side (never trusts
+// a client-supplied item list) and applies only the requested buckets:
+//   added/changed → upsert (UPDATE-in-place preserves item_db.id, so default_bis FKs survive)
+//   removed       → hard delete, gated on non-live season + clean pull + no hard refs
+// Body: { seasonId, buckets: ['added'|'changed'|'removed', ...] }
+
+router.post('/apply', async (c) => {
+  const db = c.env.DB;
+  const { seasonId: reqSeason, buckets } = await c.req.json().catch(() => ({}));
+  if (!Array.isArray(buckets) || !buckets.length) {
+    return c.json({ error: 'buckets must be a non-empty array' }, 400);
+  }
+  const VALID = new Set(['added', 'changed', 'removed']);
+  if (buckets.some(b => !VALID.has(b))) {
+    return c.json({ error: "buckets may only contain 'added', 'changed', 'removed'" }, 400);
+  }
+
+  try {
+    const seasonId        = await resolveSeasonId(db, reqSeason);
+    const currentSeasonId = await getCurrentSeasonId(db);
+    const isCurrent       = seasonId === currentSeasonId;
+
+    const { desired, errors } = await fetchManifestDesired(db, c.env, seasonId);
+    const partial = errors.length > 0;
+
+    // Validate removal gating up front, before any write, so a mixed request can't
+    // partially apply and then fail.
+    if (buckets.includes('removed')) {
+      if (isCurrent) return c.json({ error: 'Removals are not allowed on the current (live) season.' }, 400);
+      if (partial)   return c.json({ error: 'Some sources failed to fetch — removals are blocked to avoid deleting from a partial pull.' }, 400);
+    }
+
+    const current = await getItemDb(db, seasonId);
+    const { added, changed, removed } = diffItems(desired, current);
+
+    const applied = { added: 0, changed: 0, removed: 0 };
+
+    // added + changed → single additive upsert (changed updates in place by item_id).
+    const toUpsert = [];
+    if (buckets.includes('added'))   toUpsert.push(...added);
+    if (buckets.includes('changed')) toUpsert.push(...changed);
+    if (toUpsert.length) await writeItemDb(db, toUpsert, seasonId, { replace: false });
+    if (buckets.includes('added'))   applied.added   = added.length;
+    if (buckets.includes('changed')) applied.changed = changed.length;
+
+    // removed → guarded hard delete (throws ITEM_REFERENCED if any is hard-referenced).
+    if (buckets.includes('removed')) {
+      const res = await deleteItemDbItems(db, seasonId, removed.map(r => r.item_id));
+      applied.removed = res.deleted;
+    }
+
+    return c.json({ ok: true, seasonId, applied });
+  } catch (err) {
+    console.error('[admin-items] apply error:', err);
+    const status = err.code === 'ITEM_REFERENCED' ? 409 : 500;
+    return c.json({ error: err.message }, status);
   }
 });
 

@@ -224,4 +224,22 @@ test('data layer operations (season-partitioned)', async (t) => {
     await db.removeSeasonSource(D, 1, mid.id);
     assert.ok(!(await db.getSeasonSources(D, 1)).some(s => s.id === mid.id));
   });
+
+  await t.test('deleteItemDbItems: guarded hard delete blocks Default-BIS-referenced items', async () => {
+    // Blade of Testing (1002) is not referenced by default_bis → deletes cleanly
+    const res = await db.deleteItemDbItems(D, 1, ['1002']);
+    assert.equal(res.deleted, 1);
+    assert.ok(!(await db.getItemDb(D, 1)).some(i => i.item_id === '1002'));
+
+    // Helm of Testing (1001) IS referenced by the seeded default_bis → aborts
+    await assert.rejects(
+      () => db.deleteItemDbItems(D, 1, ['1001']),
+      err => err.code === 'ITEM_REFERENCED',
+    );
+    assert.ok((await db.getItemDb(D, 1)).some(i => i.item_id === '1001'), 'referenced item survives the blocked delete');
+
+    // reference set surfaces the helm's PK
+    const refs = await db.getDefaultBisItemRefs(D, 1);
+    assert.ok(refs.has(helmItemId));
+  });
 });

@@ -759,6 +759,63 @@ export async function writeItemDb(db, items, seasonId, { replace = false } = {})
   }
 }
 
+/** Set of item_db.id values referenced by this season's default_bis (the only hard FKs to item_db). */
+export async function getDefaultBisItemRefs(db, seasonId) {
+  const rows = await all(db,
+    'SELECT true_bis_item_id, raid_bis_item_id FROM default_bis WHERE season_id = ?', seasonId);
+  const refs = new Set();
+  for (const r of rows) {
+    if (r.true_bis_item_id) refs.add(r.true_bis_item_id);
+    if (r.raid_bis_item_id) refs.add(r.raid_bis_item_id);
+  }
+  return refs;
+}
+
+/**
+ * Hard-delete items from a season by Blizzard item_id, after a hard-reference guard.
+ * default_bis.true_bis_item_id / raid_bis_item_id are the only true FKs to item_db(id);
+ * if any item being removed is referenced there, the whole delete is aborted with an
+ * ITEM_REFERENCED error naming them (so the officer clears those Default BIS entries first).
+ * Returns { deleted }.
+ */
+export async function deleteItemDbItems(db, seasonId, itemIds) {
+  if (!itemIds.length) return { deleted: 0 };
+  const ph  = itemIds.map(() => '?').join(',');
+  const rows = await all(db,
+    `SELECT id, item_id, name FROM item_db WHERE season_id = ? AND item_id IN (${ph})`,
+    seasonId, ...itemIds.map(String)
+  );
+  if (!rows.length) return { deleted: 0 };
+
+  const pks    = rows.map(r => r.id);
+  const byPk   = new Map(rows.map(r => [r.id, r]));
+  const pkPh   = pks.map(() => '?').join(',');
+  const refRows = await all(db,
+    `SELECT true_bis_item_id, raid_bis_item_id FROM default_bis
+     WHERE season_id = ? AND (true_bis_item_id IN (${pkPh}) OR raid_bis_item_id IN (${pkPh}))`,
+    seasonId, ...pks, ...pks
+  );
+  if (refRows.length) {
+    const refPks = new Set();
+    for (const r of refRows) {
+      if (pks.includes(r.true_bis_item_id)) refPks.add(r.true_bis_item_id);
+      if (pks.includes(r.raid_bis_item_id)) refPks.add(r.raid_bis_item_id);
+    }
+    const names = [...refPks].map(pk => byPk.get(pk)?.name).filter(Boolean);
+    const err = new Error(
+      `Cannot remove ${names.length} item(s) referenced by Default BIS: ${names.join(', ')}. ` +
+      'Clear those Default BIS entries first.'
+    );
+    err.code = 'ITEM_REFERENCED';
+    throw err;
+  }
+
+  await run(db, `DELETE FROM item_db WHERE season_id = ? AND id IN (${pkPh})`, seasonId, ...pks);
+  cacheInvalidate(`item_db:${seasonId}`);
+  cacheInvalidatePrefix(`item_db_armor:${seasonId}:`);
+  return { deleted: pks.length };
+}
+
 // ── Default BIS ───────────────────────────────────────────────────────────────
 
 export async function getDefaultBis(db, seasonId) {

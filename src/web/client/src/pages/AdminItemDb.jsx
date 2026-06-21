@@ -337,7 +337,7 @@ function TierItemsCard({ seasonId, onStatsChange }) {
 
 // ── Source Manifest ───────────────────────────────────────────────────────────
 
-function SourceManifestCard({ seasonId, onItemsChanged }) {
+function SourceManifestCard({ seasonId }) {
   const [sources, setSources] = useState(null); // null = not loaded
   const [error,   setError]   = useState(null);
 
@@ -347,10 +347,6 @@ function SourceManifestCard({ seasonId, onItemsChanged }) {
   const [addId,       setAddId]       = useState('');
   const [addDiff,     setAddDiff]     = useState('MYTHIC');
   const [adding,      setAdding]      = useState(false);
-
-  // Manifest sync
-  const [syncing,    setSyncing]    = useState(false);
-  const [syncResult, setSyncResult] = useState(null);
 
   const loadSources = useCallback(async () => {
     if (!seasonId) { setSources(null); return; }
@@ -417,24 +413,7 @@ function SourceManifestCard({ seasonId, onItemsChanged }) {
     } catch (e) { setError(e.message); }
   }
 
-  async function syncManifest() {
-    setSyncing(true); setSyncResult(null);
-    try {
-      const r = await fetch(apiPath('/api/admin/item-db/sync-manifest'), {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seasonId }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error ?? 'Sync failed');
-      setSyncResult({ ok: true, data: d });
-      onItemsChanged?.();
-    } catch (e) { setSyncResult({ error: e.message }); }
-    finally { setSyncing(false); }
-  }
-
   const list = sources ?? [];
-  const enabledCount = list.filter(s => s.enabled === 1).length;
   const td = { padding: '5px 10px 5px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' };
 
   return (
@@ -511,37 +490,182 @@ function SourceManifestCard({ seasonId, onItemsChanged }) {
           {adding ? 'Adding…' : 'Add Source'}
         </button>
       </div>
+    </div>
+  );
+}
 
-      {/* Sync from manifest */}
-      <div style={{ borderTop: '1px solid var(--border, #333)', paddingTop: 12 }}>
-        <button className="btn-primary" onClick={syncManifest} disabled={syncing || enabledCount === 0}>
-          {syncing ? 'Syncing…' : `Sync from Manifest (${enabledCount} source${enabledCount !== 1 ? 's' : ''})`}
-        </button>
+// ── Manifest Update (diff + per-bucket apply) ──────────────────────────────────
 
-        {syncResult && (
-          <div style={{ marginTop: 12, fontSize: 13 }}>
-            {syncResult.error ? (
-              <p style={{ color: 'var(--danger, #e05)' }}>Error: {syncResult.error}</p>
-            ) : (
-              <>
-                <p style={{ color: 'var(--bis)', marginBottom: 6 }}>
-                  Done — {syncResult.data.total} unique items upserted into the season.
-                </p>
-                <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-muted)' }}>
-                  {(syncResult.data.sources ?? []).map(s => (
-                    <li key={s.id}>{s.label} ({DIFFICULTIES.find(d => d.value === s.difficulty)?.label ?? s.difficulty}) — {s.fetched} items</li>
-                  ))}
-                </ul>
-                {syncResult.data.errors?.length > 0 && (
-                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: 'var(--danger, #e05)' }}>
-                    {syncResult.data.errors.map((e, i) => <li key={i}>{e}</li>)}
-                  </ul>
-                )}
-              </>
+function bucketColor(kind) {
+  return kind === 'added' ? 'var(--bis, #4caf50)' : kind === 'removed' ? 'var(--danger, #e05)' : '#fbbf24';
+}
+
+function ManifestUpdateCard({ seasonId, onItemsChanged }) {
+  const [diff,       setDiff]       = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [error,      setError]      = useState(null);
+  const [applying,   setApplying]   = useState(null);  // bucket name currently applying
+  const [applyMsg,   setApplyMsg]   = useState(null);
+
+  // Clear any stale preview when the season changes.
+  useEffect(() => { setDiff(null); setError(null); setApplyMsg(null); }, [seasonId]);
+
+  async function preview() {
+    setPreviewing(true); setError(null); setApplyMsg(null); setDiff(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/item-db/diff'), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seasonId }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Preview failed');
+      setDiff(d);
+    } catch (e) { setError(e.message); }
+    finally { setPreviewing(false); }
+  }
+
+  async function applyBucket(bucket) {
+    setApplying(bucket); setApplyMsg(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/item-db/apply'), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seasonId, buckets: [bucket] }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Apply failed');
+      const n = d.applied?.[bucket] ?? 0;
+      setApplyMsg({ ok: true, text: `Applied ${bucket}: ${n} item${n !== 1 ? 's' : ''}.` });
+      onItemsChanged?.();
+      await preview(); // refresh the diff so the bucket empties
+    } catch (e) {
+      setApplyMsg({ error: e.message });
+      setApplying(null);
+    }
+    finally { setApplying(null); }
+  }
+
+  const td = { padding: '4px 10px 4px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' };
+
+  function Bucket({ kind, label, items, applyLabel, disabled, disabledReason, render }) {
+    const color = bucketColor(kind);
+    return (
+      <details style={{ marginBottom: 8 }} open={items.length > 0 && items.length <= 40}>
+        <summary style={{ cursor: 'pointer', fontSize: 14, color }}>
+          {label}: <strong>{items.length}</strong>
+        </summary>
+        {items.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid var(--border, #333)', borderRadius: 4, marginBottom: 8 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <tbody>{items.map(render)}</tbody>
+              </table>
+            </div>
+            <button
+              className="btn-secondary"
+              onClick={() => applyBucket(kind)}
+              disabled={!!applying || disabled}
+              title={disabled ? disabledReason : undefined}
+            >
+              {applying === kind ? 'Applying…' : applyLabel}
+            </button>
+            {disabled && disabledReason && (
+              <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--text-muted)' }}>{disabledReason}</span>
             )}
           </div>
         )}
-      </div>
+      </details>
+    );
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 24 }}>
+      <div className="card-title">Update Items from Manifest</div>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Re-pulls the manifest and shows what would change versus this season’s current items —
+        review and apply each bucket separately. <strong>Added</strong> and <strong>Changed</strong>
+        upsert in place (safe anytime). <strong>Removed</strong> hard-deletes and is only allowed on a
+        non-current season with a clean pull.
+      </p>
+
+      <button className="btn-primary" onClick={preview} disabled={previewing || !seasonId}>
+        {previewing ? 'Computing…' : 'Preview Update'}
+      </button>
+
+      {error && <p style={{ marginTop: 12, fontSize: 13, color: 'var(--danger, #e05)' }}>Error: {error}</p>}
+
+      {applyMsg && (
+        <p style={{ marginTop: 12, fontSize: 13, color: applyMsg.ok ? 'var(--bis)' : 'var(--danger, #e05)' }}>
+          {applyMsg.ok ? applyMsg.text : `Error: ${applyMsg.error}`}
+        </p>
+      )}
+
+      {diff && (
+        <div style={{ marginTop: 16 }}>
+          {diff.sourceErrors?.length > 0 && (
+            <div style={{ marginBottom: 12, padding: '8px 12px', border: '1px solid #92400e', borderRadius: 4, fontSize: 13 }}>
+              <p style={{ color: '#fbbf24', margin: '0 0 4px' }}>⚠ {diff.sourceErrors.length} source(s) failed to fetch — removals are blocked to avoid deleting from a partial pull.</p>
+              <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-muted)' }}>
+                {diff.sourceErrors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {diff.counts.added === 0 && diff.counts.changed === 0 && diff.counts.removed === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--bis)' }}>✓ This season’s Item DB already matches the manifest — nothing to apply.</p>
+          ) : (
+            <>
+              <Bucket
+                kind="added" label="Added" items={diff.added} applyLabel={`Apply ${diff.counts.added} Add${diff.counts.added !== 1 ? 's' : ''}`}
+                render={i => (
+                  <tr key={i.itemId}>
+                    <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text-muted)', width: 70 }}>{i.itemId}</td>
+                    <td style={td}>{i.name}</td>
+                    <td style={{ ...td, color: 'var(--text-muted)' }}>{i.slot}</td>
+                    <td style={{ ...td, color: 'var(--text-muted)' }}>{i.instance}</td>
+                  </tr>
+                )}
+              />
+              <Bucket
+                kind="changed" label="Changed" items={diff.changed} applyLabel={`Apply ${diff.counts.changed} Change${diff.counts.changed !== 1 ? 's' : ''}`}
+                render={i => (
+                  <tr key={i.itemId}>
+                    <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text-muted)', width: 70 }}>{i.itemId}</td>
+                    <td style={td}>{i.name}</td>
+                    <td style={{ ...td, color: 'var(--text-muted)' }}>
+                      {i.changedFields.map(f => `${f}: ${i.old[f]} → ${f === 'is_tier_token' ? (i.isTierToken ? 1 : 0) : (i[{ source_type: 'sourceType', source_name: 'sourceName', armor_type: 'armorType' }[f] ?? f])}`).join(', ')}
+                    </td>
+                  </tr>
+                )}
+              />
+              <Bucket
+                kind="removed" label="Removed" items={diff.removed}
+                applyLabel={`Apply ${diff.counts.removed} Removal${diff.counts.removed !== 1 ? 's' : ''}`}
+                disabled={!diff.removalsAllowed}
+                disabledReason={
+                  diff.isCurrent ? 'Disabled — current (live) season is additive-only.'
+                  : diff.partial ? 'Disabled — a source failed to fetch this run.'
+                  : undefined
+                }
+                render={i => (
+                  <tr key={i.itemId}>
+                    <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text-muted)', width: 70 }}>{i.item_id}</td>
+                    <td style={td}>
+                      {i.name}
+                      {i.referenced && (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--danger, #e05)' }} title="Referenced by Default BIS — removal will be blocked">⚠ in Default BIS</span>
+                      )}
+                    </td>
+                    <td style={{ ...td, color: 'var(--text-muted)' }}>{i.slot}</td>
+                    <td style={{ ...td, color: 'var(--text-muted)' }}>{i.instance}</td>
+                  </tr>
+                )}
+              />
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -757,7 +881,8 @@ export default function AdminItemDb() {
         </div>
       </div>
 
-      <SourceManifestCard seasonId={seasonId} onItemsChanged={refresh} />
+      <SourceManifestCard seasonId={seasonId} />
+      <ManifestUpdateCard seasonId={seasonId} onItemsChanged={refresh} />
       <ItemDbCard seasonId={seasonId} onStatsChange={refresh} />
       <TierItemsCard seasonId={seasonId} onStatsChange={refresh} />
       <SeasonItemsCard seasonId={seasonId} refreshNonce={nonce} />
