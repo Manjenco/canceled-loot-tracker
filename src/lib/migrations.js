@@ -204,14 +204,14 @@ CREATE TABLE default_bis_overrides (
 INSERT INTO default_bis_overrides (season_id, spec, slot, source, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id)
   SELECT 1, spec, slot, source, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id FROM _default_bis_overrides_old;
 DROP TABLE _default_bis_overrides_old;
-ALTER TABLE loot_log ADD COLUMN season_id INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id);
+ALTER TABLE loot_log ADD COLUMN season_id INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX idx_loot_log_season ON loot_log(season_id, team_id, date);
-ALTER TABLE bis_submissions ADD COLUMN season_id INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id);
+ALTER TABLE bis_submissions ADD COLUMN season_id INTEGER NOT NULL DEFAULT 1;
 DROP INDEX idx_bis_submissions_upsert;
 DROP INDEX idx_bis_team_char_status;
 CREATE UNIQUE INDEX idx_bis_submissions_upsert ON bis_submissions(season_id, team_id, char_id, slot);
 CREATE INDEX        idx_bis_team_char_status   ON bis_submissions(season_id, team_id, char_id, status);
-ALTER TABLE raids ADD COLUMN season_id INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id);
+ALTER TABLE raids ADD COLUMN season_id INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX idx_raids_season ON raids(season_id, team_id, date);
 ALTER TABLE tier_snapshot RENAME TO _tier_snapshot_old;
 CREATE TABLE tier_snapshot (

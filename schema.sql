@@ -126,7 +126,10 @@ CREATE INDEX        idx_roster_team_owner  ON roster(team_id, owner_id);
 -- (unresolved "no roster match" entries have NULL recipient_char_id)
 CREATE TABLE loot_log (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  season_id         INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  -- No REFERENCES seasons(id): this column is added via ALTER TABLE in migration
+  -- 0005, and SQLite forbids ALTER ADD COLUMN of a REFERENCES column with a
+  -- non-NULL default. Kept FK-less here so fresh and migrated DBs match exactly.
+  season_id         INTEGER NOT NULL DEFAULT 1,
   team_id           INTEGER NOT NULL REFERENCES teams(id),
   date              TEXT    NOT NULL,
   boss              TEXT    NOT NULL,
@@ -147,7 +150,8 @@ CREATE INDEX idx_loot_log_season    ON loot_log(season_id, team_id, date);
 -- Player BIS submissions
 CREATE TABLE bis_submissions (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  season_id        INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  -- No REFERENCES seasons(id) — added via ALTER in migration 0005; see loot_log note.
+  season_id        INTEGER NOT NULL DEFAULT 1,
   team_id          INTEGER NOT NULL REFERENCES teams(id),
   char_id          INTEGER REFERENCES roster(id),
   char_name        TEXT    NOT NULL DEFAULT '',  -- stored for display/fallback
@@ -171,7 +175,8 @@ CREATE INDEX        idx_bis_team_char_status   ON bis_submissions(season_id, tea
 -- raid_id = WCL report code (e.g. "AbCdEf12") — natural key used for dedup
 CREATE TABLE raids (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  season_id  INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  -- No REFERENCES seasons(id) — added via ALTER in migration 0005; see loot_log note.
+  season_id  INTEGER NOT NULL DEFAULT 1,
   raid_id    TEXT    NOT NULL,
   team_id    INTEGER NOT NULL REFERENCES teams(id),
   date       TEXT    NOT NULL,
