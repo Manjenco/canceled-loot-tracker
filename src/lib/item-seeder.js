@@ -196,3 +196,30 @@ export function mapItem({ details, encounterName, instanceName, difficulty }) {
     weaponType,
   };
 }
+
+/**
+ * Mythic+ seasonal-loot filter — apply PER DUNGEON to a single instance's
+ * fetchRaidItems() output ([{ details, ... }]), and ONLY for Mythic+ (never raids).
+ *
+ * Why: an old dungeon brought into the current M+ rotation reuses its ORIGINAL item
+ * models, so the journal returns those at their original base ilvl (the real seasonal
+ * loot), alongside a few off-season stragglers at a different, lower ilvl plus
+ * NON_EQUIP junk. Neither absolute ilvl nor required_level separates them (an old
+ * dungeon's real loot can be ilvl 250 while a current dungeon's is 437 in the same
+ * season, and reused items keep their original required_level). The reliable,
+ * season-agnostic signal is RELATIVE: the real set is the highest equippable ilvl
+ * cluster for that dungeon. So: drop NON_EQUIP, then keep only the max-ilvl items.
+ *
+ * On a clean current-expansion dungeon this is a no-op (everything is already at one
+ * ilvl). Must be called per-dungeon — a season's dungeons sit at different ilvls, so a
+ * cross-dungeon max would wrongly discard the lower-ilvl dungeons entirely.
+ */
+export function filterSeasonalMplusItems(raw) {
+  const equip = raw.filter(r => {
+    const t = r?.details?.inventory_type?.type;
+    return t && t !== 'NON_EQUIP';
+  });
+  if (!equip.length) return [];
+  const maxIlvl = Math.max(...equip.map(r => r.details.level ?? 0));
+  return equip.filter(r => (r.details.level ?? 0) >= maxIlvl);
+}

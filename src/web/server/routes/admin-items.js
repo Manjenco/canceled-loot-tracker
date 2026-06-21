@@ -19,7 +19,7 @@ import {
 } from '../../../lib/db.js';
 import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
-import { mapItem, TIER_ITEM_SLOT_MAP } from '../../../lib/item-seeder.js';
+import { mapItem, TIER_ITEM_SLOT_MAP, filterSeasonalMplusItems } from '../../../lib/item-seeder.js';
 
 const router = new Hono();
 
@@ -72,6 +72,17 @@ async function getBlizzardCreds(db, env) {
 // ── Manifest diff helpers ─────────────────────────────────────────────────────
 
 /**
+ * Fetch one source's items, mapped to item_db rows. For Mythic+ pulls the per-dungeon
+ * seasonal filter is applied (drop off-season stragglers + NON_EQUIP junk); raids are
+ * returned as-is.
+ */
+async function fetchSourceItems(creds, sourceId, difficulty) {
+  let raw = await fetchRaidItems(Number(sourceId), difficulty, creds);
+  if (difficulty === 'MYTHIC_KEYSTONE') raw = filterSeasonalMplusItems(raw);
+  return raw.map(mapItem).filter(Boolean);
+}
+
+/**
  * Fetch + map + dedupe the "desired" item set from every ENABLED manifest source.
  * Returns { desired, perSource, errors }. A source that fails is recorded in errors
  * (never throws for a single source) — callers use errors.length to gate removals.
@@ -84,8 +95,7 @@ async function fetchManifestDesired(db, env, seasonId) {
   const items     = [];
   for (const src of sources) {
     try {
-      const raw    = await fetchRaidItems(Number(src.source_id), src.difficulty, creds);
-      const mapped = raw.map(mapItem).filter(Boolean);
+      const mapped = await fetchSourceItems(creds, src.source_id, src.difficulty);
       items.push(...mapped);
       perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: mapped.length });
     } catch (err) {
@@ -195,9 +205,8 @@ router.post('/sync', async (c) => {
     const seasonId = await resolveSeasonId(db, reqSeason);
     const creds = await getBlizzardCreds(db, c.env);
 
-    // Fetch items from Blizzard
-    const raw   = await fetchRaidItems(Number(instanceId), difficulty, creds);
-    const items = raw.map(mapItem).filter(Boolean);
+    // Fetch items from Blizzard (Mythic+ pulls get the per-dungeon seasonal filter)
+    const items = await fetchSourceItems(creds, instanceId, difficulty);
 
     if (!items.length) {
       return c.json({ ok: true, written: 0, skipped: 0, total: 0, instanceName: '(unknown)', message: 'No mappable items found for this instance/difficulty.' });
