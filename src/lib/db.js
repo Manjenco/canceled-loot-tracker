@@ -1154,6 +1154,53 @@ export async function getAppliedMigrations(db) {
 }
 
 /**
+ * Split a multi-statement SQL string on semicolons, respecting single-quoted
+ * strings and -- line comments. Returns an array of non-empty trimmed statements.
+ *
+ * Handles the common migration SQL patterns we use. Does not handle block comments
+ * or double-quoted identifiers containing semicolons — not needed for our migrations.
+ */
+function splitMigrationSql(sql) {
+  const stmts = [];
+  let buf = '';
+  let inQuote   = false;
+  let inComment = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const ch   = sql[i];
+    const next = sql[i + 1];
+
+    if (inComment) {
+      if (ch === '\n') inComment = false;
+      buf += ch;
+      continue;
+    }
+
+    if (inQuote) {
+      buf += ch;
+      if (ch === "'" && next === "'") { buf += next; i++; } // '' escape
+      else if (ch === "'")            { inQuote = false; }
+      continue;
+    }
+
+    if (ch === '-' && next === '-') { inComment = true; buf += ch; continue; }
+    if (ch === "'")                  { inQuote   = true; buf += ch; continue; }
+
+    if (ch === ';') {
+      const s = buf.trim();
+      if (s) stmts.push(s);
+      buf = '';
+    } else {
+      buf += ch;
+    }
+  }
+
+  const s = buf.trim();
+  if (s) stmts.push(s);
+  return stmts;
+}
+
+/**
  * Run any migrations from the registry that haven't been applied yet.
  * Uses each migration's `check` function first — if the schema already matches
  * (e.g. applied manually via wrangler), it records the migration as applied
@@ -1189,7 +1236,14 @@ export async function runMigrations(db, migrations) {
     }
 
     try {
-      await db.exec(migration.sql);
+      // db.exec() splits internally on newlines in some D1 versions, causing
+      // multi-line statements like CREATE TABLE to fail with "incomplete input".
+      // Split on semicolons ourselves and use db.batch() (which correctly handles
+      // full multi-line SQL strings via prepare()) for atomicity.
+      const stmts = splitMigrationSql(migration.sql);
+      for (let i = 0; i < stmts.length; i += 80) {
+        await db.batch(stmts.slice(i, i + 80).map(s => db.prepare(s)));
+      }
       await run(db, 'INSERT OR IGNORE INTO schema_migrations (name) VALUES (?)', migration.name);
       results.push({ name: migration.name, status: 'applied' });
     } catch (err) {
