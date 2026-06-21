@@ -11,7 +11,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getItemDb, getRoster, getLootSummary, getBisSubmissions,
   getEffectiveDefaultBis, getRaids, getTeamConfig, getGlobalConfig, getTierSnapshot,
-  getWornBis,
+  getWornBis, getCurrentSeasonId,
 } from '../../../lib/db.js';
 import { toCanonical, getArmorType, canUseWeapon, canDualWield, getCharSpecs } from '../../../lib/specs.js';
 import { matchesBis } from '../../../lib/bis-match.js';
@@ -173,7 +173,8 @@ router.get('/items', async (c) => {
   if (!teamId) return c.json({ instances: [], currentInstance: '', currentDifficulty: '' });
   const db = c.env.DB;
   try {
-    const [itemDb, config, globalConfig] = await Promise.all([getItemDb(db), getTeamConfig(db, teamId), getGlobalConfig(db)]);
+    const seasonId = await getCurrentSeasonId(db);
+    const [itemDb, config, globalConfig] = await Promise.all([getItemDb(db, seasonId), getTeamConfig(db, teamId), getGlobalConfig(db)]);
     const instanceMap = new Map();
     for (const item of itemDb) {
       if (item.source_type !== 'Raid' || !item.name) continue;
@@ -215,11 +216,12 @@ router.get('/candidates', async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
+    const seasonId = await getCurrentSeasonId(db);
     const [itemDb, effectiveBis, roster, lootSummary, bisSubmissions, raids, wornBisMap] = await Promise.all([
-      getItemDb(db), getEffectiveDefaultBis(db),
-      getRoster(db, teamId), getLootSummary(db, teamId),
-      getBisSubmissions(db, teamId), getRaids(db, teamId),
-      getWornBis(db, teamId),
+      getItemDb(db, seasonId), getEffectiveDefaultBis(db, seasonId),
+      getRoster(db, teamId), getLootSummary(db, teamId, seasonId),
+      getBisSubmissions(db, teamId, seasonId), getRaids(db, teamId, seasonId),
+      getWornBis(db, teamId, seasonId),
     ]);
 
     const item = itemDb.find(i => String(i.item_id) === String(itemId));
@@ -228,7 +230,7 @@ router.get('/candidates', async (c) => {
 
     const tierSnapshotMap = new Map();
     if (item.is_tier_token) {
-      const snapshots = await getTierSnapshot(db, teamId);
+      const snapshots = await getTierSnapshot(db, teamId, seasonId);
       for (const snap of snapshots) {
         if (snap.char_id) tierSnapshotMap.set(snap.char_id, parseTierDetail(snap.tier_detail));
       }
@@ -325,10 +327,11 @@ router.get('/curio-candidates', async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
+    const seasonId = await getCurrentSeasonId(db);
     const [effectiveBis, roster, lootSummary, bisSubmissions, raids, globalConfig, tierSnapshots] = await Promise.all([
-      getEffectiveDefaultBis(db),
-      getRoster(db, teamId), getLootSummary(db, teamId), getBisSubmissions(db, teamId),
-      getRaids(db, teamId), getGlobalConfig(db), getTierSnapshot(db, teamId),
+      getEffectiveDefaultBis(db, seasonId),
+      getRoster(db, teamId), getLootSummary(db, teamId, seasonId), getBisSubmissions(db, teamId, seasonId),
+      getRaids(db, teamId, seasonId), getGlobalConfig(db), getTierSnapshot(db, teamId, seasonId),
     ]);
 
     const tierSnapshotMap = new Map();

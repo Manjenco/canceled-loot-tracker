@@ -20,7 +20,8 @@ import {
   getEffectiveDefaultBis, getEffectiveDefaultBisForSpec, getAllTeams, getGlobalConfig, setGlobalConfigValue,
   getRclcResponseMapRows, setRclcResponseMap, getRosterPendingSpecChanges,
   getBisSubmissionsPending, getBisSubmissionsForChar, rebuildLootSummary,
-  getAppliedMigrations, runMigrations,
+  getAppliedMigrations, runMigrations, getCurrentSeasonId,
+  getSeasons, createSeason, updateSeason, setCurrentSeason,
 } from '../../../lib/db.js';
 import { MIGRATIONS } from '../../../lib/migrations.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
@@ -107,8 +108,9 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
   const db = c.env.DB;
 
   try {
+    const seasonId = await getCurrentSeasonId(db);
     const [allRows, overrideRows, itemDb, specConfig] = await Promise.all([
-      getDefaultBis(db), getDefaultBisOverrides(db), getItemDb(db), getSpecBisConfig(db),
+      getDefaultBis(db, seasonId), getDefaultBisOverrides(db, seasonId), getItemDb(db, seasonId), getSpecBisConfig(db, seasonId),
     ]);
 
     const canonicalSpec    = toCanonical(spec);
@@ -177,6 +179,7 @@ router.post('/default-bis', requireGlobalOfficer, async (c) => {
   }
   const db = c.env.DB;
   try {
+    const seasonId      = await getCurrentSeasonId(db);
     const canonicalSpec = toCanonical(spec);
     const writes = updates.map(u => ({
       spec: canonicalSpec, source,
@@ -184,7 +187,7 @@ router.post('/default-bis', requireGlobalOfficer, async (c) => {
       raidBis:       u.raidBis,       raidBisItemId: u.raidBisItemId,
       trueBis:       u.trueBis,       trueBisItemId: u.trueBisItemId,
     }));
-    await updateDefaultBisOverrides(db, writes);
+    await updateDefaultBisOverrides(db, seasonId, writes);
 
     // Invalidate worn BIS across all teams for chars using spec defaults for these slots
     const changedSlots = new Set(writes.map(w => w.slot));
@@ -192,7 +195,7 @@ router.post('/default-bis', requireGlobalOfficer, async (c) => {
     await Promise.all(allTeams.map(async team => {
       const [roster, subs] = await Promise.all([
         getRoster(db, team.id),
-        getBisSubmissions(db, team.id),
+        getBisSubmissions(db, team.id, seasonId),
       ]);
       const personalApproved = new Set(
         subs
@@ -208,7 +211,7 @@ router.post('/default-bis', requireGlobalOfficer, async (c) => {
           }
         }
       }
-      if (targets.length) await invalidateWornBisSlots(db, team.id, targets);
+      if (targets.length) await invalidateWornBisSlots(db, team.id, targets, seasonId);
     }));
 
     return c.json({ ok: true, updated: writes.length });
@@ -225,8 +228,9 @@ router.post('/spec-bis-source', requireGlobalOfficer, async (c) => {
   if (!spec || !source) return c.json({ error: 'spec and source are required' }, 400);
   const db = c.env.DB;
   try {
+    const seasonId      = await getCurrentSeasonId(db);
     const canonicalSpec = toCanonical(spec);
-    await setSpecBisSource(db, canonicalSpec, source);
+    await setSpecBisSource(db, seasonId, canonicalSpec, source);
     return c.json({ ok: true, spec: canonicalSpec, source });
   } catch (err) {
     console.error('[ADMIN] spec-bis-source POST error:', err);
@@ -245,10 +249,11 @@ router.get('/bis-review', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
+    const seasonId = await getCurrentSeasonId(db);
     // Phase 1 — load only Pending submissions (small) + roster spec-change requests in parallel.
     // Source info for each item is pre-joined — no separate item_db load needed.
     const [pending, rosterPendingSpec] = await Promise.all([
-      getBisSubmissionsPending(db, teamId),
+      getBisSubmissionsPending(db, teamId, seasonId),
       getRosterPendingSpecChanges(db, teamId),
     ]);
 
@@ -262,8 +267,8 @@ router.get('/bis-review', requireOfficer, async (c) => {
 
     // Phase 2 — narrow spec defaults + Approved submissions only for chars with pending reviews
     const [specDefaultRows, approvedSubArrays] = await Promise.all([
-      Promise.all(pendingSpecs.map(spec => getEffectiveDefaultBisForSpec(db, spec))),
-      Promise.all(pendingChars.map(ch => getBisSubmissionsForChar(db, teamId, ch.charId, ch.charName))),
+      Promise.all(pendingSpecs.map(spec => getEffectiveDefaultBisForSpec(db, seasonId, spec))),
+      Promise.all(pendingChars.map(ch => getBisSubmissionsForChar(db, teamId, ch.charId, ch.charName, seasonId))),
     ]);
 
     // Flatten approved submissions into a lookup map
@@ -351,13 +356,14 @@ router.post('/bis-review/approve', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const subs = await getBisSubmissions(db, teamId);
+    const seasonId = await getCurrentSeasonId(db);
+    const subs = await getBisSubmissions(db, teamId, seasonId);
     const sub  = subs.find(s => s.id === id);
 
     await approveBisSubmission(db, id, officerChar ?? username ?? 'Officer', sub?.char_id ?? null);
 
     if (sub?.char_id && sub?.slot) {
-      await invalidateWornBisSlots(db, teamId, [{ charId: sub.char_id, slot: sub.slot }]);
+      await invalidateWornBisSlots(db, teamId, [{ charId: sub.char_id, slot: sub.slot }], seasonId);
     }
 
     return c.json({ ok: true });
@@ -376,7 +382,8 @@ router.post('/bis-review/reject', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const subs = await getBisSubmissions(db, teamId);
+    const seasonId = await getCurrentSeasonId(db);
+    const subs = await getBisSubmissions(db, teamId, seasonId);
     const sub  = subs.find(s => s.id === id);
     await rejectBisSubmission(db, id, officerChar ?? username ?? 'Officer', officerNote, sub?.char_id ?? null);
     return c.json({ ok: true });
@@ -590,11 +597,12 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
     }
 
     // 2. Clear all tables in FK-safe order, preserving sentinel rows (id=0)
+    // Also clear and re-seed the seasons table so the import starts fresh.
     const CLEAR_ORDER = [
-      'worn_bis', 'tier_snapshot', 'raid_encounters', 'raid_attendees', 'raids',
+      'loot_summary', 'worn_bis', 'tier_snapshot', 'raid_encounters', 'raid_attendees', 'raids',
       'bis_submissions', 'loot_log', 'rclc_response_map', 'roster', 'team_config',
       'transfers', 'tier_items', 'spec_bis_config', 'default_bis_overrides', 'default_bis',
-      'item_db', 'global_config', 'teams',
+      'item_db', 'global_config', 'seasons', 'teams',
     ];
     await db.batch(CLEAR_ORDER.map(tbl =>
       db.prepare(
@@ -604,7 +612,7 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
       )
     ));
 
-    // 3. Insert guild-wide data
+    // 3. Insert guild-wide data — all season-scoped rows use season_id = 1
 
     if (teams.length > 0) {
       await batchInsert(db, teams.map(t =>
@@ -623,11 +631,17 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
       ));
     }
 
+    // Re-seed season 1 using the season_start from imported global config
+    const importedSeasonStart = globalCfg.season_start ?? '';
+    await db.prepare(
+      'INSERT INTO seasons (id, name, start_date, is_current) VALUES (1, ?, ?, 1)'
+    ).bind('Season 1', importedSeasonStart).run();
+
     if (itemDb.length > 0) {
       const boolVal = v => (v === true || String(v).toUpperCase() === 'TRUE') ? 1 : 0;
       await batchInsert(db, itemDb.map(item =>
         db.prepare(
-          'INSERT INTO item_db (item_id, name, slot, source_type, source_name, instance, difficulty, armor_type, is_tier_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO item_db (season_id, item_id, name, slot, source_type, source_name, instance, difficulty, armor_type, is_tier_token) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         ).bind(
           String(item.itemId), item.name, item.slot, item.sourceType,
           item.sourceName ?? '', item.instance ?? '', item.difficulty ?? '',
@@ -638,14 +652,14 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
     stats.itemDb = itemDb.length;
 
     // Resolve item PKs for default_bis FK columns
-    const itemRows  = await db.prepare('SELECT id, item_id FROM item_db').all();
+    const itemRows  = await db.prepare('SELECT id, item_id FROM item_db WHERE season_id = 1').all();
     const itemIdMap = new Map(itemRows.results.map(r => [String(r.item_id), r.id]));
     const resolveItemId = id => (id ? (itemIdMap.get(String(id)) ?? null) : null);
 
     if (defaultBis.length > 0) {
       await batchInsert(db, defaultBis.map(row =>
         db.prepare(
-          'INSERT INTO default_bis (spec, slot, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id, source) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO default_bis (season_id, spec, slot, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id, source) VALUES (1, ?, ?, ?, ?, ?, ?, ?)'
         ).bind(
           row.spec, row.slot,
           row.trueBis ?? '', resolveItemId(row.trueBisItemId),
@@ -659,7 +673,7 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
     if (bisOverrides.length > 0) {
       await batchInsert(db, bisOverrides.map(row =>
         db.prepare(
-          'INSERT OR REPLACE INTO default_bis_overrides (spec, slot, source, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          'INSERT OR REPLACE INTO default_bis_overrides (season_id, spec, slot, source, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id) VALUES (1, ?, ?, ?, ?, ?, ?, ?)'
         ).bind(
           row.spec, row.slot, row.source ?? '',
           row.trueBis ?? '', row.trueBisItemId ?? null,
@@ -671,13 +685,13 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
     const specBisEntries = [...specBisCfg];
     if (specBisEntries.length > 0) {
       await batchInsert(db, specBisEntries.map(([spec, source]) =>
-        db.prepare('INSERT INTO spec_bis_config (spec, source) VALUES (?, ?)').bind(spec, source)
+        db.prepare('INSERT INTO spec_bis_config (season_id, spec, source) VALUES (1, ?, ?)').bind(spec, source)
       ));
     }
 
     if (tierItems.length > 0) {
       await batchInsert(db, tierItems.map(item =>
-        db.prepare('INSERT OR REPLACE INTO tier_items (class, slot, item_id) VALUES (?, ?, ?)').bind(item.class, item.slot, String(item.itemId))
+        db.prepare('INSERT OR REPLACE INTO tier_items (season_id, class, slot, item_id) VALUES (1, ?, ?, ?)').bind(item.class, item.slot, String(item.itemId))
       ));
     }
 
@@ -733,7 +747,7 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
       // Raids
       if (raids.length > 0) {
         await batchInsert(db, raids.map(raid =>
-          db.prepare('INSERT INTO raids (raid_id, team_id, date, instance, difficulty) VALUES (?, ?, ?, ?, ?)')
+          db.prepare('INSERT INTO raids (season_id, raid_id, team_id, date, instance, difficulty) VALUES (1, ?, ?, ?, ?, ?)')
             .bind(raid.raidId, teamId, raid.date, raid.instance, raid.difficulty)
         ));
       }
@@ -770,7 +784,7 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
       if (lootLog.length > 0) {
         await batchInsert(db, lootLog.map(entry =>
           db.prepare(
-            'INSERT INTO loot_log (team_id, date, boss, item_name, difficulty, recipient_id, recipient_name, recipient_char_id, upgrade_type, notes, ignored) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO loot_log (season_id, team_id, date, boss, item_name, difficulty, recipient_id, recipient_name, recipient_char_id, upgrade_type, notes, ignored) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
           ).bind(
             teamId, entry.date, entry.boss, entry.itemName, entry.difficulty ?? '',
             entry.recipientId ?? '', entry.recipientChar ?? '',
@@ -785,7 +799,7 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
       if (bisSubs.length > 0) {
         await batchInsert(db, bisSubs.map(sub =>
           db.prepare(
-            'INSERT OR IGNORE INTO bis_submissions (team_id, char_id, char_name, spec, slot, true_bis, raid_bis, rationale, status, submitted_at, reviewed_by, officer_note, true_bis_item_id, raid_bis_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT OR IGNORE INTO bis_submissions (season_id, team_id, char_id, char_name, spec, slot, true_bis, raid_bis, rationale, status, submitted_at, reviewed_by, officer_note, true_bis_item_id, raid_bis_item_id) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
           ).bind(
             teamId, resolveCharId(sub.charId, sub.charName), sub.charName,
             sub.spec, sub.slot,
@@ -812,7 +826,7 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
         if (!charDbId) return [];
         const raidDbId = snap.raidId ? (raidIdByCode.get(snap.raidId) ?? null) : null;
         return [db.prepare(
-          'INSERT OR REPLACE INTO tier_snapshot (char_id, raid_id, tier_count, tier_detail, updated_at) VALUES (?, ?, ?, ?, ?)'
+          'INSERT OR REPLACE INTO tier_snapshot (season_id, char_id, raid_id, tier_count, tier_detail, updated_at) VALUES (1, ?, ?, ?, ?, ?)'
         ).bind(charDbId, raidDbId, snap.tierCount ?? 0, snap.tierDetail ?? '', snap.updatedAt ?? '')];
       });
       if (tsStmts.length > 0) await batchInsert(db, tsStmts);
@@ -825,7 +839,7 @@ router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
         if (!charDbId) continue;
         wornBisStmts.push(
           db.prepare(
-            'INSERT OR REPLACE INTO worn_bis (char_id, slot, spec, overall_bis_track, raid_bis_track, other_track, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            'INSERT OR REPLACE INTO worn_bis (season_id, char_id, slot, spec, overall_bis_track, raid_bis_track, other_track, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?)'
           ).bind(
             charDbId, entry.slot, entry.spec ?? '',
             entry.overallBISTrack ?? '', entry.raidBISTrack ?? '', entry.otherTrack ?? '',
@@ -855,7 +869,8 @@ router.delete('/worn-bis', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    await clearWornBis(db, teamId);
+    const seasonId = await getCurrentSeasonId(db);
+    await clearWornBis(db, teamId, seasonId);
     return c.json({ ok: true });
   } catch (err) {
     console.error('[admin] worn-bis reset error:', err);
@@ -872,7 +887,8 @@ router.post('/rebuild-loot-summary', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    await rebuildLootSummary(db, teamId);
+    const seasonId = await getCurrentSeasonId(db);
+    await rebuildLootSummary(db, teamId, seasonId);
     return c.json({ ok: true });
   } catch (err) {
     console.error('[admin] rebuild-loot-summary error:', err);
@@ -910,6 +926,67 @@ router.post('/db-migrations/run', requireGlobalOfficer, async (c) => {
   } catch (err) {
     console.error('[admin] db-migrations run error:', err);
     return c.json({ error: err.message ?? 'Migration run failed' }, 500);
+  }
+});
+
+// ── Season management endpoints ───────────────────────────────────────────────
+// GET    /api/admin/seasons             — list all seasons
+// POST   /api/admin/seasons             — create a new season
+// PUT    /api/admin/seasons/:id         — update name/start_date of a season
+// POST   /api/admin/seasons/:id/set-current — flip the current season flag
+
+router.get('/seasons', requireGlobalOfficer, async (c) => {
+  const db = c.env.DB;
+  try {
+    const seasons = await getSeasons(db);
+    return c.json({ seasons });
+  } catch (err) {
+    console.error('[admin] GET /seasons error:', err);
+    return c.json({ error: err.message ?? 'Failed to load seasons' }, 500);
+  }
+});
+
+router.post('/seasons', requireGlobalOfficer, async (c) => {
+  const db = c.env.DB;
+  let body;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+  const { name, startDate } = body ?? {};
+  if (!name) return c.json({ error: 'name is required' }, 400);
+  try {
+    const season = await createSeason(db, { name, startDate: startDate ?? '' });
+    return c.json({ ok: true, season });
+  } catch (err) {
+    console.error('[admin] POST /seasons error:', err);
+    return c.json({ error: err.message ?? 'Failed to create season' }, 500);
+  }
+});
+
+router.put('/seasons/:id', requireGlobalOfficer, async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'Invalid season id' }, 400);
+  let body;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
+  const { name, startDate } = body ?? {};
+  try {
+    await updateSeason(db, id, { name, startDate });
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] PUT /seasons/:id error:', err);
+    return c.json({ error: err.message ?? 'Failed to update season' }, 500);
+  }
+});
+
+router.post('/seasons/:id/set-current', requireGlobalOfficer, async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'Invalid season id' }, 400);
+  try {
+    await setCurrentSeason(db, id);
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] POST /seasons/:id/set-current error:', err);
+    return c.json({ error: err.message ?? 'Failed to set current season' }, 500);
   }
 });
 

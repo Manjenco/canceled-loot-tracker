@@ -10,7 +10,7 @@ import {
   getLootLogForChar, getBisSubmissionsForChar, getEffectiveDefaultBisForSpec,
   getWornBisForChar, getRosterMember, getGlobalConfig, getTierItems,
   upsertWornBis, upsertTierSnapshot,
-  getItemDb, getBisSubmissions, getEffectiveDefaultBis, getRoster,
+  getItemDb, getBisSubmissions, getEffectiveDefaultBis, getRoster, getCurrentSeasonId,
 } from '../../../lib/db.js';
 import { toCanonical, getCharSpecs, getArmorType, buildTrackRanges, getItemTrack, mergeTrack } from '../../../lib/specs.js';
 import { matchesBis, applyRaidBisInference, PAIRED_BIS_SLOTS } from '../../../lib/bis-match.js';
@@ -35,12 +35,14 @@ router.get('/', requireAuth, async (c) => {
     const activeSpec    = charSpecs.all.includes(requestedSpec) ? requestedSpec : charSpecs.primary;
     const canonicalSpec = toCanonical(activeSpec);
 
+    const seasonId = await getCurrentSeasonId(db);
+
     // Phase 2 — all narrow queries in parallel; each scoped to this char/spec
     const [lootLog, bisSubmissions, wornBisMap, effectiveBis] = await Promise.all([
-      getLootLogForChar(db, teamId, charId, charName),
-      getBisSubmissionsForChar(db, teamId, charId, charName),
-      getWornBisForChar(db, charId),
-      getEffectiveDefaultBisForSpec(db, canonicalSpec),
+      getLootLogForChar(db, teamId, charId, charName, seasonId),
+      getBisSubmissionsForChar(db, teamId, charId, charName, seasonId),
+      getWornBisForChar(db, charId, seasonId),
+      getEffectiveDefaultBisForSpec(db, seasonId, canonicalSpec),
     ]);
 
     const loot = lootLog
@@ -75,7 +77,7 @@ router.get('/', requireAuth, async (c) => {
 
     const allChars      = c.get('session').user.chars ?? [];
     const allCharSubs   = await Promise.all(
-      allChars.map(ch => getBisSubmissionsForChar(db, teamId, ch.charId, ch.charName))
+      allChars.map(ch => getBisSubmissionsForChar(db, teamId, ch.charId, ch.charName, seasonId))
     );
     const charBisStatus = Object.fromEntries(allChars.map((ch, i) => [ch.charName, {
       pending:  allCharSubs[i].filter(s => s.status === 'Pending').length,
@@ -125,12 +127,13 @@ router.post('/simc', requireAuth, async (c) => {
   const db = c.env.DB;
 
   try {
+    const seasonId = await getCurrentSeasonId(db);
     const [globalConfig, itemDbRows, tierItemRows, allSubs, effectiveDefaultBis, roster] = await Promise.all([
       getGlobalConfig(db),
-      getItemDb(db),
-      getTierItems(db),
-      getBisSubmissions(db, teamId),
-      getEffectiveDefaultBis(db),
+      getItemDb(db, seasonId),
+      getTierItems(db, seasonId),
+      getBisSubmissions(db, teamId, seasonId),
+      getEffectiveDefaultBis(db, seasonId),
       getRoster(db, teamId),
     ]);
 
@@ -271,7 +274,7 @@ router.post('/simc', requireAuth, async (c) => {
       updatedAt,
       ...tracks,
     }));
-    if (wornBisRows.length) await upsertWornBis(db, teamId, wornBisRows);
+    if (wornBisRows.length) await upsertWornBis(db, teamId, wornBisRows, seasonId);
 
     if (tierPieces.size) {
       const tierDetail = [...tierPieces.entries()].map(([s, t]) => `${s}:${t}`).join('|');
@@ -281,7 +284,7 @@ router.post('/simc', requireAuth, async (c) => {
         tierCount: tierPieces.size,
         tierDetail,
         updatedAt,
-      }]);
+      }], seasonId);
     }
 
     return c.json({ updated: wornBisRows.length, tierPieces: tierPieces.size });

@@ -12,7 +12,7 @@ import {
   getBisSubmissionsForChar, getItemDbForArmorType, getEffectiveDefaultBisForSpec,
   batchUpsertBisSubmissions, clearPendingBisSubmission, clearRejectedBisSubmission,
   clearBisSubmission, resetBisRaidBisField,
-  getRosterMember, setPendingPrimarySpec,
+  getRosterMember, setPendingPrimarySpec, getCurrentSeasonId,
 } from '../../../lib/db.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { toCanonical, getArmorType, canUseWeapon, canDualWield, CLASS_SPECS, getCharSpecs } from '../../../lib/specs.js';
@@ -81,11 +81,13 @@ router.get('/', async (c) => {
     const canonicalSpec = toCanonical(activeSpec);
     const armorType     = getArmorType(canonicalSpec);
 
+    const seasonId = await getCurrentSeasonId(db);
+
     // Phase 2 — narrow queries in parallel, scoped to this char/spec/armorType
     const [submissions, itemDb, effectiveBis] = await Promise.all([
-      getBisSubmissionsForChar(db, teamId, charId, charName),
-      getItemDbForArmorType(db, armorType),
-      getEffectiveDefaultBisForSpec(db, canonicalSpec),
+      getBisSubmissionsForChar(db, teamId, charId, charName, seasonId),
+      getItemDbForArmorType(db, seasonId, armorType),
+      getEffectiveDefaultBisForSpec(db, seasonId, canonicalSpec),
     ]);
 
     // Keep the most recently submitted row per slot (submissions ordered DESC by submitted_at).
@@ -179,29 +181,30 @@ router.post('/', async (c) => {
   }
 
   try {
+    const seasonId = await getCurrentSeasonId(db);
     let saved   = 0;
     let cleared = 0;
 
     for (const u of validUpdates.filter(u => u.clearRejected)) {
-      await clearRejectedBisSubmission(db, teamId, charId, u.slot);
+      await clearRejectedBisSubmission(db, teamId, charId, u.slot, seasonId);
       cleared++;
     }
     for (const u of validUpdates.filter(u => u.clearPending)) {
-      await clearPendingBisSubmission(db, teamId, charId, u.slot);
+      await clearPendingBisSubmission(db, teamId, charId, u.slot, seasonId);
       cleared++;
     }
     for (const u of validUpdates.filter(u => u.clearSlot)) {
-      await clearBisSubmission(db, teamId, charId, u.slot);
+      await clearBisSubmission(db, teamId, charId, u.slot, seasonId);
       cleared++;
     }
     for (const u of validUpdates.filter(u => u.resetRaidBis)) {
-      await resetBisRaidBisField(db, teamId, charId, u.slot);
+      await resetBisRaidBisField(db, teamId, charId, u.slot, seasonId);
       cleared++;
     }
 
     const saveUpdates = validUpdates.filter(u => !u.clearPending && !u.clearRejected && !u.clearSlot && !u.resetRaidBis);
     if (saveUpdates.length) {
-      await batchUpsertBisSubmissions(db, teamId, saveUpdates.map(u => ({
+      await batchUpsertBisSubmissions(db, teamId, seasonId, saveUpdates.map(u => ({
         charId,
         charName,
         spec,

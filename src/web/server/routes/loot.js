@@ -15,7 +15,7 @@ import {
   getLootLog, getLootLogForChar, getLootSummary,
   appendLootEntries, patchLootEntryDifficulties, patchLootEntryUpgradeType, patchLootEntryIgnored,
   reassignLootEntries, backfillLootEntryIds, getRaids,
-  getTeamConfig,
+  getTeamConfig, getCurrentSeasonId,
 } from '../../../lib/db.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
 
@@ -35,11 +35,12 @@ router.get('/history', async (c) => {
   const { teamId } = c.get('session').user;
   const db = c.env.DB;
 
+  const seasonId = await getCurrentSeasonId(db);
   const [roster, lootLog, lootSummaryRows, raids, config] = await Promise.all([
     getRoster(db, teamId),
-    getLootLog(db, teamId),
-    getLootSummary(db, teamId),
-    getRaids(db, teamId),
+    getLootLog(db, teamId, seasonId),
+    getLootSummary(db, teamId, seasonId),
+    getRaids(db, teamId, seasonId),
     getTeamConfig(db, teamId),
   ]);
 
@@ -131,10 +132,11 @@ router.get('/history/:charId', async (c) => {
   if (!charId) return c.json({ error: 'charId is required' }, 400);
   const db = c.env.DB;
   try {
+    const seasonId = await getCurrentSeasonId(db);
     const roster   = await getRoster(db, teamId);
     const char     = roster.find(r => r.id === charId);
     if (!char) return c.json({ error: 'Character not found' }, 404);
-    const entries  = await getLootLogForChar(db, teamId, charId, char.char_name);
+    const entries  = await getLootLogForChar(db, teamId, charId, char.char_name, seasonId);
     const loot     = entries
       .filter(e => COUNTED.has(e.upgrade_type))
       .sort((a, b) => b.date.localeCompare(a.date));
@@ -155,8 +157,9 @@ router.get('/audit', async (c) => {
   const { teamId } = c.get('session').user;
   const db = c.env.DB;
   try {
+    const seasonId = await getCurrentSeasonId(db);
     const [lootLog, roster] = await Promise.all([
-      getLootLog(db, teamId),
+      getLootLog(db, teamId, seasonId),
       getRoster(db, teamId),
     ]);
     const entries = [...lootLog].sort((a, b) =>
@@ -198,6 +201,7 @@ router.patch('/entries/reassign', async (c) => {
 
   const { teamId } = c.get('session').user;
   const db = c.env.DB;
+  const seasonId = await getCurrentSeasonId(db);
   const roster   = await getRoster(db, teamId);
   const charById = new Map(roster.map(r => [r.id, r]));
 
@@ -210,7 +214,7 @@ router.patch('/entries/reassign', async (c) => {
 
   if (!resolved.length) return c.json({ error: 'No valid charIds found in roster.' }, 400);
 
-  await reassignLootEntries(db, teamId, resolved);
+  await reassignLootEntries(db, teamId, seasonId, resolved);
   return c.json({ updated: resolved.length });
 });
 
@@ -229,7 +233,8 @@ router.patch('/entries/upgrade-type', async (c) => {
   if (!valid.length) return c.json({ error: 'No valid corrections supplied.' }, 400);
   const db = c.env.DB;
   const { teamId } = c.get('session').user;
-  await patchLootEntryUpgradeType(db, teamId, valid);
+  const seasonId = await getCurrentSeasonId(db);
+  await patchLootEntryUpgradeType(db, teamId, seasonId, valid);
   return c.json({ updated: valid.length });
 });
 
@@ -245,7 +250,8 @@ router.patch('/ignored', async (c) => {
   }
   const db = c.env.DB;
   const { teamId } = c.get('session').user;
-  await patchLootEntryIgnored(db, teamId, ids, ignored);
+  const seasonId = await getCurrentSeasonId(db);
+  await patchLootEntryIgnored(db, teamId, seasonId, ids, ignored);
   return c.json({ updated: ids.length });
 });
 
@@ -269,7 +275,8 @@ router.patch('/entries', async (c) => {
 
   const db = c.env.DB;
   const { teamId } = c.get('session').user;
-  await patchLootEntryDifficulties(db, teamId, valid);
+  const seasonId = await getCurrentSeasonId(db);
+  await patchLootEntryDifficulties(db, teamId, seasonId, valid);
   return c.json({ updated: valid.length });
 });
 
@@ -291,10 +298,11 @@ router.post('/import', async (c) => {
     const rows = parseRclcCsv(csvText);
     if (!rows.length) return c.json({ error: 'CSV appears to be empty or invalid.' }, 400);
 
+    const seasonId = await getCurrentSeasonId(db);
     const [roster, responseMap, existingLog] = await Promise.all([
       getRoster(db, teamId),
       getRclcResponseMap(db, teamId),
-      getLootLog(db, teamId),
+      getLootLog(db, teamId, seasonId),
     ]);
 
     // rclc.js expects roster/lootLog with camelCase fields — adapt the D1 snake_case rows
@@ -323,7 +331,7 @@ router.post('/import', async (c) => {
     const existingKeys = buildExistingKeys(lootLogForRclc);
     const { entries, warnings, skipped } = buildLootEntries(rows, rosterForRclc, responseMap, existingKeys);
 
-    if (entries.length) await appendLootEntries(db, teamId, entries);
+    if (entries.length) await appendLootEntries(db, teamId, entries, seasonId);
 
     const errorRows = {
       noRosterMatch:   entries.filter(e => !e.recipientCharId).length,

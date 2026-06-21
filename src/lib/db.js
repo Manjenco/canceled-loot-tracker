@@ -98,6 +98,66 @@ export async function getTeamByName(db, name) {
   return first(db, 'SELECT * FROM teams WHERE name = ?', name);
 }
 
+// ── Seasons ───────────────────────────────────────────────────────────────────
+
+export async function getSeasons(db) {
+  return all(db, 'SELECT * FROM seasons ORDER BY id');
+}
+
+export async function getCurrentSeason(db) {
+  return cachedRead('current_season', TTL.SHORT, () =>
+    first(db, 'SELECT * FROM seasons WHERE is_current = 1 LIMIT 1')
+  );
+}
+
+/**
+ * Returns the current season's id.
+ * Throws if no season is marked current (admin must configure one).
+ */
+export async function getCurrentSeasonId(db) {
+  const season = await getCurrentSeason(db);
+  if (!season) throw new Error('No current season configured. Visit /admin/seasons to set one up.');
+  return season.id;
+}
+
+export async function createSeason(db, { name, startDate, isCurrent = false }) {
+  if (isCurrent) {
+    await run(db, 'UPDATE seasons SET is_current = 0');
+  }
+  const result = await run(db,
+    'INSERT INTO seasons (name, start_date, is_current) VALUES (?, ?, ?)',
+    name, startDate ?? '', isCurrent ? 1 : 0
+  );
+  cacheInvalidate('current_season');
+  return result.meta?.last_row_id;
+}
+
+export async function updateSeason(db, seasonId, { name, startDate }) {
+  await run(db,
+    'UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date) WHERE id = ?',
+    name ?? null, startDate ?? null, seasonId
+  );
+  cacheInvalidate('current_season');
+}
+
+/**
+ * Flip the current season.  Atomically clears is_current on all rows,
+ * then sets it on the target season.
+ *
+ * Also resets every team's WCL sync cursor (wcl_last_check) and pending-report
+ * re-check list (wcl_pending_reports). The cursor is not season-scoped, so without
+ * this the first sync of the new season would start from the previous season's
+ * last-check timestamp and skip any reports between the new season's start date and
+ * that cursor. Clearing both keys makes the next sync fall back to seasonStartMs.
+ */
+export async function setCurrentSeason(db, seasonId) {
+  await run(db, 'UPDATE seasons SET is_current = 0');
+  await run(db, 'UPDATE seasons SET is_current = 1 WHERE id = ?', seasonId);
+  await run(db, "DELETE FROM team_config WHERE key IN ('wcl_last_check', 'wcl_pending_reports')");
+  cacheInvalidate('current_season');
+  cacheInvalidatePrefix('team_config:');
+}
+
 // ── Global config ─────────────────────────────────────────────────────────────
 
 export async function getGlobalConfig(db) {
@@ -325,69 +385,69 @@ function parseLootRow(r) {
 }
 
 /**
- * Narrow variant: returns loot log entries for a single character.
+ * Narrow variant: returns loot log entries for a single character in the given season.
  * Matches by charId (FK) with name fallback for pre-migration rows.
  * Use this on the dashboard; keep getLootLog() for council/loot-history pages.
  */
-export async function getLootLogForChar(db, teamId, charId, charName) {
-  const cacheKey = `loot_log_char:${charId || charName}`;
+export async function getLootLogForChar(db, teamId, charId, charName, seasonId) {
+  const cacheKey = `loot_log_char:${seasonId}:${charId || charName}`;
   return cachedRead(cacheKey, TTL.BRIEF, async () => {
     const rows = await all(db,
       `SELECT l.*, COALESCE(i.item_id, '') AS item_blizzard_id
        FROM loot_log l
-       LEFT JOIN item_db i ON LOWER(i.name) = LOWER(l.item_name)
-       WHERE l.team_id = ?
+       LEFT JOIN item_db i ON LOWER(i.name) = LOWER(l.item_name) AND i.season_id = l.season_id
+       WHERE l.season_id = ? AND l.team_id = ?
          AND (l.recipient_char_id = ? OR (l.recipient_char_id IS NULL AND LOWER(l.recipient_name) = LOWER(?)))
        ORDER BY l.date DESC`,
-      teamId, charId || null, charName
+      seasonId, teamId, charId || null, charName
     );
     return rows.map(parseLootRow);
   });
 }
 
-export async function getLootLog(db, teamId) {
-  return cachedRead(`loot_log:${teamId}`, TTL.BRIEF, async () => {
+export async function getLootLog(db, teamId, seasonId) {
+  return cachedRead(`loot_log:${seasonId}:${teamId}`, TTL.BRIEF, async () => {
     const rows = await all(db,
       `SELECT l.*, r.char_name AS resolved_char_name
        FROM loot_log l
        LEFT JOIN roster r ON r.id = l.recipient_char_id
-       WHERE l.team_id = ?
+       WHERE l.season_id = ? AND l.team_id = ?
        ORDER BY l.date DESC`,
-      teamId
+      seasonId, teamId
     );
     return rows.map(parseLootRow);
   });
 }
 
-export async function appendLootEntries(db, teamId, entries) {
-  cacheInvalidate(`loot_log:${teamId}`);
+export async function appendLootEntries(db, teamId, entries, seasonId) {
+  cacheInvalidate(`loot_log:${seasonId}:${teamId}`);
   if (!entries.length) return;
   const stmt = db.prepare(
-    `INSERT INTO loot_log (team_id, date, boss, item_name, difficulty, recipient_id, recipient_name, recipient_char_id, upgrade_type, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO loot_log (season_id, team_id, date, boss, item_name, difficulty, recipient_id, recipient_name, recipient_char_id, upgrade_type, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const e of entries) {
     await stmt.bind(
-      teamId, e.date, e.boss, e.itemName, e.difficulty,
+      seasonId, teamId, e.date, e.boss, e.itemName, e.difficulty,
       e.recipientId ?? '', e.recipientChar ?? '',
       e.recipientCharId || null,
       e.upgradeType ?? '', e.notes ?? ''
     ).run();
   }
-  await rebuildLootSummary(db, teamId);
+  await rebuildLootSummary(db, teamId, seasonId);
 }
 
-export async function patchLootEntryDifficulties(db, teamId, corrections) {
+export async function patchLootEntryDifficulties(db, teamId, seasonId, corrections) {
   // corrections: [{ id, difficulty }]
   const stmt = db.prepare('UPDATE loot_log SET difficulty = ? WHERE id = ?');
   for (const { id, difficulty } of corrections) {
     await stmt.bind(difficulty, id).run();
   }
   cacheInvalidatePrefix('loot_log:');
-  await rebuildLootSummary(db, teamId);
+  await rebuildLootSummary(db, teamId, seasonId);
 }
 
-export async function patchLootEntryUpgradeType(db, teamId, corrections) {
+export async function patchLootEntryUpgradeType(db, teamId, seasonId, corrections) {
   // corrections: [{ id, upgradeType }]
   const VALID = new Set(['BIS', 'Non-BIS', 'Tertiary']);
   const stmt = db.prepare('UPDATE loot_log SET upgrade_type = ? WHERE id = ? AND team_id = ?');
@@ -395,18 +455,18 @@ export async function patchLootEntryUpgradeType(db, teamId, corrections) {
     if (VALID.has(upgradeType)) await stmt.bind(upgradeType, id, teamId).run();
   }
   cacheInvalidatePrefix('loot_log:');
-  await rebuildLootSummary(db, teamId);
+  await rebuildLootSummary(db, teamId, seasonId);
 }
 
-export async function patchLootEntryIgnored(db, teamId, ids, ignored) {
+export async function patchLootEntryIgnored(db, teamId, seasonId, ids, ignored) {
   const val = ignored ? 1 : 0;
   const placeholders = ids.map(() => '?').join(', ');
   await run(db, `UPDATE loot_log SET ignored = ? WHERE id IN (${placeholders})`, val, ...ids);
   cacheInvalidatePrefix('loot_log:');
-  await rebuildLootSummary(db, teamId);
+  await rebuildLootSummary(db, teamId, seasonId);
 }
 
-export async function reassignLootEntries(db, teamId, assignments) {
+export async function reassignLootEntries(db, teamId, seasonId, assignments) {
   // assignments: [{ id, rosterId }]  — rosterId is roster.id (integer)
   const stmt = db.prepare(
     `UPDATE loot_log SET recipient_char_id = ?,
@@ -418,24 +478,25 @@ export async function reassignLootEntries(db, teamId, assignments) {
     await stmt.bind(rosterId, rosterId, rosterId, id).run();
   }
   cacheInvalidatePrefix('loot_log:');
-  await rebuildLootSummary(db, teamId);
+  await rebuildLootSummary(db, teamId, seasonId);
 }
 
 // ── Loot summary (pre-aggregated per character) ───────────────────────────────
 
 /**
- * Rebuild the loot_summary table for a team from the loot_log source of truth.
+ * Rebuild the loot_summary table for a team + season from the loot_log source of truth.
  * Runs a single GROUP BY query in SQLite — no JS-side aggregation.
  * Called after every loot_log write; also exposed via POST /api/admin/rebuild-loot-summary.
  */
-export async function rebuildLootSummary(db, teamId) {
+export async function rebuildLootSummary(db, teamId, seasonId) {
   await run(db, `
     INSERT OR REPLACE INTO loot_summary
-      (team_id, char_id, owner_id,
+      (season_id, team_id, char_id, owner_id,
        bis_mythic, bis_heroic, bis_normal,
        nonbis_mythic, nonbis_heroic, nonbis_normal,
        tertiary, offspec, last_updated)
     SELECT
+      l.season_id,
       l.team_id,
       l.recipient_char_id,
       COALESCE(r.owner_id, '')                                                                       AS owner_id,
@@ -450,19 +511,19 @@ export async function rebuildLootSummary(db, teamId) {
       datetime('now')
     FROM loot_log l
     LEFT JOIN roster r ON r.id = l.recipient_char_id
-    WHERE l.team_id = ? AND l.recipient_char_id IS NOT NULL
+    WHERE l.season_id = ? AND l.team_id = ? AND l.recipient_char_id IS NOT NULL
     GROUP BY l.recipient_char_id
-  `, teamId);
-  cacheInvalidate(`loot_summary:${teamId}`);
+  `, seasonId, teamId);
+  cacheInvalidate(`loot_summary:${seasonId}:${teamId}`);
 }
 
 /**
  * Returns the pre-aggregated loot counts for all characters on a team.
  * Missing rows (chars with no loot) return 0s via nullish coalescing at call site.
  */
-export async function getLootSummary(db, teamId) {
-  return cachedRead(`loot_summary:${teamId}`, TTL.BRIEF, () =>
-    all(db, `SELECT * FROM loot_summary WHERE team_id = ? ORDER BY char_id`, teamId)
+export async function getLootSummary(db, teamId, seasonId) {
+  return cachedRead(`loot_summary:${seasonId}:${teamId}`, TTL.BRIEF, () =>
+    all(db, `SELECT * FROM loot_summary WHERE season_id = ? AND team_id = ? ORDER BY char_id`, seasonId, teamId)
   );
 }
 
@@ -479,7 +540,7 @@ export async function backfillLootEntryIds(db, teamId) {
      WHERE team_id = ? AND recipient_char_id IS NULL AND recipient_name != ''`,
     teamId
   );
-  cacheInvalidate(`loot_log:${teamId}`);
+  cacheInvalidatePrefix('loot_log:');
 }
 
 // ── BIS submissions ───────────────────────────────────────────────────────────
@@ -488,8 +549,8 @@ export async function backfillLootEntryIds(db, teamId) {
  * Narrow variant: returns BIS submissions for a single character only.
  * Use this on the dashboard; keep getBisSubmissions() for review/roster pages.
  */
-export async function getBisSubmissionsForChar(db, teamId, charId, charName) {
-  return cachedRead(`bis_sub_char:${charId || charName}`, TTL.BRIEF, () =>
+export async function getBisSubmissionsForChar(db, teamId, charId, charName, seasonId) {
+  return cachedRead(`bis_sub_char:${seasonId}:${charId || charName}`, TTL.BRIEF, () =>
     all(db,
       `SELECT s.*,
               COALESCE(s.true_bis_item_id, '') AS true_bis_item_id,
@@ -501,12 +562,12 @@ export async function getBisSubmissionsForChar(db, teamId, charId, charName) {
               i4.source_type AS raid_bis_source_type,
               i4.source_name AS raid_bis_source_name
        FROM bis_submissions s
-       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)
-       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)
-       WHERE s.team_id = ?
+       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)  AND i3.season_id = s.season_id
+       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)  AND i4.season_id = s.season_id
+       WHERE s.season_id = ? AND s.team_id = ?
          AND (s.char_id = ? OR (s.char_id IS NULL AND LOWER(s.char_name) = LOWER(?)))
        ORDER BY s.submitted_at DESC`,
-      teamId, charId || null, charName
+      seasonId, teamId, charId || null, charName
     )
   );
 }
@@ -515,8 +576,8 @@ export async function getBisSubmissionsForChar(db, teamId, charId, charName) {
  * Returns only Pending submissions for a team — used by the BIS review page.
  * Much smaller than getBisSubmissions() which loads all statuses for all chars.
  */
-export async function getBisSubmissionsPending(db, teamId) {
-  return cachedRead(`bis_submissions_pending:${teamId}`, TTL.BRIEF, () =>
+export async function getBisSubmissionsPending(db, teamId, seasonId) {
+  return cachedRead(`bis_submissions_pending:${seasonId}:${teamId}`, TTL.BRIEF, () =>
     all(db,
       `SELECT s.*,
               COALESCE(s.true_bis_item_id, '') AS true_bis_item_id,
@@ -528,17 +589,17 @@ export async function getBisSubmissionsPending(db, teamId) {
               i4.source_type AS raid_bis_source_type,
               i4.source_name AS raid_bis_source_name
        FROM bis_submissions s
-       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)
-       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)
-       WHERE s.team_id = ? AND s.status = 'Pending'
+       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)  AND i3.season_id = s.season_id
+       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)  AND i4.season_id = s.season_id
+       WHERE s.season_id = ? AND s.team_id = ? AND s.status = 'Pending'
        ORDER BY s.submitted_at DESC`,
-      teamId
+      seasonId, teamId
     )
   );
 }
 
-export async function getBisSubmissions(db, teamId) {
-  return cachedRead(`bis_submissions:${teamId}`, TTL.BRIEF, () =>
+export async function getBisSubmissions(db, teamId, seasonId) {
+  return cachedRead(`bis_submissions:${seasonId}:${teamId}`, TTL.BRIEF, () =>
     all(db,
       `SELECT s.*,
               COALESCE(s.true_bis_item_id, '') AS true_bis_item_id,
@@ -551,10 +612,10 @@ export async function getBisSubmissions(db, teamId) {
               i4.source_type AS raid_bis_source_type,
               i4.source_name AS raid_bis_source_name
        FROM bis_submissions s
-       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)
-       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)
-       WHERE s.team_id = ? ORDER BY s.submitted_at DESC`,
-      teamId
+       LEFT JOIN item_db i3 ON LOWER(i3.name) = LOWER(s.true_bis)  AND i3.season_id = s.season_id
+       LEFT JOIN item_db i4 ON LOWER(i4.name) = LOWER(s.raid_bis)  AND i4.season_id = s.season_id
+       WHERE s.season_id = ? AND s.team_id = ? ORDER BY s.submitted_at DESC`,
+      seasonId, teamId
     )
   );
 }
@@ -568,29 +629,29 @@ export function invalidateBisSubmissionsCache() {
   cacheInvalidatePrefix('bis_sub_char:');
 }
 
-export async function upsertBisSubmission(db, teamId, { charId, charName, spec, slot, trueBis, trueBisItemId, raidBis, raidBisItemId, rationale }) {
+export async function upsertBisSubmission(db, teamId, seasonId, { charId, charName, spec, slot, trueBis, trueBisItemId, raidBis, raidBisItemId, rationale }) {
   const submittedAt = new Date().toISOString();
   await run(db,
-    `INSERT INTO bis_submissions (team_id, char_id, char_name, spec, slot, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id, rationale, status, submitted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
-     ON CONFLICT(team_id, char_id, slot) DO UPDATE SET
+    `INSERT INTO bis_submissions (season_id, team_id, char_id, char_name, spec, slot, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id, rationale, status, submitted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+     ON CONFLICT(season_id, team_id, char_id, slot) DO UPDATE SET
        true_bis = excluded.true_bis, true_bis_item_id = excluded.true_bis_item_id,
        raid_bis = excluded.raid_bis, raid_bis_item_id = excluded.raid_bis_item_id,
        rationale = excluded.rationale, status = 'Pending', submitted_at = excluded.submitted_at`,
-    teamId, charId || null, charName, spec, slot,
+    seasonId, teamId, charId || null, charName, spec, slot,
     trueBis ?? '', trueBisItemId || null,
     raidBis ?? '', raidBisItemId || null,
     rationale ?? '', submittedAt
   );
-  cacheInvalidate(`bis_submissions:${teamId}`);
-  cacheInvalidate(`bis_submissions_pending:${teamId}`);
-  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
-  else        cacheInvalidate(`bis_sub_char:${charName}`);
+  cacheInvalidate(`bis_submissions:${seasonId}:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${seasonId}:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${seasonId}:${charId}`);
+  else        cacheInvalidate(`bis_sub_char:${seasonId}:${charName}`);
 }
 
-export async function batchUpsertBisSubmissions(db, teamId, updates) {
+export async function batchUpsertBisSubmissions(db, teamId, seasonId, updates) {
   for (const u of updates) {
-    await upsertBisSubmission(db, teamId, u);
+    await upsertBisSubmission(db, teamId, seasonId, u);
   }
 }
 
@@ -614,51 +675,51 @@ export async function rejectBisSubmission(db, id, reviewedBy, officerNote = '', 
   if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
 }
 
-export async function clearBisSubmission(db, teamId, charId, slot) {
+export async function clearBisSubmission(db, teamId, charId, slot, seasonId) {
   await run(db,
-    'DELETE FROM bis_submissions WHERE team_id = ? AND char_id = ? AND slot = ?',
-    teamId, charId, slot
+    'DELETE FROM bis_submissions WHERE season_id = ? AND team_id = ? AND char_id = ? AND slot = ?',
+    seasonId, teamId, charId, slot
   );
-  cacheInvalidate(`bis_submissions:${teamId}`);
-  cacheInvalidate(`bis_submissions_pending:${teamId}`);
-  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
+  cacheInvalidate(`bis_submissions:${seasonId}:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${seasonId}:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${seasonId}:${charId}`);
 }
 
-export async function clearPendingBisSubmission(db, teamId, charId, slot) {
+export async function clearPendingBisSubmission(db, teamId, charId, slot, seasonId) {
   await run(db,
-    `DELETE FROM bis_submissions WHERE team_id = ? AND char_id = ? AND slot = ? AND status = 'Pending'`,
-    teamId, charId, slot
+    `DELETE FROM bis_submissions WHERE season_id = ? AND team_id = ? AND char_id = ? AND slot = ? AND status = 'Pending'`,
+    seasonId, teamId, charId, slot
   );
-  cacheInvalidate(`bis_submissions:${teamId}`);
-  cacheInvalidate(`bis_submissions_pending:${teamId}`);
-  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
+  cacheInvalidate(`bis_submissions:${seasonId}:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${seasonId}:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${seasonId}:${charId}`);
 }
 
-export async function clearRejectedBisSubmission(db, teamId, charId, slot) {
+export async function clearRejectedBisSubmission(db, teamId, charId, slot, seasonId) {
   await run(db,
-    `DELETE FROM bis_submissions WHERE team_id = ? AND char_id = ? AND slot = ? AND status = 'Rejected'`,
-    teamId, charId, slot
+    `DELETE FROM bis_submissions WHERE season_id = ? AND team_id = ? AND char_id = ? AND slot = ? AND status = 'Rejected'`,
+    seasonId, teamId, charId, slot
   );
-  cacheInvalidate(`bis_submissions:${teamId}`);
-  cacheInvalidate(`bis_submissions_pending:${teamId}`);
-  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
+  cacheInvalidate(`bis_submissions:${seasonId}:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${seasonId}:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${seasonId}:${charId}`);
 }
 
-export async function resetBisRaidBisField(db, teamId, charId, slot) {
+export async function resetBisRaidBisField(db, teamId, charId, slot, seasonId) {
   await run(db,
-    `UPDATE bis_submissions SET raid_bis = '', raid_bis_item_id = NULL WHERE team_id = ? AND char_id = ? AND slot = ?`,
-    teamId, charId, slot
+    `UPDATE bis_submissions SET raid_bis = '', raid_bis_item_id = NULL WHERE season_id = ? AND team_id = ? AND char_id = ? AND slot = ?`,
+    seasonId, teamId, charId, slot
   );
-  cacheInvalidate(`bis_submissions:${teamId}`);
-  cacheInvalidate(`bis_submissions_pending:${teamId}`);
-  if (charId) cacheInvalidate(`bis_sub_char:${charId}`);
+  cacheInvalidate(`bis_submissions:${seasonId}:${teamId}`);
+  cacheInvalidate(`bis_submissions_pending:${seasonId}:${teamId}`);
+  if (charId) cacheInvalidate(`bis_sub_char:${seasonId}:${charId}`);
 }
 
 // ── Item DB ───────────────────────────────────────────────────────────────────
 
-export async function getItemDb(db) {
-  return cachedRead('item_db', TTL.LONG, () =>
-    all(db, 'SELECT * FROM item_db ORDER BY id')
+export async function getItemDb(db, seasonId) {
+  return cachedRead(`item_db:${seasonId}`, TTL.LONG, () =>
+    all(db, 'SELECT * FROM item_db WHERE season_id = ? ORDER BY id', seasonId)
   );
 }
 
@@ -668,23 +729,23 @@ export async function getItemDb(db) {
  * armor types. Tier tokens are included (callers filter with is_tier_token).
  * Used by the BIS submission form for per-slot dropdowns.
  */
-export async function getItemDbForArmorType(db, armorType) {
-  return cachedRead(`item_db_armor:${armorType}`, TTL.LONG, () =>
+export async function getItemDbForArmorType(db, seasonId, armorType) {
+  return cachedRead(`item_db_armor:${seasonId}:${armorType}`, TTL.LONG, () =>
     all(db,
-      `SELECT * FROM item_db WHERE armor_type = ? OR armor_type = 'Accessory' OR armor_type = 'Tier Token' ORDER BY id`,
-      armorType
+      `SELECT * FROM item_db WHERE season_id = ? AND (armor_type = ? OR armor_type = 'Accessory' OR armor_type = 'Tier Token') ORDER BY id`,
+      seasonId, armorType
     )
   );
 }
 
-
-export async function writeItemDb(db, items, { replace = false } = {}) {
-  if (replace) await run(db, 'DELETE FROM item_db');
-  cacheInvalidate('item_db');
+export async function writeItemDb(db, items, seasonId, { replace = false } = {}) {
+  if (replace) await run(db, 'DELETE FROM item_db WHERE season_id = ?', seasonId);
+  cacheInvalidate(`item_db:${seasonId}`);
+  cacheInvalidatePrefix(`item_db_armor:${seasonId}:`);
   const stmt = db.prepare(
-    `INSERT INTO item_db (item_id, name, slot, source_type, source_name, instance, difficulty, armor_type, is_tier_token)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(item_id) DO UPDATE SET
+    `INSERT INTO item_db (season_id, item_id, name, slot, source_type, source_name, instance, difficulty, armor_type, is_tier_token)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(season_id, item_id) DO UPDATE SET
        name = excluded.name, slot = excluded.slot, source_type = excluded.source_type,
        source_name = excluded.source_name, instance = excluded.instance,
        difficulty = excluded.difficulty, armor_type = excluded.armor_type,
@@ -692,7 +753,7 @@ export async function writeItemDb(db, items, { replace = false } = {}) {
   );
   for (const item of items) {
     await stmt.bind(
-      item.itemId, item.name, item.slot, item.sourceType, item.sourceName,
+      seasonId, item.itemId, item.name, item.slot, item.sourceType, item.sourceName,
       item.instance, item.difficulty, item.armorType, item.isTierToken ? 1 : 0
     ).run();
   }
@@ -700,8 +761,8 @@ export async function writeItemDb(db, items, { replace = false } = {}) {
 
 // ── Default BIS ───────────────────────────────────────────────────────────────
 
-export async function getDefaultBis(db) {
-  return cachedRead('default_bis', TTL.LONG, () =>
+export async function getDefaultBis(db, seasonId) {
+  return cachedRead(`default_bis:${seasonId}`, TTL.LONG, () =>
     all(db,
       `SELECT d.*,
               COALESCE(i1.item_id, '') AS true_bis_item_id,
@@ -709,25 +770,27 @@ export async function getDefaultBis(db) {
        FROM default_bis d
        LEFT JOIN item_db i1 ON i1.id = d.true_bis_item_id
        LEFT JOIN item_db i2 ON i2.id = d.raid_bis_item_id
-       ORDER BY d.spec, d.slot`
+       WHERE d.season_id = ?
+       ORDER BY d.spec, d.slot`,
+      seasonId
     )
   );
 }
 
-export async function getSpecBisConfig(db) {
-  return cachedRead('spec_bis_config', TTL.LONG, async () => {
-    const rows = await all(db, 'SELECT spec, source FROM spec_bis_config');
+export async function getSpecBisConfig(db, seasonId) {
+  return cachedRead(`spec_bis_config:${seasonId}`, TTL.LONG, async () => {
+    const rows = await all(db, 'SELECT spec, source FROM spec_bis_config WHERE season_id = ?', seasonId);
     return new Map(rows.map(r => [r.spec, r.source]));
   });
 }
 
-export async function setSpecBisSource(db, spec, source) {
+export async function setSpecBisSource(db, seasonId, spec, source) {
   await run(db,
-    `INSERT INTO spec_bis_config (spec, source) VALUES (?, ?)
-     ON CONFLICT(spec) DO UPDATE SET source = excluded.source`,
-    spec, source
+    `INSERT INTO spec_bis_config (season_id, spec, source) VALUES (?, ?, ?)
+     ON CONFLICT(season_id, spec) DO UPDATE SET source = excluded.source`,
+    seasonId, spec, source
   );
-  cacheInvalidate('spec_bis_config');
+  cacheInvalidate(`spec_bis_config:${seasonId}`);
 }
 
 /**
@@ -735,8 +798,8 @@ export async function setSpecBisSource(db, spec, source) {
  * Reads ~16 rows instead of the full 1,249-row table. Use this on the dashboard;
  * keep getEffectiveDefaultBis() for pages that need all specs (council, admin).
  */
-export async function getEffectiveDefaultBisForSpec(db, canonicalSpec) {
-  return cachedRead(`effective_default_bis:${canonicalSpec}`, TTL.LONG, async () => {
+export async function getEffectiveDefaultBisForSpec(db, seasonId, canonicalSpec) {
+  return cachedRead(`effective_default_bis:${seasonId}:${canonicalSpec}`, TTL.LONG, async () => {
     const [rows, preferredSourceRow] = await Promise.all([
       all(db,
         // Override values (from default_bis_overrides) take priority over seed values.
@@ -752,16 +815,17 @@ export async function getEffectiveDefaultBisForSpec(db, canonicalSpec) {
                 i3.source_name AS true_bis_source_name
          FROM default_bis d
          LEFT JOIN default_bis_overrides o
-                ON o.spec = d.spec AND o.slot = d.slot AND o.source = d.source
+                ON o.season_id = d.season_id AND o.spec = d.spec AND o.slot = d.slot AND o.source = d.source
          LEFT JOIN item_db i1
                 ON i1.id = COALESCE(o.true_bis_item_id, d.true_bis_item_id)
          LEFT JOIN item_db i2
                 ON i2.id = COALESCE(o.raid_bis_item_id, d.raid_bis_item_id)
          LEFT JOIN item_db i3
-                ON LOWER(i3.name) = LOWER(COALESCE(NULLIF(o.true_bis, ''), d.true_bis))
-         WHERE d.spec = ?`,
-        canonicalSpec),
-      first(db, 'SELECT source FROM spec_bis_config WHERE spec = ?', canonicalSpec),
+                ON i3.season_id = d.season_id
+               AND LOWER(i3.name) = LOWER(COALESCE(NULLIF(o.true_bis, ''), d.true_bis))
+         WHERE d.season_id = ? AND d.spec = ?`,
+        seasonId, canonicalSpec),
+      first(db, 'SELECT source FROM spec_bis_config WHERE season_id = ? AND spec = ?', seasonId, canonicalSpec),
     ]);
     const preferredSource = preferredSourceRow?.source ?? null;
     const bySlot = new Map();
@@ -778,11 +842,11 @@ export async function getEffectiveDefaultBisForSpec(db, canonicalSpec) {
   });
 }
 
-export async function getEffectiveDefaultBis(db) {
+export async function getEffectiveDefaultBis(db, seasonId) {
   const [allRows, overrideRows, specConfig] = await Promise.all([
-    getDefaultBis(db),
-    getDefaultBisOverrides(db),
-    getSpecBisConfig(db),
+    getDefaultBis(db, seasonId),
+    getDefaultBisOverrides(db, seasonId),
+    getSpecBisConfig(db, seasonId),
   ]);
 
   // Index overrides by spec::slot::source for O(1) lookup
@@ -824,69 +888,71 @@ export async function getEffectiveDefaultBis(db) {
 // ── Default BIS overrides ─────────────────────────────────────────────────────
 // Stored in the dedicated default_bis_overrides table (spec × slot × source PK).
 
-export async function getDefaultBisOverrides(db) {
-  return cachedRead('default_bis_overrides', TTL.MEDIUM, () =>
+export async function getDefaultBisOverrides(db, seasonId) {
+  return cachedRead(`default_bis_overrides:${seasonId}`, TTL.MEDIUM, () =>
     all(db,
       `SELECT o.*,
               COALESCE(i1.item_id, '') AS true_bis_item_id,
               COALESCE(i2.item_id, '') AS raid_bis_item_id
        FROM default_bis_overrides o
        LEFT JOIN item_db i1 ON i1.id = o.true_bis_item_id
-       LEFT JOIN item_db i2 ON i2.id = o.raid_bis_item_id`
+       LEFT JOIN item_db i2 ON i2.id = o.raid_bis_item_id
+       WHERE o.season_id = ?`,
+      seasonId
     )
   );
 }
 
-export async function updateDefaultBisOverrides(db, updates) {
+export async function updateDefaultBisOverrides(db, seasonId, updates) {
   for (const u of updates) {
     await run(db,
       `INSERT INTO default_bis_overrides
-         (spec, slot, source, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(spec, slot, source) DO UPDATE SET
+         (season_id, spec, slot, source, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(season_id, spec, slot, source) DO UPDATE SET
          true_bis         = excluded.true_bis,
          true_bis_item_id = excluded.true_bis_item_id,
          raid_bis         = excluded.raid_bis,
          raid_bis_item_id = excluded.raid_bis_item_id`,
-      u.spec, u.slot, u.source ?? '', u.trueBis ?? '', u.trueBisItemId || null,
+      seasonId, u.spec, u.slot, u.source ?? '', u.trueBis ?? '', u.trueBisItemId || null,
       u.raidBis ?? '', u.raidBisItemId || null
     );
   }
-  cacheInvalidate('default_bis_overrides');
+  cacheInvalidate(`default_bis_overrides:${seasonId}`);
   // Bust per-spec effective caches so dashboard/bis page see the updated overrides immediately
-  cacheInvalidatePrefix('effective_default_bis:');
+  cacheInvalidatePrefix(`effective_default_bis:${seasonId}:`);
 }
 
 // ── Tier items ────────────────────────────────────────────────────────────────
 
-export async function getTierItems(db) {
-  return cachedRead('tier_items', TTL.LONG, () =>
-    all(db, 'SELECT * FROM tier_items ORDER BY class, slot')
+export async function getTierItems(db, seasonId) {
+  return cachedRead(`tier_items:${seasonId}`, TTL.LONG, () =>
+    all(db, 'SELECT * FROM tier_items WHERE season_id = ? ORDER BY class, slot', seasonId)
   );
 }
 
-export async function setTierItems(db, items) {
-  await run(db, 'DELETE FROM tier_items');
-  cacheInvalidate('tier_items');
-  const stmt = db.prepare('INSERT INTO tier_items (class, slot, item_id) VALUES (?, ?, ?)');
+export async function setTierItems(db, seasonId, items) {
+  await run(db, 'DELETE FROM tier_items WHERE season_id = ?', seasonId);
+  cacheInvalidate(`tier_items:${seasonId}`);
+  const stmt = db.prepare('INSERT INTO tier_items (season_id, class, slot, item_id) VALUES (?, ?, ?, ?)');
   for (const item of items) {
-    await stmt.bind(item.class, item.slot, item.itemId).run();
+    await stmt.bind(seasonId, item.class, item.slot, item.itemId).run();
   }
 }
 
 // ── Raids ─────────────────────────────────────────────────────────────────────
 
-export async function getRaids(db, teamId) {
-  return cachedRead(`raids:${teamId}`, TTL.SHORT, async () => {
+export async function getRaids(db, teamId, seasonId) {
+  return cachedRead(`raids:${seasonId}:${teamId}`, TTL.SHORT, async () => {
     const raids = await all(db,
-      'SELECT * FROM raids WHERE team_id = ? ORDER BY date DESC',
-      teamId
+      'SELECT * FROM raids WHERE season_id = ? AND team_id = ? ORDER BY date DESC',
+      seasonId, teamId
     );
     const attendees = await all(db,
       `SELECT ra.raid_id, ra.user_id FROM raid_attendees ra
        JOIN raids r ON r.id = ra.raid_id
-       WHERE r.team_id = ?`,
-      teamId
+       WHERE r.season_id = ? AND r.team_id = ?`,
+      seasonId, teamId
     );
     const attendeeMap = new Map();
     for (const a of attendees) {
@@ -897,10 +963,10 @@ export async function getRaids(db, teamId) {
   });
 }
 
-export async function upsertRaids(db, teamId, raids) {
+export async function upsertRaids(db, teamId, raids, seasonId) {
   const raidStmt    = db.prepare(
-    `INSERT INTO raids (raid_id, team_id, date, instance, difficulty)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO raids (season_id, raid_id, team_id, date, instance, difficulty)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(raid_id, team_id) DO UPDATE SET
        date = excluded.date, instance = excluded.instance, difficulty = excluded.difficulty`
   );
@@ -908,7 +974,7 @@ export async function upsertRaids(db, teamId, raids) {
     `INSERT OR IGNORE INTO raid_attendees (raid_id, user_id) VALUES (?, ?)`
   );
   for (const raid of raids) {
-    await raidStmt.bind(raid.raidId, teamId, raid.date, raid.instance, raid.difficulty).run();
+    await raidStmt.bind(seasonId, raid.raidId, teamId, raid.date, raid.instance, raid.difficulty).run();
     const row = await first(db,
       'SELECT id FROM raids WHERE raid_id = ? AND team_id = ?',
       raid.raidId, teamId
@@ -917,11 +983,12 @@ export async function upsertRaids(db, teamId, raids) {
       await attendeeStmt.bind(row.id, userId).run();
     }
   }
-  cacheInvalidate(`raids:${teamId}`);
+  cacheInvalidate(`raids:${seasonId}:${teamId}`);
 }
 
-export function invalidateRaidsCache(teamId) {
-  cacheInvalidate(`raids:${teamId}`);
+export function invalidateRaidsCache(teamId, seasonId) {
+  if (seasonId) cacheInvalidate(`raids:${seasonId}:${teamId}`);
+  else          cacheInvalidatePrefix(`raids:`);
 }
 
 // ── Raid encounters ───────────────────────────────────────────────────────────
@@ -955,22 +1022,22 @@ export async function upsertRaidEncounters(db, teamId, rows) {
 
 // ── Tier snapshot ─────────────────────────────────────────────────────────────
 
-export async function getTierSnapshot(db, teamId) {
-  return cachedRead(`tier_snapshot:${teamId}`, TTL.SHORT, () =>
+export async function getTierSnapshot(db, teamId, seasonId) {
+  return cachedRead(`tier_snapshot:${seasonId}:${teamId}`, TTL.SHORT, () =>
     all(db,
       `SELECT ts.*, r.char_name FROM tier_snapshot ts
        JOIN roster r ON r.id = ts.char_id
-       WHERE r.team_id = ? AND r.deleted = 0`,
-      teamId
+       WHERE ts.season_id = ? AND r.team_id = ? AND r.deleted = 0`,
+      seasonId, teamId
     )
   );
 }
 
-export async function upsertTierSnapshot(db, teamId, snapshots) {
+export async function upsertTierSnapshot(db, teamId, snapshots, seasonId) {
   const stmt = db.prepare(
-    `INSERT INTO tier_snapshot (char_id, raid_id, tier_count, tier_detail, updated_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(char_id) DO UPDATE SET
+    `INSERT INTO tier_snapshot (season_id, char_id, raid_id, tier_count, tier_detail, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(season_id, char_id) DO UPDATE SET
        raid_id = excluded.raid_id, tier_count = excluded.tier_count,
        tier_detail = excluded.tier_detail, updated_at = excluded.updated_at`
   );
@@ -978,23 +1045,23 @@ export async function upsertTierSnapshot(db, teamId, snapshots) {
     const raidRow = snap.raidId
       ? await first(db, 'SELECT id FROM raids WHERE raid_id = ? AND team_id = ?', snap.raidId, teamId)
       : null;
-    await stmt.bind(snap.charId, raidRow?.id ?? null, snap.tierCount, snap.tierDetail, snap.updatedAt).run();
+    await stmt.bind(seasonId, snap.charId, raidRow?.id ?? null, snap.tierCount, snap.tierDetail, snap.updatedAt).run();
   }
-  cacheInvalidate(`tier_snapshot:${teamId}`);
+  cacheInvalidate(`tier_snapshot:${seasonId}:${teamId}`);
 }
 
 // ── Worn BIS ──────────────────────────────────────────────────────────────────
 
 /**
- * Narrow variant: returns worn BIS rows for a single character.
+ * Narrow variant: returns worn BIS rows for a single character in the given season.
  * Reads ~16 rows instead of the full team table. Use this on the dashboard;
  * keep getWornBis() for pages that need all characters (council, wcl-sync).
  */
-export async function getWornBisForChar(db, charId) {
-  return cachedRead(`worn_bis_char:${charId}`, TTL.SHORT, async () => {
+export async function getWornBisForChar(db, charId, seasonId) {
+  return cachedRead(`worn_bis_char:${seasonId}:${charId}`, TTL.SHORT, async () => {
     const rows = await all(db,
-      'SELECT * FROM worn_bis WHERE char_id = ?',
-      charId
+      'SELECT * FROM worn_bis WHERE season_id = ? AND char_id = ?',
+      seasonId, charId
     );
     const map = new Map();
     for (const r of rows) map.set(`${r.char_id}:${r.spec}:${r.slot}`, r);
@@ -1002,13 +1069,13 @@ export async function getWornBisForChar(db, charId) {
   });
 }
 
-export async function getWornBis(db, teamId) {
-  return cachedRead(`worn_bis:${teamId}`, TTL.SHORT, async () => {
+export async function getWornBis(db, teamId, seasonId) {
+  return cachedRead(`worn_bis:${seasonId}:${teamId}`, TTL.SHORT, async () => {
     const rows = await all(db,
       `SELECT wb.* FROM worn_bis wb
        JOIN roster r ON r.id = wb.char_id
-       WHERE r.team_id = ? AND r.deleted = 0`,
-      teamId
+       WHERE wb.season_id = ? AND r.team_id = ? AND r.deleted = 0`,
+      seasonId, teamId
     );
     const map = new Map();
     for (const r of rows) {
@@ -1018,11 +1085,11 @@ export async function getWornBis(db, teamId) {
   });
 }
 
-export async function upsertWornBis(db, teamId, rows) {
+export async function upsertWornBis(db, teamId, rows, seasonId) {
   const stmt = db.prepare(
-    `INSERT INTO worn_bis (char_id, slot, spec, overall_bis_track, raid_bis_track, other_track, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(char_id, slot, spec) DO UPDATE SET
+    `INSERT INTO worn_bis (season_id, char_id, slot, spec, overall_bis_track, raid_bis_track, other_track, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(season_id, char_id, slot, spec) DO UPDATE SET
        overall_bis_track = excluded.overall_bis_track,
        raid_bis_track    = excluded.raid_bis_track,
        other_track       = excluded.other_track,
@@ -1030,31 +1097,31 @@ export async function upsertWornBis(db, teamId, rows) {
   );
   for (const row of rows) {
     await stmt.bind(
-      row.charId, row.slot, row.spec ?? '',
+      seasonId, row.charId, row.slot, row.spec ?? '',
       row.overallBISTrack ?? '', row.raidBISTrack ?? '', row.otherTrack ?? '',
       row.updatedAt
     ).run();
   }
-  cacheInvalidate(`worn_bis:${teamId}`);
+  cacheInvalidate(`worn_bis:${seasonId}:${teamId}`);
 }
 
-export async function clearWornBis(db, teamId) {
+export async function clearWornBis(db, teamId, seasonId) {
   await run(db,
-    `DELETE FROM worn_bis WHERE char_id IN (SELECT id FROM roster WHERE team_id = ?)`,
-    teamId
+    `DELETE FROM worn_bis WHERE season_id = ? AND char_id IN (SELECT id FROM roster WHERE team_id = ?)`,
+    seasonId, teamId
   );
-  cacheInvalidate(`worn_bis:${teamId}`);
+  cacheInvalidate(`worn_bis:${seasonId}:${teamId}`);
 }
 
-export async function invalidateWornBisSlots(db, teamId, targets) {
+export async function invalidateWornBisSlots(db, teamId, targets, seasonId) {
   // targets: [{ charId, slot }]  — charId here is roster.id (integer)
   const stmt = db.prepare(
-    `DELETE FROM worn_bis WHERE char_id = ? AND slot = ?`
+    `DELETE FROM worn_bis WHERE season_id = ? AND char_id = ? AND slot = ?`
   );
   for (const { charId, slot } of targets) {
-    await stmt.bind(charId, slot).run();
+    await stmt.bind(seasonId, charId, slot).run();
   }
-  cacheInvalidate(`worn_bis:${teamId}`);
+  cacheInvalidate(`worn_bis:${seasonId}:${teamId}`);
 }
 
 // ── RCLC response map ─────────────────────────────────────────────────────────
@@ -1095,6 +1162,53 @@ export async function getAppliedMigrations(db) {
 }
 
 /**
+ * Split a multi-statement SQL string on semicolons, respecting single-quoted
+ * strings and -- line comments. Returns an array of non-empty trimmed statements.
+ *
+ * Handles the common migration SQL patterns we use. Does not handle block comments
+ * or double-quoted identifiers containing semicolons — not needed for our migrations.
+ */
+function splitMigrationSql(sql) {
+  const stmts = [];
+  let buf = '';
+  let inQuote   = false;
+  let inComment = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const ch   = sql[i];
+    const next = sql[i + 1];
+
+    if (inComment) {
+      if (ch === '\n') inComment = false;
+      buf += ch;
+      continue;
+    }
+
+    if (inQuote) {
+      buf += ch;
+      if (ch === "'" && next === "'") { buf += next; i++; } // '' escape
+      else if (ch === "'")            { inQuote = false; }
+      continue;
+    }
+
+    if (ch === '-' && next === '-') { inComment = true; buf += ch; continue; }
+    if (ch === "'")                  { inQuote   = true; buf += ch; continue; }
+
+    if (ch === ';') {
+      const s = buf.trim();
+      if (s) stmts.push(s);
+      buf = '';
+    } else {
+      buf += ch;
+    }
+  }
+
+  const s = buf.trim();
+  if (s) stmts.push(s);
+  return stmts;
+}
+
+/**
  * Run any migrations from the registry that haven't been applied yet.
  * Uses each migration's `check` function first — if the schema already matches
  * (e.g. applied manually via wrangler), it records the migration as applied
@@ -1130,7 +1244,14 @@ export async function runMigrations(db, migrations) {
     }
 
     try {
-      await db.exec(migration.sql);
+      // db.exec() splits internally on newlines in some D1 versions, causing
+      // multi-line statements like CREATE TABLE to fail with "incomplete input".
+      // Split on semicolons ourselves and use db.batch() (which correctly handles
+      // full multi-line SQL strings via prepare()) for atomicity.
+      const stmts = splitMigrationSql(migration.sql);
+      for (let i = 0; i < stmts.length; i += 80) {
+        await db.batch(stmts.slice(i, i + 80).map(s => db.prepare(s)));
+      }
       await run(db, 'INSERT OR IGNORE INTO schema_migrations (name) VALUES (?)', migration.name);
       results.push({ name: migration.name, status: 'applied' });
     } catch (err) {

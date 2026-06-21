@@ -66,6 +66,7 @@ import {
   getWornBis,
   upsertWornBis,
   invalidateRaidsCache,
+  getCurrentSeason,
 } from './db.js';
 import {
   getValidEncounterIds,
@@ -264,8 +265,14 @@ function resolveActor(actor, rosterLookup) {
  * Throws if credentials or zone IDs are missing.
  */
 async function buildWclContext(db) {
-  const globalConfig = await getGlobalConfig(db);
-  const { wcl_client_id, wcl_zone_ids, season_start, wcl_veteran_bonus_id, wcl_crafted_bonus_ids } = globalConfig;
+  const [globalConfig, currentSeason] = await Promise.all([
+    getGlobalConfig(db),
+    getCurrentSeason(db),
+  ]);
+  if (!currentSeason) throw new Error('No current season configured. Visit /admin/seasons to set one up.');
+
+  const { wcl_client_id, wcl_zone_ids, wcl_veteran_bonus_id, wcl_crafted_bonus_ids } = globalConfig;
+  const seasonId         = currentSeason.id;
   const trackRanges      = buildTrackRanges(Number(wcl_veteran_bonus_id) || 0);
   // Pipe-separated list of bonus IDs that identify crafted items, e.g. "9481|9513|9484"
   const craftedBonusIds  = new Set(
@@ -278,7 +285,7 @@ async function buildWclContext(db) {
   const zoneIds = String(wcl_zone_ids ?? '').split('|').map(Number).filter(Boolean);
   if (!zoneIds.length) throw new Error('wcl_zone_ids not configured');
 
-  const seasonStartMs     = parseSheetDateMs(season_start);
+  const seasonStartMs     = parseSheetDateMs(currentSeason.start_date);
   const validEncounterIds = await getValidEncounterIds(zoneIds, wcl_client_id, wcl_client_secret);
   if (!validEncounterIds.size) throw new Error('No encounters found for configured zone IDs — check wcl_zone_ids');
 
@@ -290,20 +297,20 @@ async function buildWclContext(db) {
   }
   log.verbose(`[wcl-sync] Valid encounter IDs: [${[...validEncounterIds].join(', ')}]`);
 
-  const tierItemRows     = await getTierItems(db);
+  const tierItemRows     = await getTierItems(db, seasonId);
   const tierItemsByClass = new Map();
   for (const { class: cls, slot, item_id } of tierItemRows) {
     if (!tierItemsByClass.has(cls)) tierItemsByClass.set(cls, new Map());
     tierItemsByClass.get(cls).set(Number(item_id), slot);
   }
 
-  const itemDbRows = await getItemDb(db);
+  const itemDbRows = await getItemDb(db, seasonId);
   const itemDbMap  = new Map();
   for (const row of itemDbRows) {
     itemDbMap.set(Number(row.item_id), { slot: row.slot, armorType: row.armor_type, isTierToken: row.is_tier_token === 1, name: row.name });
   }
 
-  return { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, wcl_client_id, wcl_client_secret, itemDbMap };
+  return { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, wcl_client_id, wcl_client_secret, itemDbMap };
 }
 
 /**
@@ -325,11 +332,11 @@ export async function runWclSync(db) {
     log.error('[wcl-sync] Setup failed:', err.message);
     return;
   }
-  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, wcl_client_id, wcl_client_secret, itemDbMap } = ctx;
+  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, wcl_client_id, wcl_client_secret, itemDbMap } = ctx;
 
   for (const team of getAllTeams()) {
     try {
-      await syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, wcl_client_id, wcl_client_secret, itemDbMap);
+      await syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, wcl_client_id, wcl_client_secret, itemDbMap);
     } catch (err) {
       log.error(`[wcl-sync] Team "${team.name}" sync failed:`, err.message);
     }
@@ -347,8 +354,8 @@ export async function runWclSync(db) {
 export async function runWclSyncForTeam(db, team) {
   log.warn(`[wcl-sync] Manual sync triggered for team "${team.name}"`);
   const ctx = await buildWclContext(db);
-  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, wcl_client_id, wcl_client_secret, itemDbMap } = ctx;
-  await syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, wcl_client_id, wcl_client_secret, itemDbMap);
+  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, wcl_client_id, wcl_client_secret, itemDbMap } = ctx;
+  await syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, wcl_client_id, wcl_client_secret, itemDbMap);
   log.warn(`[wcl-sync] Manual sync complete for team "${team.name}"`);
 }
 
@@ -357,8 +364,8 @@ const WORN_BIS_RESYNC_REPORT_LIMIT = 5;
 export async function runWclSyncWornBisOnly(db, team) {
   log.warn(`[wcl-sync] Worn BIS-only resync triggered for team "${team.name}" (last ${WORN_BIS_RESYNC_REPORT_LIMIT} raids)`);
   const ctx = await buildWclContext(db);
-  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, wcl_client_id, wcl_client_secret, itemDbMap } = ctx;
-  await syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, wcl_client_id, wcl_client_secret, itemDbMap, { wornBisOnly: true, maxReports: WORN_BIS_RESYNC_REPORT_LIMIT });
+  const { globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, wcl_client_id, wcl_client_secret, itemDbMap } = ctx;
+  await syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, wcl_client_id, wcl_client_secret, itemDbMap, { wornBisOnly: true, maxReports: WORN_BIS_RESYNC_REPORT_LIMIT });
   log.warn(`[wcl-sync] Worn BIS-only resync complete for team "${team.name}"`);
 }
 
@@ -381,18 +388,22 @@ export async function runWclSyncWornBisOnly(db, team) {
 export async function runAttendanceBackfill(db, team) {
   log.warn(`[attendance-backfill] Starting for team "${team.name}"`);
 
-  const [globalConfig, teamConfig] = await Promise.all([
+  const [globalConfig, teamConfig, currentSeason] = await Promise.all([
     getGlobalConfig(db),
     getTeamConfig(db, team.id),
+    getCurrentSeason(db),
   ]);
-  const { wcl_client_id, season_start, wcl_zone_ids } = globalConfig;
+  if (!currentSeason) throw new Error('No current season configured. Visit /admin/seasons to set one up.');
+
+  const { wcl_client_id, wcl_zone_ids } = globalConfig;
   const wcl_client_secret = process.env.WCL_CLIENT_SECRET;
   if (!wcl_client_id || !wcl_client_secret) throw new Error('WCL credentials not configured');
 
   const wclGuildId = teamConfig.wcl_guild_id ? Number(teamConfig.wcl_guild_id) : null;
   if (!wclGuildId) throw new Error(`Team "${team.name}" has no wcl_guild_id configured`);
 
-  const seasonStartMs  = parseSheetDateMs(season_start);
+  const seasonId      = currentSeason.id;
+  const seasonStartMs = parseSheetDateMs(currentSeason.start_date);
   const validZoneIds   = new Set(
     String(wcl_zone_ids ?? '').split('|').map(Number).filter(Boolean)
   );
@@ -517,7 +528,7 @@ export async function runAttendanceBackfill(db, team) {
           instance,
           difficulty: difficultyLabel,
           attendeeIds,
-        }]);
+        }], seasonId);
         raidsInserted++;
         attendeesInserted += attendeeIds.length;
         log.warn(`[attendance-backfill] Report ${report.code}: inserted new raid row (${raidDate} ${instance} ${difficultyLabel}, ${attendeeIds.length} attendee(s))`);
@@ -531,7 +542,7 @@ export async function runAttendanceBackfill(db, team) {
   }
 
   // upsertRaids already invalidates; call once more to cover the attendee-only path
-  invalidateRaidsCache(team.id);
+  invalidateRaidsCache(team.id, seasonId);
 
   log.warn(
     `[attendance-backfill] Done: ${raidsProcessed}/${wclReports.length} processed, ` +
@@ -545,7 +556,7 @@ export async function runAttendanceBackfill(db, team) {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-async function syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, clientId, clientSecret, itemDbMap, options = {}) {
+async function syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByClass, trackRanges, craftedBonusIds, seasonStartMs, seasonId, clientId, clientSecret, itemDbMap, options = {}) {
   const { wornBisOnly = false, maxReports = 0 } = options;
   const config     = await getTeamConfig(db, team.id);
   const wclGuildId = config.wcl_guild_id ? Number(config.wcl_guild_id) : null;
@@ -615,8 +626,8 @@ async function syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByCl
   // Build BIS lookup per character: effective BIS = personal approved submission > spec default.
   // Keyed by roster id:spec when present; falls back to "name:<char_name>" for legacy rows.
   const [allSubs, effectiveDefaultBis] = await Promise.all([
-    getBisSubmissions(db, team.id),
-    getEffectiveDefaultBis(db),
+    getBisSubmissions(db, team.id, seasonId),
+    getEffectiveDefaultBis(db, seasonId),
   ]);
 
   // Group defaults by spec for fast lookup
@@ -650,7 +661,7 @@ async function syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByCl
     }
   }
 
-  const existingWornBis = await getWornBis(db, team.id); // Map<char_id:spec:slot, row>
+  const existingWornBis = await getWornBis(db, team.id, seasonId); // Map<char_id:spec:slot, row>
 
   // Accumulate data from all reports before writing — reduces Sheets API calls from
   // O(reports × characters) to O(1 read + 1 batchUpdate) per tab per team sync.
@@ -725,11 +736,11 @@ async function syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByCl
   if (!wornBisOnly) {
     if (snapshotList.length) {
       log.warn(`[wcl-sync] Team "${team.name}": writing ${snapshotList.length} tier snapshot row(s)`);
-      await upsertTierSnapshot(db, team.id, snapshotList);
+      await upsertTierSnapshot(db, team.id, snapshotList, seasonId);
     }
     if (allRaidRows.length) {
       log.warn(`[wcl-sync] Team "${team.name}": writing ${allRaidRows.length} raid row(s)`);
-      await upsertRaids(db, team.id, allRaidRows);
+      await upsertRaids(db, team.id, allRaidRows, seasonId);
     }
     if (allEncounterRows.length) {
       log.warn(`[wcl-sync] Team "${team.name}": writing ${allEncounterRows.length} encounter row(s)`);
@@ -751,7 +762,7 @@ async function syncTeam(db, team, globalConfig, validEncounterIds, tierItemsByCl
       });
     }
     log.warn(`[wcl-sync] Team "${team.name}": writing ${wornBisToWrite.length} worn BIS row(s)`);
-    await upsertWornBis(db, team.id, wornBisToWrite);
+    await upsertWornBis(db, team.id, wornBisToWrite, seasonId);
   }
 
   if (!wornBisOnly) {
