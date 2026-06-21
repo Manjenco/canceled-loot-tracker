@@ -335,12 +335,150 @@ function TierItemsCard({ seasonId, onStatsChange }) {
   );
 }
 
+// ── Season Items viewer ───────────────────────────────────────────────────────
+
+function SeasonItemsCard({ seasonId, refreshNonce }) {
+  const [items,   setItems]   = useState(null); // null = not loaded yet
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState(null);
+
+  // Filters
+  const [q,        setQ]        = useState('');
+  const [slot,     setSlot]     = useState('');
+  const [instance, setInstance] = useState('');
+  const [armor,    setArmor]    = useState('');
+  const [tierOnly, setTierOnly] = useState(false);
+
+  useEffect(() => {
+    if (!seasonId) { setItems(null); return; }
+    let live = true;
+    setLoading(true); setError(null);
+    fetch(apiPath(`/api/admin/item-db/list?seasonId=${seasonId}`), { credentials: 'include' })
+      .then(r => r.json().then(d => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!live) return;
+        if (!ok) throw new Error(d.error ?? 'Failed to load items');
+        setItems(d.items ?? []);
+      })
+      .catch(e => { if (live) setError(e.message); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [seasonId, refreshNonce]);
+
+  const all = items ?? [];
+  const uniq = (vals) => [...new Set(vals.filter(Boolean))].sort();
+  const slots     = uniq(all.map(i => i.slot));
+  const instances = uniq(all.map(i => i.instance));
+  const armors    = uniq(all.map(i => i.armor_type));
+
+  const needle = q.trim().toLowerCase();
+  const filtered = all.filter(i => {
+    if (needle && !i.name.toLowerCase().includes(needle) && !String(i.item_id).includes(needle)) return false;
+    if (slot     && i.slot       !== slot)     return false;
+    if (instance && i.instance   !== instance) return false;
+    if (armor    && i.armor_type !== armor)    return false;
+    if (tierOnly && i.is_tier_token !== 1)     return false;
+    return true;
+  });
+
+  const th = { textAlign: 'left', padding: '4px 10px 8px 0', color: 'var(--text-muted)', fontWeight: 500, position: 'sticky', top: 0, background: 'var(--card, #1A1A1A)' };
+  const td = { padding: '5px 10px 5px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' };
+
+  return (
+    <div className="card" style={{ marginTop: 24 }}>
+      <div className="card-title">Season Items</div>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+        Everything currently stored in this season’s Item DB. Use the filters to audit coverage
+        — e.g. confirm a newly-added raid’s items are present, or spot gaps by slot.
+      </p>
+
+      {error && <p style={{ fontSize: 13, color: 'var(--danger, #e05)', marginBottom: 8 }}>Error: {error}</p>}
+
+      {/* Filter bar */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <input
+          className="config-input"
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Search name or item ID…"
+          style={{ maxWidth: 240 }}
+        />
+        <select className="lh-diff-select" value={slot} onChange={e => setSlot(e.target.value)}>
+          <option value="">All slots</option>
+          {slots.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className="lh-diff-select" value={instance} onChange={e => setInstance(e.target.value)}>
+          <option value="">All sources</option>
+          {instances.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className="lh-diff-select" value={armor} onChange={e => setArmor(e.target.value)}>
+          <option value="">All armor types</option>
+          {armors.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+          <input type="checkbox" checked={tierOnly} onChange={e => setTierOnly(e.target.checked)} />
+          Tier tokens only
+        </label>
+        <span style={{ fontSize: 13, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+          {filtered.length}{filtered.length !== all.length ? ` / ${all.length}` : ''} item{all.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {loading && !items ? (
+        <div className="loading">Loading…</div>
+      ) : all.length === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>No items in this season yet.</p>
+      ) : (
+        <div style={{ maxHeight: 460, overflowY: 'auto', border: '1px solid var(--border, #333)', borderRadius: 4 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, paddingLeft: 10, width: 80 }}>ID</th>
+                <th style={th}>Name</th>
+                <th style={th}>Slot</th>
+                <th style={th}>Source</th>
+                <th style={th}>Armor</th>
+                <th style={th}>Difficulty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(i => (
+                <tr key={i.id}>
+                  <td style={{ ...td, paddingLeft: 10, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{i.item_id}</td>
+                  <td style={td}>
+                    {i.name}
+                    {i.is_tier_token === 1 && (
+                      <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', borderRadius: 3, background: 'rgba(204,16,16,0.18)', color: 'var(--primary, #CC1010)' }}>
+                        Tier
+                      </span>
+                    )}
+                  </td>
+                  <td style={td}>{i.slot}</td>
+                  <td style={{ ...td, color: 'var(--text-muted)' }}>{i.instance || i.source_name}</td>
+                  <td style={{ ...td, color: 'var(--text-muted)' }}>{i.armor_type}</td>
+                  <td style={{ ...td, color: 'var(--text-muted)' }}>{i.difficulty}</td>
+                </tr>
+              ))}
+              {filtered.length === 0 && (
+                <tr><td colSpan={6} style={{ ...td, paddingLeft: 10, color: 'var(--text-muted)' }}>No items match the current filters.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminItemDb() {
   const [seasons,  setSeasons]  = useState([]);
   const [seasonId, setSeasonId] = useState(null);
   const [stats,    setStats]    = useState(null);
+  const [nonce,    setNonce]    = useState(0); // bump to force stats + viewer reload after writes
+
+  const refresh = useCallback(() => setNonce(n => n + 1), []);
 
   // Load seasons once; default the picker to the current season.
   useEffect(() => {
@@ -355,16 +493,16 @@ export default function AdminItemDb() {
       .catch(() => { /* non-critical */ });
   }, []);
 
-  const loadStats = useCallback(async () => {
-    if (!seasonId) return;
-    try {
-      const r = await fetch(apiPath(`/api/admin/item-db/stats?seasonId=${seasonId}`), { credentials: 'include' });
-      if (r.ok) setStats(await r.json());
-    } catch { /* non-critical */ }
-  }, [seasonId]);
-
-  // Reload stats whenever the selected season changes.
-  useEffect(() => { setStats(null); loadStats(); }, [loadStats]);
+  // Reload stats whenever the season changes or a write happens.
+  useEffect(() => {
+    if (!seasonId) { setStats(null); return; }
+    let live = true;
+    fetch(apiPath(`/api/admin/item-db/stats?seasonId=${seasonId}`), { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (live && d) setStats(d); })
+      .catch(() => { /* non-critical */ });
+    return () => { live = false; };
+  }, [seasonId, nonce]);
 
   const selected = seasons.find(s => s.id === seasonId);
 
@@ -408,8 +546,9 @@ export default function AdminItemDb() {
         </div>
       </div>
 
-      <ItemDbCard seasonId={seasonId} onStatsChange={loadStats} />
-      <TierItemsCard seasonId={seasonId} onStatsChange={loadStats} />
+      <ItemDbCard seasonId={seasonId} onStatsChange={refresh} />
+      <TierItemsCard seasonId={seasonId} onStatsChange={refresh} />
+      <SeasonItemsCard seasonId={seasonId} refreshNonce={nonce} />
     </div>
   );
 }

@@ -81,6 +81,22 @@ router.get('/stats', async (c) => {
   }
 });
 
+// ── GET /list ─────────────────────────────────────────────────────────────────
+// Full item list for a season — drives the admin item viewer. Reuses the cached
+// getItemDb read so it stays coherent with the rest of the app. Filtering/sorting
+// is done client-side (a season is a few hundred rows, well within one payload).
+
+router.get('/list', async (c) => {
+  const db = c.env.DB;
+  try {
+    const seasonId = await resolveSeasonId(db, c.req.query('seasonId'));
+    const items = await getItemDb(db, seasonId);
+    return c.json({ seasonId, items });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ── GET /instances ────────────────────────────────────────────────────────────
 // Returns a lightweight list for the instance picker (id + name only).
 
