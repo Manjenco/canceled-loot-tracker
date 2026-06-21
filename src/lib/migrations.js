@@ -116,6 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_loot_summary_owner ON loot_summary(team_id, owner
       return !!row;
     },
     sql: `
+PRAGMA defer_foreign_keys = ON;
 CREATE TABLE seasons (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT    NOT NULL DEFAULT 'Season 1',
@@ -158,7 +159,14 @@ CREATE TABLE default_bis (
   UNIQUE (season_id, spec, slot, source)
 );
 INSERT INTO default_bis (id, season_id, spec, slot, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id, source)
-  SELECT id, 1, spec, slot, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id, source FROM _default_bis_old;
+  SELECT d.id, 1, d.spec, d.slot, d.true_bis,
+    CASE WHEN d.true_bis_item_id IS NOT NULL AND EXISTS (SELECT 1 FROM item_db WHERE id = d.true_bis_item_id)
+         THEN d.true_bis_item_id ELSE NULL END,
+    d.raid_bis,
+    CASE WHEN d.raid_bis_item_id IS NOT NULL AND EXISTS (SELECT 1 FROM item_db WHERE id = d.raid_bis_item_id)
+         THEN d.raid_bis_item_id ELSE NULL END,
+    d.source
+  FROM _default_bis_old d;
 DROP TABLE _default_bis_old;
 CREATE INDEX idx_default_bis_spec ON default_bis(season_id, spec);
 ALTER TABLE spec_bis_config RENAME TO _spec_bis_config_old;
@@ -216,7 +224,8 @@ CREATE TABLE tier_snapshot (
   PRIMARY KEY (season_id, char_id)
 );
 INSERT INTO tier_snapshot (season_id, char_id, raid_id, tier_count, tier_detail, updated_at)
-  SELECT 1, char_id, raid_id, tier_count, tier_detail, updated_at FROM _tier_snapshot_old;
+  SELECT 1, char_id, raid_id, tier_count, tier_detail, updated_at FROM _tier_snapshot_old
+  WHERE char_id IN (SELECT id FROM roster);
 DROP TABLE _tier_snapshot_old;
 ALTER TABLE worn_bis RENAME TO _worn_bis_old;
 CREATE TABLE worn_bis (
@@ -231,7 +240,8 @@ CREATE TABLE worn_bis (
   PRIMARY KEY (season_id, char_id, slot, spec)
 );
 INSERT INTO worn_bis (season_id, char_id, slot, spec, overall_bis_track, raid_bis_track, other_track, updated_at)
-  SELECT 1, char_id, slot, spec, overall_bis_track, raid_bis_track, other_track, updated_at FROM _worn_bis_old;
+  SELECT 1, char_id, slot, spec, overall_bis_track, raid_bis_track, other_track, updated_at FROM _worn_bis_old
+  WHERE char_id IN (SELECT id FROM roster);
 DROP TABLE _worn_bis_old;
 ALTER TABLE loot_summary RENAME TO _loot_summary_old;
 CREATE TABLE loot_summary (
@@ -251,7 +261,9 @@ CREATE TABLE loot_summary (
   PRIMARY KEY (season_id, team_id, char_id)
 );
 INSERT INTO loot_summary (season_id, team_id, char_id, owner_id, bis_mythic, bis_heroic, bis_normal, nonbis_mythic, nonbis_heroic, nonbis_normal, tertiary, offspec, last_updated)
-  SELECT 1, team_id, char_id, owner_id, bis_mythic, bis_heroic, bis_normal, nonbis_mythic, nonbis_heroic, nonbis_normal, tertiary, offspec, last_updated FROM _loot_summary_old;
+  SELECT 1, team_id, char_id, owner_id, bis_mythic, bis_heroic, bis_normal, nonbis_mythic, nonbis_heroic, nonbis_normal, tertiary, offspec, last_updated FROM _loot_summary_old
+  WHERE char_id IN (SELECT id FROM roster)
+    AND team_id IN (SELECT id FROM teams);
 DROP TABLE _loot_summary_old;
 CREATE INDEX idx_loot_summary_owner ON loot_summary(season_id, team_id, owner_id);
 `.trim(),
