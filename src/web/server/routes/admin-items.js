@@ -12,7 +12,7 @@
 
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { getGlobalConfig, writeItemDb, setTierItems, getTierItems, getItemDb } from '../../../lib/db.js';
+import { getGlobalConfig, writeItemDb, setTierItems, getTierItems, getItemDb, getCurrentSeasonId, getSeasons } from '../../../lib/db.js';
 import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
 import { mapItem, TIER_ITEM_SLOT_MAP } from '../../../lib/item-seeder.js';
@@ -31,6 +31,23 @@ function requireGlobalOfficer(c, next) {
 }
 
 router.use('*', requireGlobalOfficer);
+
+// ── Season resolution ─────────────────────────────────────────────────────────
+// Item DB and tier items are season-scoped. Seeding targets a chosen season so an
+// empty new season can be populated before it's made current. When no season is
+// supplied, default to the current one. A supplied season must actually exist —
+// otherwise the season_id FK on item_db / tier_items would be violated.
+
+async function resolveSeasonId(db, requested) {
+  if (requested === undefined || requested === null || requested === '') {
+    return getCurrentSeasonId(db);
+  }
+  const id = Number(requested);
+  if (!Number.isInteger(id) || id <= 0) throw new Error(`Invalid seasonId: ${requested}`);
+  const seasons = await getSeasons(db);
+  if (!seasons.some(s => s.id === id)) throw new Error(`Season ${id} does not exist`);
+  return id;
+}
 
 // ── Blizzard creds helper ─────────────────────────────────────────────────────
 
@@ -53,11 +70,12 @@ async function getBlizzardCreds(db, env) {
 router.get('/stats', async (c) => {
   const db = c.env.DB;
   try {
+    const seasonId = await resolveSeasonId(db, c.req.query('seasonId'));
     const [itemDbRow, tierRow] = await Promise.all([
-      db.prepare('SELECT COUNT(*) AS n FROM item_db').first(),
-      db.prepare('SELECT COUNT(*) AS n FROM tier_items').first(),
+      db.prepare('SELECT COUNT(*) AS n FROM item_db   WHERE season_id = ?').bind(seasonId).first(),
+      db.prepare('SELECT COUNT(*) AS n FROM tier_items WHERE season_id = ?').bind(seasonId).first(),
     ]);
-    return c.json({ itemDb: itemDbRow?.n ?? 0, tierItems: tierRow?.n ?? 0 });
+    return c.json({ seasonId, itemDb: itemDbRow?.n ?? 0, tierItems: tierRow?.n ?? 0 });
   } catch (err) {
     return c.json({ error: err.message }, 500);
   }
@@ -85,7 +103,7 @@ router.get('/instances', async (c) => {
 
 router.post('/sync', async (c) => {
   const db = c.env.DB;
-  const { instanceId, difficulty = 'MYTHIC', replace = false } = await c.req.json();
+  const { instanceId, difficulty = 'MYTHIC', replace = false, seasonId: reqSeason } = await c.req.json();
 
   if (!instanceId) return c.json({ error: 'instanceId is required' }, 400);
 
@@ -95,6 +113,7 @@ router.post('/sync', async (c) => {
   }
 
   try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
     const creds = await getBlizzardCreds(db, c.env);
 
     // Fetch items from Blizzard
@@ -116,13 +135,14 @@ router.post('/sync', async (c) => {
     const instanceName = deduped[0]?.instance ?? String(instanceId);
 
     // Write to D1 — writeItemDb handles upserts (ON CONFLICT DO UPDATE)
-    await writeItemDb(db, deduped, { replace });
+    await writeItemDb(db, deduped, seasonId, { replace });
 
     return c.json({
       ok: true,
       total:        deduped.length,
       instanceName,
       difficulty,
+      seasonId,
     });
   } catch (err) {
     console.error('[admin-items] item-db/sync error:', err);
@@ -135,8 +155,10 @@ router.post('/sync', async (c) => {
 router.post('/clear', async (c) => {
   const db = c.env.DB;
   try {
-    await writeItemDb(db, [], { replace: true });
-    return c.json({ ok: true });
+    const { seasonId: reqSeason } = await c.req.json().catch(() => ({}));
+    const seasonId = await resolveSeasonId(db, reqSeason);
+    await writeItemDb(db, [], seasonId, { replace: true });
+    return c.json({ ok: true, seasonId });
   } catch (err) {
     return c.json({ error: err.message }, 500);
   }
@@ -153,7 +175,7 @@ tierRouter.use('*', requireGlobalOfficer);
 
 tierRouter.post('/sync', async (c) => {
   const db = c.env.DB;
-  const { sets } = await c.req.json();
+  const { sets, seasonId: reqSeason } = await c.req.json();
 
   if (!Array.isArray(sets) || !sets.length) {
     return c.json({ error: 'sets must be a non-empty array of { setId, className } objects' }, 400);
@@ -166,6 +188,7 @@ tierRouter.post('/sync', async (c) => {
   }
 
   try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
     const creds = await getBlizzardCreds(db, c.env);
 
     const allRows    = [];
@@ -211,13 +234,14 @@ tierRouter.post('/sync', async (c) => {
       return c.json({ ok: false, error: 'No tier item rows produced. Check that set IDs are correct.', errors });
     }
 
-    await setTierItems(db, allRows);
+    await setTierItems(db, seasonId, allRows);
 
     return c.json({
       ok:      true,
       total:   allRows.length,
       sets:    setResults,
       errors,  // non-fatal per-set errors
+      seasonId,
     });
   } catch (err) {
     console.error('[admin-items] tier-items/sync error:', err);

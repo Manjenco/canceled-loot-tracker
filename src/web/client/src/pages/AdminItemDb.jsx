@@ -7,7 +7,8 @@
  *   2. Tier Items — fetch current-tier item sets (one per class) and write to D1
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { apiPath } from '../lib/api.js';
 
 const DIFFICULTIES = [
@@ -20,7 +21,7 @@ const DIFFICULTIES = [
 
 // ── Item DB card ──────────────────────────────────────────────────────────────
 
-function ItemDbCard({ onStatsChange }) {
+function ItemDbCard({ seasonId, onStatsChange }) {
   const [instanceId,   setInstanceId]   = useState('');
   const [difficulty,   setDifficulty]   = useState('MYTHIC');
   const [replace,      setReplace]      = useState(false);
@@ -56,7 +57,7 @@ function ItemDbCard({ onStatsChange }) {
         method:      'POST',
         credentials: 'include',
         headers:     { 'Content-Type': 'application/json' },
-        body:        JSON.stringify({ instanceId: Number(instanceId), difficulty, replace }),
+        body:        JSON.stringify({ instanceId: Number(instanceId), difficulty, replace, seasonId }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? r.status);
@@ -70,11 +71,13 @@ function ItemDbCard({ onStatsChange }) {
   }
 
   async function handleClear() {
-    if (!window.confirm('Clear all item DB rows? This will remove all items from the database.')) return;
+    if (!window.confirm('Clear all item DB rows for the selected season? This removes every item in that season from the database.')) return;
     setClearing(true); setResult(null);
     try {
       const r = await fetch(apiPath('/api/admin/item-db/clear'), {
         method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ seasonId }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? r.status);
@@ -147,7 +150,7 @@ function ItemDbCard({ onStatsChange }) {
         <button
           className="btn-primary"
           onClick={handleSync}
-          disabled={busy || !instanceId.trim()}
+          disabled={busy || !instanceId.trim() || !seasonId}
           style={{ alignSelf: 'flex-end' }}
         >
           {syncing ? 'Syncing…' : 'Sync Instance'}
@@ -156,7 +159,7 @@ function ItemDbCard({ onStatsChange }) {
         <button
           className="btn-secondary"
           onClick={handleClear}
-          disabled={busy}
+          disabled={busy || !seasonId}
           style={{ alignSelf: 'flex-end' }}
         >
           {clearing ? 'Clearing…' : 'Clear All'}
@@ -232,7 +235,7 @@ const TIER_CLASSES = [
   'Mage', 'Monk', 'Paladin', 'Priest', 'Rogue', 'Shaman', 'Warlock', 'Warrior',
 ];
 
-function TierItemsCard({ onStatsChange }) {
+function TierItemsCard({ seasonId, onStatsChange }) {
   // One set ID per class — stored as parallel arrays indexed by TIER_CLASSES
   const [setIds, setSetIds] = useState(() => Object.fromEntries(TIER_CLASSES.map(c => [c, ''])));
   const [syncing, setSyncing] = useState(false);
@@ -254,7 +257,7 @@ function TierItemsCard({ onStatsChange }) {
         method:      'POST',
         credentials: 'include',
         headers:     { 'Content-Type': 'application/json' },
-        body:        JSON.stringify({ sets }),
+        body:        JSON.stringify({ sets, seasonId }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? r.status);
@@ -298,7 +301,7 @@ function TierItemsCard({ onStatsChange }) {
       <button
         className="btn-primary"
         onClick={handleSync}
-        disabled={syncing || TIER_CLASSES.every(c => !setIds[c])}
+        disabled={syncing || !seasonId || TIER_CLASSES.every(c => !setIds[c])}
       >
         {syncing ? 'Syncing…' : 'Sync Tier Items'}
       </button>
@@ -335,31 +338,78 @@ function TierItemsCard({ onStatsChange }) {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminItemDb() {
-  const [stats, setStats] = useState(null);
+  const [seasons,  setSeasons]  = useState([]);
+  const [seasonId, setSeasonId] = useState(null);
+  const [stats,    setStats]    = useState(null);
 
-  async function loadStats() {
+  // Load seasons once; default the picker to the current season.
+  useEffect(() => {
+    fetch(apiPath('/api/admin/seasons'), { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        const list = d.seasons ?? [];
+        setSeasons(list);
+        const current = list.find(s => s.is_current) ?? list[0];
+        if (current) setSeasonId(current.id);
+      })
+      .catch(() => { /* non-critical */ });
+  }, []);
+
+  const loadStats = useCallback(async () => {
+    if (!seasonId) return;
     try {
-      const r = await fetch(apiPath('/api/admin/item-db/stats'), { credentials: 'include' });
+      const r = await fetch(apiPath(`/api/admin/item-db/stats?seasonId=${seasonId}`), { credentials: 'include' });
       if (r.ok) setStats(await r.json());
     } catch { /* non-critical */ }
-  }
+  }, [seasonId]);
 
-  useEffect(() => { loadStats(); }, []);
+  // Reload stats whenever the selected season changes.
+  useEffect(() => { setStats(null); loadStats(); }, [loadStats]);
+
+  const selected = seasons.find(s => s.id === seasonId);
 
   return (
     <div>
       <h2 className="page-title">Item Database</h2>
 
-      {stats && (
-        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 20 }}>
-          Current DB:{' '}
-          <strong style={{ color: 'var(--text)' }}>{stats.itemDb.toLocaleString()}</strong> item rows,{' '}
-          <strong style={{ color: 'var(--text)' }}>{stats.tierItems}</strong> tier item rows
+      {/* ── Target season picker ─────────────────────────────────────────── */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-title">Target Season</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+          Seeding writes the Item DB and Tier Items for the selected season. You can populate a
+          non-current season here, then activate it later on the{' '}
+          <Link to="/admin/seasons" style={{ color: 'var(--accent, #4caf50)' }}>Seasons</Link> page.
         </p>
-      )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <select
+            className="lh-diff-select"
+            value={seasonId ?? ''}
+            onChange={e => setSeasonId(Number(e.target.value))}
+            disabled={!seasons.length}
+          >
+            {seasons.map(s => (
+              <option key={s.id} value={s.id}>
+                {s.name}{s.is_current ? ' (current)' : ''}
+              </option>
+            ))}
+          </select>
+          {stats && (
+            <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              In this season:{' '}
+              <strong style={{ color: 'var(--text)' }}>{stats.itemDb.toLocaleString()}</strong> item rows,{' '}
+              <strong style={{ color: 'var(--text)' }}>{stats.tierItems}</strong> tier item rows
+            </span>
+          )}
+          {selected && !selected.is_current && (
+            <span style={{ fontSize: 13, color: '#fbbf24' }}>
+              ⚠ Editing a non-current season
+            </span>
+          )}
+        </div>
+      </div>
 
-      <ItemDbCard onStatsChange={loadStats} />
-      <TierItemsCard onStatsChange={loadStats} />
+      <ItemDbCard seasonId={seasonId} onStatsChange={loadStats} />
+      <TierItemsCard seasonId={seasonId} onStatsChange={loadStats} />
     </div>
   );
 }
