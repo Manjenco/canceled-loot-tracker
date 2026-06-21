@@ -224,7 +224,10 @@ CREATE TABLE tier_snapshot (
   PRIMARY KEY (season_id, char_id)
 );
 INSERT INTO tier_snapshot (season_id, char_id, raid_id, tier_count, tier_detail, updated_at)
-  SELECT 1, char_id, raid_id, tier_count, tier_detail, updated_at FROM _tier_snapshot_old
+  SELECT 1, char_id,
+    CASE WHEN raid_id IS NOT NULL AND EXISTS (SELECT 1 FROM raids WHERE id = raid_id)
+         THEN raid_id ELSE NULL END,
+    tier_count, tier_detail, updated_at FROM _tier_snapshot_old
   WHERE char_id IN (SELECT id FROM roster);
 DROP TABLE _tier_snapshot_old;
 ALTER TABLE worn_bis RENAME TO _worn_bis_old;
