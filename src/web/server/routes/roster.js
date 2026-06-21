@@ -24,7 +24,7 @@ import {
   setRosterStatus, setOwnerNick, setOwnerIdAllChars, setRosterOwner, addRosterChar, deleteRosterChar,
   renameRosterChar, setRosterServer, setSecondarySpecs,
   approvePrimarySpecChange, rejectPrimarySpecChange,
-  setAttendanceAdjustment,
+  setAttendanceAdjustment, getCurrentSeasonId,
 } from '../../../lib/db.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { toCanonical, CLASS_SPECS, getCharSpecs, specToRole } from '../../../lib/specs.js';
@@ -193,10 +193,11 @@ router.get('/:charId', async (c) => {
   if (!teamId || !charId) return c.json({ error: 'No team' }, 404);
   const db = c.env.DB;
   try {
-    // Phase 1 — roster + item db (long-cached; needed to identify char before narrow queries)
+    // Phase 1 — season ID + roster + item db (long-cached; needed to identify char before narrow queries)
+    const seasonId = await getCurrentSeasonId(db);
     const [roster, itemDb] = await Promise.all([
       getRoster(db, teamId),
-      getItemDb(db),
+      getItemDb(db, seasonId),
     ]);
     const rosterChar = roster.find(r => r.id === charId);
     if (!rosterChar) return c.json({ error: 'Character not found' }, 404);
@@ -212,10 +213,10 @@ router.get('/:charId', async (c) => {
 
     // Phase 2 — all narrow, all parallel: BIS subs + worn BIS + per-spec defaults + per-char loot
     const [bisRows, wornBisMap, ...rest] = await Promise.all([
-      getBisSubmissionsForChar(db, teamId, charId, rosterChar.char_name),
-      getWornBisForChar(db, charId),
-      ...charSpecs.all.map(spec => getEffectiveDefaultBisForSpec(db, toCanonical(spec))),
-      ...accountChars.map(ac => getLootLogForChar(db, teamId, ac.id, ac.char_name)),
+      getBisSubmissionsForChar(db, teamId, charId, rosterChar.char_name, seasonId),
+      getWornBisForChar(db, charId, seasonId),
+      ...charSpecs.all.map(spec => getEffectiveDefaultBisForSpec(db, seasonId, toCanonical(spec))),
+      ...accountChars.map(ac => getLootLogForChar(db, teamId, ac.id, ac.char_name, seasonId)),
     ]);
     const specResults = rest.slice(0, charSpecs.all.length);
     const lootArrays  = rest.slice(charSpecs.all.length);

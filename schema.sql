@@ -15,10 +15,19 @@ CREATE TABLE global_config (
   value TEXT NOT NULL DEFAULT ''
 );
 
+-- Season registry — one row per season; only one may have is_current = 1
+CREATE TABLE seasons (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT    NOT NULL DEFAULT 'Season 1',
+  start_date TEXT    NOT NULL DEFAULT '',  -- ISO date, e.g. "2025-01-21"
+  is_current INTEGER NOT NULL DEFAULT 0    -- 1 = active season
+);
+
 -- Raid and M+ item database, seeded via /admin → Sync Loot Tables
 CREATE TABLE item_db (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  item_id       TEXT    NOT NULL UNIQUE,  -- Blizzard item ID
+  season_id     INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  item_id       TEXT    NOT NULL,  -- Blizzard item ID
   name          TEXT    NOT NULL,
   slot          TEXT    NOT NULL,
   source_type   TEXT    NOT NULL,  -- Raid | Mythic+
@@ -26,15 +35,17 @@ CREATE TABLE item_db (
   instance      TEXT    NOT NULL,
   difficulty    TEXT    NOT NULL,
   armor_type    TEXT    NOT NULL,  -- Cloth | Leather | Mail | Plate | Accessory | Tier Token
-  is_tier_token INTEGER NOT NULL DEFAULT 0
+  is_tier_token INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (season_id, item_id)
 );
 
-CREATE INDEX idx_item_db_slot     ON item_db(slot);
-CREATE INDEX idx_item_db_instance ON item_db(source_type, instance);
+CREATE INDEX idx_item_db_slot     ON item_db(season_id, slot);
+CREATE INDEX idx_item_db_instance ON item_db(season_id, source_type, instance);
 
 -- Spec BIS defaults, seeded via /admin
 CREATE TABLE default_bis (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id        INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
   spec             TEXT    NOT NULL,
   slot             TEXT    NOT NULL,
   true_bis         TEXT    NOT NULL DEFAULT '',
@@ -42,24 +53,27 @@ CREATE TABLE default_bis (
   raid_bis         TEXT    NOT NULL DEFAULT '',
   raid_bis_item_id INTEGER REFERENCES item_db(id),
   source           TEXT    NOT NULL DEFAULT '',  -- Icy Veins | Wowhead | Maxroll | Class Discord | Manual
-  UNIQUE (spec, slot, source)
+  UNIQUE (season_id, spec, slot, source)
 );
 
-CREATE INDEX idx_default_bis_spec ON default_bis(spec);
+CREATE INDEX idx_default_bis_spec ON default_bis(season_id, spec);
 
 -- Per-spec preferred BIS source override
 CREATE TABLE spec_bis_config (
-  spec   TEXT PRIMARY KEY,
-  source TEXT NOT NULL DEFAULT ''
+  season_id INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  spec      TEXT    NOT NULL,
+  source    TEXT    NOT NULL DEFAULT '',
+  PRIMARY KEY (season_id, spec)
 );
 
 -- Current season tier piece item IDs, seeded via /admin → Sync Tier Items
 CREATE TABLE tier_items (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  class   TEXT    NOT NULL,
-  slot    TEXT    NOT NULL,
-  item_id TEXT    NOT NULL,
-  UNIQUE (class, slot)
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  class     TEXT    NOT NULL,
+  slot      TEXT    NOT NULL,
+  item_id   TEXT    NOT NULL,
+  UNIQUE (season_id, class, slot)
 );
 
 -- Cross-team transfer audit log
@@ -112,6 +126,7 @@ CREATE INDEX        idx_roster_team_owner  ON roster(team_id, owner_id);
 -- (unresolved "no roster match" entries have NULL recipient_char_id)
 CREATE TABLE loot_log (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id         INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
   team_id           INTEGER NOT NULL REFERENCES teams(id),
   date              TEXT    NOT NULL,
   boss              TEXT    NOT NULL,
@@ -127,10 +142,12 @@ CREATE TABLE loot_log (
 
 CREATE INDEX idx_loot_log_team_char ON loot_log(team_id, recipient_char_id);
 CREATE INDEX idx_loot_log_team_date ON loot_log(team_id, date);
+CREATE INDEX idx_loot_log_season    ON loot_log(season_id, team_id, date);
 
 -- Player BIS submissions
 CREATE TABLE bis_submissions (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id        INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
   team_id          INTEGER NOT NULL REFERENCES teams(id),
   char_id          INTEGER REFERENCES roster(id),
   char_name        TEXT    NOT NULL DEFAULT '',  -- stored for display/fallback
@@ -147,13 +164,14 @@ CREATE TABLE bis_submissions (
   raid_bis_item_id TEXT    DEFAULT NULL
 );
 
-CREATE UNIQUE INDEX idx_bis_submissions_upsert ON bis_submissions(team_id, char_id, slot);
-CREATE INDEX        idx_bis_team_char_status  ON bis_submissions(team_id, char_id, status);
+CREATE UNIQUE INDEX idx_bis_submissions_upsert ON bis_submissions(season_id, team_id, char_id, slot);
+CREATE INDEX        idx_bis_team_char_status   ON bis_submissions(season_id, team_id, char_id, status);
 
 -- Raid sessions (one row per WCL report)
 -- raid_id = WCL report code (e.g. "AbCdEf12") — natural key used for dedup
 CREATE TABLE raids (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id  INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
   raid_id    TEXT    NOT NULL,
   team_id    INTEGER NOT NULL REFERENCES teams(id),
   date       TEXT    NOT NULL,
@@ -163,6 +181,7 @@ CREATE TABLE raids (
 );
 
 CREATE INDEX idx_raids_team_date ON raids(team_id, date);
+CREATE INDEX idx_raids_season    ON raids(season_id, team_id, date);
 
 -- Raid attendance — normalised out of the pipe-separated AttendeeIds column
 CREATE TABLE raid_attendees (
@@ -188,16 +207,18 @@ CREATE TABLE raid_encounters (
 -- Current tier piece status per character — upserted on every WCL sync
 -- tier_detail = pipe-separated slot:track pairs e.g. "Head:Mythic|Chest:Hero"
 CREATE TABLE tier_snapshot (
-  char_id     INTEGER NOT NULL REFERENCES roster(id),
-  raid_id     INTEGER REFERENCES raids(id),
-  tier_count  INTEGER NOT NULL DEFAULT 0,
-  tier_detail TEXT    NOT NULL DEFAULT '',
-  updated_at  TEXT    NOT NULL,
-  PRIMARY KEY (char_id)
+  season_id  INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  char_id    INTEGER NOT NULL REFERENCES roster(id),
+  raid_id    INTEGER REFERENCES raids(id),
+  tier_count INTEGER NOT NULL DEFAULT 0,
+  tier_detail TEXT   NOT NULL DEFAULT '',
+  updated_at TEXT    NOT NULL,
+  PRIMARY KEY (season_id, char_id)
 );
 
--- Highest upgrade track ever worn per character × slot × spec
+-- Highest upgrade track ever worn per character × season × slot × spec
 CREATE TABLE worn_bis (
+  season_id         INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
   char_id           INTEGER NOT NULL REFERENCES roster(id),
   slot              TEXT    NOT NULL,
   spec              TEXT    NOT NULL DEFAULT '',
@@ -205,7 +226,7 @@ CREATE TABLE worn_bis (
   raid_bis_track    TEXT    NOT NULL DEFAULT '',
   other_track       TEXT    NOT NULL DEFAULT '',
   updated_at        TEXT    NOT NULL,
-  PRIMARY KEY (char_id, slot, spec)
+  PRIMARY KEY (season_id, char_id, slot, spec)
 );
 
 -- RCLC button → internal upgrade type mapping
@@ -217,11 +238,9 @@ CREATE TABLE rclc_response_map (
   PRIMARY KEY (team_id, rclc_button)
 );
 
--- Officer overrides for spec default BIS — keyed by spec × slot × source.
--- Replaces the old bis_submissions sentinel (char_id=0) approach, which could
--- not store per-spec overrides for the same slot due to the team/char/slot unique
--- constraint. This table has no FK dependencies and supports all specs independently.
+-- Officer overrides for spec default BIS — keyed by season × spec × slot × source.
 CREATE TABLE default_bis_overrides (
+  season_id        INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
   spec             TEXT NOT NULL,
   slot             TEXT NOT NULL,
   source           TEXT NOT NULL DEFAULT '',
@@ -229,8 +248,28 @@ CREATE TABLE default_bis_overrides (
   true_bis_item_id TEXT         DEFAULT NULL,
   raid_bis         TEXT NOT NULL DEFAULT '',
   raid_bis_item_id TEXT         DEFAULT NULL,
-  PRIMARY KEY (spec, slot, source)
+  PRIMARY KEY (season_id, spec, slot, source)
 );
+
+-- Pre-aggregated loot counts per character × season (materialized by rebuildLootSummary)
+CREATE TABLE loot_summary (
+  season_id     INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  team_id       INTEGER NOT NULL REFERENCES teams(id),
+  char_id       INTEGER NOT NULL REFERENCES roster(id),
+  owner_id      TEXT    NOT NULL DEFAULT '',
+  bis_mythic    INTEGER NOT NULL DEFAULT 0,
+  bis_heroic    INTEGER NOT NULL DEFAULT 0,
+  bis_normal    INTEGER NOT NULL DEFAULT 0,
+  nonbis_mythic INTEGER NOT NULL DEFAULT 0,
+  nonbis_heroic INTEGER NOT NULL DEFAULT 0,
+  nonbis_normal INTEGER NOT NULL DEFAULT 0,
+  tertiary      INTEGER NOT NULL DEFAULT 0,
+  offspec       INTEGER NOT NULL DEFAULT 0,
+  last_updated  TEXT    NOT NULL DEFAULT '',
+  PRIMARY KEY (season_id, team_id, char_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_loot_summary_owner ON loot_summary(season_id, team_id, owner_id);
 
 -- Tracks which schema migrations have been applied (via the admin DB Migrations UI or runMigrations()).
 -- Bootstrapped automatically by getAppliedMigrations() — not required to exist before first use.
@@ -239,8 +278,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- ── Sentinel rows — satisfy FK constraints for any legacy bis_submissions rows ──
+-- ── Sentinel rows — satisfy FK constraints ────────────────────────────────────
 -- team_id=0 / char_id=0 rows are excluded from all normal queries via
 -- WHERE id > 0 on teams and WHERE team_id = ? on roster.
 INSERT OR IGNORE INTO teams  (id, name)                                                VALUES (0, '__default__');
 INSERT OR IGNORE INTO roster (id, team_id, char_name, class, spec, role, owner_id, owner_nick) VALUES (0, 0, '__default__', '', '', '', '', '');
+
+-- Initial season — required so DEFAULT 1 on season_id columns satisfies FK constraints.
+-- Update name and start_date via the season management admin page before going live.
+INSERT OR IGNORE INTO seasons (id, name, start_date, is_current) VALUES (1, 'Season 1', '', 1);
