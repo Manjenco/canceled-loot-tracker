@@ -143,11 +143,19 @@ export async function updateSeason(db, seasonId, { name, startDate }) {
 /**
  * Flip the current season.  Atomically clears is_current on all rows,
  * then sets it on the target season.
+ *
+ * Also resets every team's WCL sync cursor (wcl_last_check) and pending-report
+ * re-check list (wcl_pending_reports). The cursor is not season-scoped, so without
+ * this the first sync of the new season would start from the previous season's
+ * last-check timestamp and skip any reports between the new season's start date and
+ * that cursor. Clearing both keys makes the next sync fall back to seasonStartMs.
  */
 export async function setCurrentSeason(db, seasonId) {
   await run(db, 'UPDATE seasons SET is_current = 0');
   await run(db, 'UPDATE seasons SET is_current = 1 WHERE id = ?', seasonId);
+  await run(db, "DELETE FROM team_config WHERE key IN ('wcl_last_check', 'wcl_pending_reports')");
   cacheInvalidate('current_season');
+  cacheInvalidatePrefix('team_config:');
 }
 
 // ── Global config ─────────────────────────────────────────────────────────────

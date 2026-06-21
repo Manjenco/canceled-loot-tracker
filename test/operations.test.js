@@ -173,4 +173,26 @@ test('data layer operations (season-partitioned)', async (t) => {
     await db.setCurrentSeason(D, 1);
     assert.equal(await db.getCurrentSeasonId(D), 1);
   });
+
+  await t.test('setCurrentSeason resets each team\'s WCL sync cursor', async () => {
+    // Simulate a team mid-season with an advanced cursor + pending reports
+    await db.setTeamConfigValue(D, teamId, 'wcl_last_check', '1750000000000');
+    await db.setTeamConfigValue(D, teamId, 'wcl_pending_reports', 'AbC:1:2:Zone');
+    await db.setTeamConfigValue(D, teamId, 'wcl_guild_id', '787359'); // unrelated key must survive
+
+    let cfg = await db.getTeamConfig(D, teamId);
+    assert.equal(cfg.wcl_last_check, '1750000000000');
+    assert.equal(cfg.wcl_pending_reports, 'AbC:1:2:Zone');
+
+    // Switch seasons — cursor + pending must be cleared, other config untouched
+    const s3 = await db.createSeason(D, { name: 'Season 3', startDate: '2026-09-01' });
+    await db.setCurrentSeason(D, s3);
+
+    cfg = await db.getTeamConfig(D, teamId);
+    assert.equal(cfg.wcl_last_check, undefined, 'cursor cleared');
+    assert.equal(cfg.wcl_pending_reports, undefined, 'pending reports cleared');
+    assert.equal(cfg.wcl_guild_id, '787359', 'unrelated team config preserved');
+
+    await db.setCurrentSeason(D, 1); // restore for any later subtests
+  });
 });
