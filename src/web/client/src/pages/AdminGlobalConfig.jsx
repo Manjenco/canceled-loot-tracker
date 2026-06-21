@@ -1,18 +1,8 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { apiPath } from '../lib/api.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Convert a Sheets date serial (e.g. 46091) to an ISO date string (e.g. "2025-01-21").
- *  Passes through values that are already ISO strings or empty. */
-function normaliseDate(value) {
-  if (!value) return '';
-  const num = Number(value);
-  if (!isNaN(num) && num > 0 && num < 200000) {
-    return new Date((num - 25569) * 86400 * 1000).toISOString().split('T')[0];
-  }
-  return String(value);
-}
 
 async function saveKey(key, value) {
   const r = await fetch(apiPath('/api/admin/global-config'), {
@@ -67,11 +57,6 @@ export default function AdminGlobalConfig() {
   const [discordResult,     setDiscordResult]     = useState(null);
   const [discordSaving,     setDiscordSaving]     = useState(false);
 
-  // Season
-  const [seasonStart,   setSeasonStart]   = useState('');
-  const [seasonResult,  setSeasonResult]  = useState(null);
-  const [seasonSaving,  setSeasonSaving]  = useState(false);
-
   // Curio
   const [curioItemId,   setCurioItemId]   = useState('');
   const [curioResult,   setCurioResult]   = useState(null);
@@ -107,7 +92,6 @@ export default function AdminGlobalConfig() {
         const c = config ?? {};
         setGuildId(           c.guild_id                  ?? '');
         setGlobalOfficerRole( c.global_officer_role_id    ?? '');
-        setSeasonStart(       normaliseDate(c.season_start ?? ''));
         setCurioItemId(       c.curio_item_id             ?? '');
         setWclClientId(       c.wcl_client_id             ?? '');
         setWclZoneIds(        c.wcl_zone_ids              ?? '');
@@ -129,12 +113,6 @@ export default function AdminGlobalConfig() {
       ['global_officer_role_id', globalOfficerRole],
     ]));
     setDiscordSaving(false);
-  }
-
-  async function saveSeason() {
-    setSeasonSaving(true); setSeasonResult(null);
-    setSeasonResult(await saveFields([['season_start', seasonStart]]));
-    setSeasonSaving(false);
   }
 
   async function saveCurio() {
@@ -233,18 +211,12 @@ export default function AdminGlobalConfig() {
       {/* ── Season ────────────────────────────────────────────────────────── */}
       <div className="card" style={{ marginTop: 24 }}>
         <div className="card-title">Season</div>
-        <Field label="Season Start Date" hint="ISO date (YYYY-MM-DD). All raid data and WCL reports before this date are ignored.">
-          <input
-            className="config-input config-input-narrow"
-            value={seasonStart}
-            onChange={e => setSeasonStart(e.target.value)}
-            placeholder="e.g. 2025-01-21"
-          />
-        </Field>
-        <button className="btn-primary" onClick={saveSeason} disabled={seasonSaving}>
-          {seasonSaving ? 'Saving…' : 'Save'}
-        </button>
-        <ResultMsg result={seasonResult} />
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+          Season start dates are now managed per-season on the{' '}
+          <Link to="/admin/seasons" style={{ color: 'var(--accent, #4caf50)' }}>Seasons</Link>{' '}
+          page. Each season has its own start date, used as the cutoff for that season’s WCL
+          reports and historical data.
+        </p>
       </div>
 
       {/* ── Curio ────────────────────────────────────────────────────────── */}
