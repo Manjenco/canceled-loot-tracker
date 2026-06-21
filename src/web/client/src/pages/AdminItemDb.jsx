@@ -358,7 +358,7 @@ function SourceManifestCard({ seasonId }) {
     } catch (e) { setError(e.message); }
   }, [seasonId]);
 
-  useEffect(() => { setSyncResult(null); loadSources(); }, [loadSources]);
+  useEffect(() => { loadSources(); }, [loadSources]);
 
   async function loadInstances() {
     setInstLoading(true);
