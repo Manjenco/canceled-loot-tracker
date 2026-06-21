@@ -12,7 +12,10 @@
 
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { getGlobalConfig, writeItemDb, setTierItems, getTierItems, getItemDb, getCurrentSeasonId, getSeasons } from '../../../lib/db.js';
+import {
+  getGlobalConfig, writeItemDb, setTierItems, getTierItems, getItemDb, getCurrentSeasonId, getSeasons,
+  getSeasonSources, addSeasonSource, removeSeasonSource, setSeasonSourceEnabled,
+} from '../../../lib/db.js';
 import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
 import { mapItem, TIER_ITEM_SLOT_MAP } from '../../../lib/item-seeder.js';
@@ -123,7 +126,6 @@ router.post('/sync', async (c) => {
 
   if (!instanceId) return c.json({ error: 'instanceId is required' }, 400);
 
-  const VALID_DIFFICULTIES = ['MYTHIC', 'HEROIC', 'NORMAL', 'LOOKING_FOR_RAID', 'MYTHIC_KEYSTONE'];
   if (!VALID_DIFFICULTIES.includes(difficulty)) {
     return c.json({ error: `difficulty must be one of: ${VALID_DIFFICULTIES.join(', ')}` }, 400);
   }
@@ -176,6 +178,111 @@ router.post('/clear', async (c) => {
     await writeItemDb(db, [], seasonId, { replace: true });
     return c.json({ ok: true, seasonId });
   } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── Source manifest ───────────────────────────────────────────────────────────
+// The persisted set of Blizzard journal instances that define a season's item
+// pool. Re-pulling from these (sync-manifest) keeps the Item DB in sync — additive
+// only for now; the diff/apply flow with removals comes in a later phase.
+
+const VALID_DIFFICULTIES = ['MYTHIC', 'HEROIC', 'NORMAL', 'LOOKING_FOR_RAID', 'MYTHIC_KEYSTONE'];
+
+router.get('/sources', async (c) => {
+  const db = c.env.DB;
+  try {
+    const seasonId = await resolveSeasonId(db, c.req.query('seasonId'));
+    const sources = await getSeasonSources(db, seasonId);
+    return c.json({ seasonId, sources });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+router.post('/sources', async (c) => {
+  const db = c.env.DB;
+  const { seasonId: reqSeason, sourceType = 'raid', sourceId, difficulty = 'MYTHIC', label = '' } = await c.req.json();
+  if (!sourceId) return c.json({ error: 'sourceId is required' }, 400);
+  if (!VALID_DIFFICULTIES.includes(difficulty)) {
+    return c.json({ error: `difficulty must be one of: ${VALID_DIFFICULTIES.join(', ')}` }, 400);
+  }
+  try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
+    await addSeasonSource(db, seasonId, { sourceType, sourceId, difficulty, label });
+    return c.json({ ok: true, seasonId });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+router.patch('/sources/:id', async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'Invalid source id' }, 400);
+  const { seasonId: reqSeason, enabled } = await c.req.json();
+  if (typeof enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400);
+  try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
+    await setSeasonSourceEnabled(db, seasonId, id, enabled);
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+router.delete('/sources/:id', async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'Invalid source id' }, 400);
+  try {
+    const seasonId = await resolveSeasonId(db, c.req.query('seasonId'));
+    await removeSeasonSource(db, seasonId, id);
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── POST /sync-manifest ───────────────────────────────────────────────────────
+// Additively re-pulls every ENABLED source in the season's manifest and upserts
+// the union into item_db. No removals — that's the diff/apply phase. A source that
+// errors is reported but does not abort the others.
+
+router.post('/sync-manifest', async (c) => {
+  const db = c.env.DB;
+  const { seasonId: reqSeason } = await c.req.json().catch(() => ({}));
+  try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
+    const sources  = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
+    if (!sources.length) return c.json({ error: 'No enabled sources in this season’s manifest.' }, 400);
+
+    const creds = await getBlizzardCreds(db, c.env);
+
+    const perSource = [];
+    const allItems  = [];
+    const errors    = [];
+
+    for (const src of sources) {
+      try {
+        const raw   = await fetchRaidItems(Number(src.source_id), src.difficulty, creds);
+        const items = raw.map(mapItem).filter(Boolean);
+        allItems.push(...items);
+        perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: items.length });
+      } catch (err) {
+        errors.push(`${src.label || src.source_id} (${src.difficulty}): ${err.message}`);
+      }
+    }
+
+    // Global dedupe by Blizzard item ID (same item can appear in multiple sources).
+    const seen    = new Set();
+    const deduped = allItems.filter(i => (seen.has(i.itemId) ? false : (seen.add(i.itemId), true)));
+
+    if (deduped.length) await writeItemDb(db, deduped, seasonId, { replace: false });
+
+    return c.json({ ok: true, seasonId, total: deduped.length, sources: perSource, errors });
+  } catch (err) {
+    console.error('[admin-items] sync-manifest error:', err);
     return c.json({ error: err.message }, 500);
   }
 });

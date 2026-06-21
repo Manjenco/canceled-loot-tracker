@@ -940,6 +940,35 @@ export async function setTierItems(db, seasonId, items) {
   }
 }
 
+// ── Season sources (item-source manifest) ──────────────────────────────────────
+
+export async function getSeasonSources(db, seasonId) {
+  return cachedRead(`season_sources:${seasonId}`, TTL.SHORT, () =>
+    all(db, 'SELECT * FROM season_sources WHERE season_id = ? ORDER BY source_type, label, difficulty', seasonId)
+  );
+}
+
+export async function addSeasonSource(db, seasonId, { sourceType = 'raid', sourceId, difficulty = 'MYTHIC', label = '' }) {
+  await run(db,
+    `INSERT INTO season_sources (season_id, source_type, source_id, difficulty, label)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(season_id, source_id, difficulty) DO UPDATE SET
+       source_type = excluded.source_type, label = excluded.label, enabled = 1`,
+    seasonId, sourceType, Number(sourceId), difficulty, label
+  );
+  cacheInvalidate(`season_sources:${seasonId}`);
+}
+
+export async function removeSeasonSource(db, seasonId, id) {
+  await run(db, 'DELETE FROM season_sources WHERE id = ? AND season_id = ?', id, seasonId);
+  cacheInvalidate(`season_sources:${seasonId}`);
+}
+
+export async function setSeasonSourceEnabled(db, seasonId, id, enabled) {
+  await run(db, 'UPDATE season_sources SET enabled = ? WHERE id = ? AND season_id = ?', enabled ? 1 : 0, id, seasonId);
+  cacheInvalidate(`season_sources:${seasonId}`);
+}
+
 // ── Raids ─────────────────────────────────────────────────────────────────────
 
 export async function getRaids(db, teamId, seasonId) {

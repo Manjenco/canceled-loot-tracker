@@ -76,6 +76,23 @@ CREATE TABLE tier_items (
   UNIQUE (season_id, class, slot)
 );
 
+-- Per-season item-source manifest — the set of Blizzard journal instances (raid /
+-- M+) that define a season's item pool. Re-pulling from these is how the Item DB is
+-- kept in sync (additively today; diff/apply later). One row per source + difficulty.
+CREATE TABLE season_sources (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id   INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  source_type TEXT    NOT NULL DEFAULT 'raid',   -- raid | mythic_plus
+  source_id   INTEGER NOT NULL,                  -- Blizzard journal instance id
+  difficulty  TEXT    NOT NULL DEFAULT 'MYTHIC', -- MYTHIC | HEROIC | NORMAL | LOOKING_FOR_RAID | MYTHIC_KEYSTONE
+  label       TEXT    NOT NULL DEFAULT '',       -- human-readable instance name
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  added_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (season_id, source_id, difficulty)
+);
+
+CREATE INDEX idx_season_sources_season ON season_sources(season_id);
+
 -- Cross-team transfer audit log
 CREATE TABLE transfers (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,

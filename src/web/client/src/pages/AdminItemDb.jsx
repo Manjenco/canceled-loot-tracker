@@ -335,6 +335,217 @@ function TierItemsCard({ seasonId, onStatsChange }) {
   );
 }
 
+// ── Source Manifest ───────────────────────────────────────────────────────────
+
+function SourceManifestCard({ seasonId, onItemsChanged }) {
+  const [sources, setSources] = useState(null); // null = not loaded
+  const [error,   setError]   = useState(null);
+
+  // Add form
+  const [instances,   setInstances]   = useState(null);
+  const [instLoading, setInstLoading] = useState(false);
+  const [addId,       setAddId]       = useState('');
+  const [addDiff,     setAddDiff]     = useState('MYTHIC');
+  const [adding,      setAdding]      = useState(false);
+
+  // Manifest sync
+  const [syncing,    setSyncing]    = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+
+  const loadSources = useCallback(async () => {
+    if (!seasonId) { setSources(null); return; }
+    try {
+      const r = await fetch(apiPath(`/api/admin/item-db/sources?seasonId=${seasonId}`), { credentials: 'include' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Failed to load sources');
+      setSources(d.sources ?? []);
+    } catch (e) { setError(e.message); }
+  }, [seasonId]);
+
+  useEffect(() => { setSyncResult(null); loadSources(); }, [loadSources]);
+
+  async function loadInstances() {
+    setInstLoading(true);
+    try {
+      const r = await fetch(apiPath('/api/admin/item-db/instances'), { credentials: 'include' });
+      const d = await r.json();
+      if (r.ok) setInstances(d.instances ?? []);
+      else setError(d.error ?? 'Failed to load instances');
+    } catch (e) { setError(e.message); }
+    finally { setInstLoading(false); }
+  }
+
+  async function addSource() {
+    if (!addId) return;
+    setAdding(true); setError(null);
+    try {
+      const label = (instances ?? []).find(i => String(i.id) === String(addId))?.name ?? '';
+      const r = await fetch(apiPath('/api/admin/item-db/sources'), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seasonId, sourceId: Number(addId), difficulty: addDiff, label }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Add failed');
+      setAddId('');
+      await loadSources();
+    } catch (e) { setError(e.message); }
+    finally { setAdding(false); }
+  }
+
+  async function toggle(src) {
+    setError(null);
+    try {
+      await fetch(apiPath(`/api/admin/item-db/sources/${src.id}`), {
+        method: 'PATCH', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seasonId, enabled: src.enabled !== 1 }),
+      });
+      await loadSources();
+    } catch (e) { setError(e.message); }
+  }
+
+  async function remove(src) {
+    if (!window.confirm(
+      `Remove "${src.label || src.source_id}" (${src.difficulty}) from the manifest?\n\n` +
+      'This only removes the source entry — items already imported from it stay in the Item DB.'
+    )) return;
+    setError(null);
+    try {
+      await fetch(apiPath(`/api/admin/item-db/sources/${src.id}?seasonId=${seasonId}`), { method: 'DELETE', credentials: 'include' });
+      await loadSources();
+    } catch (e) { setError(e.message); }
+  }
+
+  async function syncManifest() {
+    setSyncing(true); setSyncResult(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/item-db/sync-manifest'), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seasonId }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Sync failed');
+      setSyncResult({ ok: true, data: d });
+      onItemsChanged?.();
+    } catch (e) { setSyncResult({ error: e.message }); }
+    finally { setSyncing(false); }
+  }
+
+  const list = sources ?? [];
+  const enabledCount = list.filter(s => s.enabled === 1).length;
+  const td = { padding: '5px 10px 5px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' };
+
+  return (
+    <div className="card" style={{ marginBottom: 24 }}>
+      <div className="card-title">Source Manifest</div>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+        The set of Blizzard journal instances that define this season’s item pool. <strong>Sync from
+        manifest</strong> additively re-pulls every enabled source and upserts the union into the
+        Item DB — the repeatable way to keep a season current (e.g. after a mid-season raid is added).
+        Removing a source here does <em>not</em> delete items already imported from it.
+      </p>
+
+      {error && <p style={{ fontSize: 13, color: 'var(--danger, #e05)', marginBottom: 8 }}>Error: {error}</p>}
+
+      {/* Source list */}
+      {list.length === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+          No sources yet — add a raid or M+ instance below.
+        </p>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginBottom: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border, #333)' }}>
+              <th style={{ textAlign: 'center', padding: '4px 10px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 70 }}>Enabled</th>
+              <th style={{ textAlign: 'left',   padding: '4px 10px 8px 0', color: 'var(--text-muted)', fontWeight: 500 }}>Instance</th>
+              <th style={{ textAlign: 'left',   padding: '4px 10px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 80 }}>ID</th>
+              <th style={{ textAlign: 'left',   padding: '4px 10px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 120 }}>Difficulty</th>
+              <th style={{ padding: '4px 0 8px', width: 40 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {list.map(s => (
+              <tr key={s.id} style={{ opacity: s.enabled === 1 ? 1 : 0.5 }}>
+                <td style={{ ...td, textAlign: 'center' }}>
+                  <input type="checkbox" checked={s.enabled === 1} onChange={() => toggle(s)} />
+                </td>
+                <td style={td}>{s.label || <span style={{ color: 'var(--text-muted)' }}>(no label)</span>}</td>
+                <td style={{ ...td, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{s.source_id}</td>
+                <td style={td}>{DIFFICULTIES.find(d => d.value === s.difficulty)?.label ?? s.difficulty}</td>
+                <td style={{ ...td, textAlign: 'right' }}>
+                  <button className="btn-icon-danger" onClick={() => remove(s)} title="Remove from manifest">×</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* Add form */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
+        {instances ? (
+          <select className="lh-diff-select" value={addId} onChange={e => setAddId(e.target.value)} style={{ minWidth: 240 }}>
+            <option value="">Select instance…</option>
+            {instances.map(i => <option key={i.id} value={i.id}>{i.name} (#{i.id})</option>)}
+          </select>
+        ) : (
+          <>
+            <input
+              className="config-input config-input-narrow"
+              value={addId}
+              onChange={e => setAddId(e.target.value)}
+              placeholder="Instance ID"
+              style={{ width: 120 }}
+            />
+            <button className="btn-secondary" onClick={loadInstances} disabled={instLoading} style={{ fontSize: 12, padding: '3px 10px' }}>
+              {instLoading ? 'Loading…' : 'Load instance list'}
+            </button>
+          </>
+        )}
+        <select className="lh-diff-select" value={addDiff} onChange={e => setAddDiff(e.target.value)}>
+          {DIFFICULTIES.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+        </select>
+        <button className="btn-secondary" onClick={addSource} disabled={adding || !addId}>
+          {adding ? 'Adding…' : 'Add Source'}
+        </button>
+      </div>
+
+      {/* Sync from manifest */}
+      <div style={{ borderTop: '1px solid var(--border, #333)', paddingTop: 12 }}>
+        <button className="btn-primary" onClick={syncManifest} disabled={syncing || enabledCount === 0}>
+          {syncing ? 'Syncing…' : `Sync from Manifest (${enabledCount} source${enabledCount !== 1 ? 's' : ''})`}
+        </button>
+
+        {syncResult && (
+          <div style={{ marginTop: 12, fontSize: 13 }}>
+            {syncResult.error ? (
+              <p style={{ color: 'var(--danger, #e05)' }}>Error: {syncResult.error}</p>
+            ) : (
+              <>
+                <p style={{ color: 'var(--bis)', marginBottom: 6 }}>
+                  Done — {syncResult.data.total} unique items upserted into the season.
+                </p>
+                <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-muted)' }}>
+                  {(syncResult.data.sources ?? []).map(s => (
+                    <li key={s.id}>{s.label} ({DIFFICULTIES.find(d => d.value === s.difficulty)?.label ?? s.difficulty}) — {s.fetched} items</li>
+                  ))}
+                </ul>
+                {syncResult.data.errors?.length > 0 && (
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: 'var(--danger, #e05)' }}>
+                    {syncResult.data.errors.map((e, i) => <li key={i}>{e}</li>)}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Season Items viewer ───────────────────────────────────────────────────────
 
 function SeasonItemsCard({ seasonId, refreshNonce }) {
@@ -546,6 +757,7 @@ export default function AdminItemDb() {
         </div>
       </div>
 
+      <SourceManifestCard seasonId={seasonId} onItemsChanged={refresh} />
       <ItemDbCard seasonId={seasonId} onStatsChange={refresh} />
       <TierItemsCard seasonId={seasonId} onStatsChange={refresh} />
       <SeasonItemsCard seasonId={seasonId} refreshNonce={nonce} />
