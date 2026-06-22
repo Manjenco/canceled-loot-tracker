@@ -134,13 +134,14 @@ export default function AdminGlobalConfig() {
     setWclSaving(false);
   }
 
-  async function detectTrackRanges() {
+  async function detectWclBonusIds() {
     setDetecting(true); setDetectResult(null);
     try {
-      const r = await fetch(apiPath('/api/admin/detect-track-ranges'), { method: 'POST', credentials: 'include' });
+      const r = await fetch(apiPath('/api/admin/detect-wcl-bonus-ids'), { method: 'POST', credentials: 'include' });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? 'Detect failed');
-      setDetectResult({ ok: true, msg: `Saved ${d.veteranStarts.length} upgrade-track block(s): ${d.veteranStarts.join(', ')}` });
+      if (d.craftedIds?.length) setWclCraftedBonuses(d.craftedIds.join('|')); // reflect the saved value
+      setDetectResult({ ok: true, msg: `Saved ${d.veteranStarts.length} upgrade-track block(s) and ${d.craftedIds.length} crafted marker(s).` });
     } catch (e) {
       setDetectResult({ error: e.message });
     } finally {
@@ -261,16 +262,16 @@ export default function AdminGlobalConfig() {
         <Field label="Zone IDs" hint="Pipe-separated WCL zone IDs for the current tier, e.g. 38|41. Fights outside these zones are excluded.">
           <input className="config-input" value={wclZoneIds} onChange={e => setWclZoneIds(e.target.value)} placeholder="e.g. 38|41" />
         </Field>
-        <Field label="Upgrade Track Bonus IDs" hint="Detect auto-finds every season's Veteran-track start from Blizzard's data (covers current + future seasons, rarely needs re-running). The manual field below is a fallback — Detect takes precedence.">
+        <Field label="Season Bonus IDs (tracks + crafted)" hint="Detect auto-finds, from Blizzard's data, every season's upgrade-track starts AND crafted-gear markers — covering current + future seasons, so it rarely needs re-running. It writes the track list and the Crafted Item Bonus IDs below. The Veteran fallback field is used only if Detect hasn't been run.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="btn-secondary" onClick={detectTrackRanges} disabled={detecting}>
-              {detecting ? 'Detecting…' : 'Detect Track Ranges'}
+            <button type="button" className="btn-secondary" onClick={detectWclBonusIds} disabled={detecting}>
+              {detecting ? 'Detecting…' : 'Detect WCL Bonus IDs'}
             </button>
             <input
               className="config-input config-input-narrow"
               value={wclVeteranBonus}
               onChange={e => setWclVeteranBonus(e.target.value)}
-              placeholder="fallback, e.g. 12777"
+              placeholder="veteran fallback, e.g. 12777"
               title="Manual Veteran start (used only if Detect hasn't been run)"
             />
           </div>

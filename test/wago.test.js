@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId, tierSetCandidates, detectVeteranStarts } from '../src/lib/wago.js';
+import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId, tierSetCandidates, detectVeteranStarts, detectCraftedBonusIds } from '../src/lib/wago.js';
 
 const encounters = [
   { ID: '965',  JournalInstanceID: '476',  Name_lang: 'Ranjit' },
@@ -90,6 +90,22 @@ test('wago M+ rule', async (t) => {
     ];
     const vets = detectVeteranStarts(rows);
     assert.deepEqual(vets, [12777, 12873]); // 12801−24, 12897−24
+  });
+
+  await t.test('detectCraftedBonusIds: all "<brand> Crafted" markers, ignores generic + wrong type', () => {
+    const nd = [
+      { ID: '14217', Description_lang: 'Radiance Crafted' },     // current
+      { ID: '14012', Description_lang: 'Shadowflame Crafted' },  // past season
+      { ID: '13993', Description_lang: 'Crafted' },              // generic — no marker bonus list
+      { ID: '9999',  Description_lang: 'Sword of Doom' },        // not crafted
+    ];
+    const ib = [
+      { Type: '4',  Value_0: '14217', ParentItemBonusListID: '12066' }, // → include
+      { Type: '4',  Value_0: '14012', ParentItemBonusListID: '9366'  }, // → include
+      { Type: '49', Value_0: '14217', ParentItemBonusListID: '12066' }, // wrong type → ignore
+      { Type: '4',  Value_0: '9999',  ParentItemBonusListID: '5555'  }, // non-crafted desc → exclude
+    ];
+    assert.deepEqual(detectCraftedBonusIds(nd, ib), [9366, 12066]);
   });
 
   await t.test('tierSetCandidates: keeps 5-item non-DNT sets, newest first', () => {

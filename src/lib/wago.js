@@ -119,6 +119,29 @@ export function detectVeteranStarts(bonusListGroupEntries) {
 }
 
 /**
+ * PURE — detect the bonus-list IDs that mark CRAFTED gear, across all seasons.
+ *
+ * Crafted gear carries an ItemBonus of Type 4 (ItemNameDescriptionID) pointing at a
+ * per-season "<brand> Crafted" label (e.g. "Radiance Crafted", "Shadowflame Crafted").
+ * So: collect every ItemNameDescription whose text contains "Crafted", then every
+ * bonus-list whose Type-4 row references one of them. Generic labels ("Crafted",
+ * "Rare Crafted") have no marker bonus-list and self-exclude. Returning all seasons'
+ * markers is harmless (only crafted items carry them) and needs no "current" anchor.
+ */
+export function detectCraftedBonusIds(nameDescriptions, itemBonus) {
+  const craftedDescIds = new Set(
+    nameDescriptions.filter(r => /crafted/i.test(r.Description_lang ?? r.Name_lang ?? '')).map(r => String(r.ID))
+  );
+  const ids = new Set();
+  for (const b of itemBonus) {
+    if (String(b.Type) === '4' && craftedDescIds.has(String(b.Value_0))) {
+      ids.add(Number(b.ParentItemBonusListID));
+    }
+  }
+  return [...ids].sort((a, b) => a - b);
+}
+
+/**
  * PURE — tier-set candidates from the ItemSet table: 5-piece, non-system sets,
  * newest first. Tier sets are exactly 5 items (head/shoulder/chest/hands/legs);
  * [DNT] / SetFlags-bit-4 sets are dev/system noise. The caller resolves which of
