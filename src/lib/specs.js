@@ -120,7 +120,7 @@ export const WOW_SPEC_ID_TO_NAME = {
   // Death Knight
   250: 'Blood DK',    251: 'Frost DK',    252: 'Unholy DK',
   // Demon Hunter
-  577: 'Havoc DH',   581: 'Vengeance DH',
+  577: 'Havoc DH',   581: 'Vengeance DH',   1480: 'Devourer DH',
   // Druid
   102: 'Balance Druid', 103: 'Feral Druid', 104: 'Guardian Druid', 105: 'Resto Druid',
   // Evoker
