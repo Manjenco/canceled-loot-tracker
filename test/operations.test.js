@@ -97,6 +97,45 @@ test('data layer operations (season-partitioned)', async (t) => {
     assert.equal(head.true_bis, 'Helm of Testing');
   });
 
+  await t.test('importDefaultBis resolves Blizzard IDs → PKs, stores sentinels/unknowns with null ref', async () => {
+    const res = await db.importDefaultBis(D, 1, 'Wowhead', [
+      { spec: 'Fury', slot: 'Head',   trueBis: 'Helm of Testing', trueBisItemId: '1001', raidBis: 'Helm of Testing', raidBisItemId: '1001' },
+      { spec: 'Fury', slot: 'Chest',  trueBis: '<Tier>',          trueBisItemId: '',     raidBis: '<Tier>',          raidBisItemId: '' },
+      { spec: 'Fury', slot: 'Wrists', trueBis: 'Phantom Bracers', trueBisItemId: '99999', raidBis: '',               raidBisItemId: '' },
+    ]);
+    assert.equal(res.written, 3);
+
+    const helmPk = (await D.prepare("SELECT id FROM item_db WHERE item_id = '1001' AND season_id = 1").first()).id;
+    const rows = await db.getDefaultBis(D, 1);
+    const fury = Object.fromEntries(rows.filter(r => r.spec === 'Fury').map(r => [r.slot, r]));
+
+    // Head: resolved to the helm PK; read-join surfaces the Blizzard id back.
+    assert.equal(fury.Head.true_bis, 'Helm of Testing');
+    assert.equal(fury.Head.true_bis_item_id, '1001');     // joined Blizzard id
+    // Chest: sentinel stored with no item ref.
+    assert.equal(fury.Chest.true_bis, '<Tier>');
+    assert.equal(fury.Chest.true_bis_item_id, '');
+    // Wrists: unknown Blizzard id → text kept, ref null (no FK violation).
+    assert.equal(fury.Wrists.true_bis, 'Phantom Bracers');
+    assert.equal(fury.Wrists.true_bis_item_id, '');
+
+    // Sanity: the raw FK column on Head is the PK, not the Blizzard id.
+    const rawHead = await D.prepare("SELECT true_bis_item_id FROM default_bis WHERE spec='Fury' AND slot='Head' AND season_id=1").first();
+    assert.equal(rawHead.true_bis_item_id, helmPk);
+  });
+
+  await t.test('importDefaultBis upserts on (season,spec,slot,source) instead of duplicating', async () => {
+    // Overwrite Head with a sentinel — proves upsert AND clears the prior item ref
+    // (leaving Blade 1002 unreferenced for the deleteItemDbItems test below).
+    await db.importDefaultBis(D, 1, 'Wowhead', [
+      { spec: 'Fury', slot: 'Head', trueBis: '<Crafted>', trueBisItemId: '', raidBis: '', raidBisItemId: '' },
+    ]);
+    const rows = (await db.getDefaultBis(D, 1)).filter(r => r.spec === 'Fury' && r.slot === 'Head');
+    assert.equal(rows.length, 1, 'still one Head row after re-import');
+    assert.equal(rows[0].true_bis, '<Crafted>');          // overwritten
+    assert.equal(rows[0].true_bis_item_id, '');            // prior ref cleared
+  });
+
   await t.test('raids upsert + read with attendees', async () => {
     await db.upsertRaids(D, teamId, [
       { raidId: 'RPT001', date: '2026-02-01', instance: 'Test Raid', difficulty: 'Mythic', attendeeIds: [c1.ownerId, c2.ownerId] },

@@ -920,6 +920,106 @@ function SeasonItemsCard({ seasonId, refreshNonce }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+// ── Add single item by ID card ──────────────────────────────────────────────────
+
+function AddItemCard({ seasonId, onItemAdded }) {
+  const [itemId,     setItemId]     = useState('');
+  const [difficulty, setDifficulty] = useState('MYTHIC');
+  const [sourceName, setSourceName] = useState('');
+  const [adding,     setAdding]     = useState(false);
+  const [result,     setResult]     = useState(null);
+
+  async function handleAdd() {
+    if (!itemId.trim()) return;
+    setAdding(true); setResult(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/item-db/add-item'), {
+        method:      'POST',
+        credentials: 'include',
+        headers:     { 'Content-Type': 'application/json' },
+        body:        JSON.stringify({
+          itemId: Number(itemId), difficulty,
+          sourceName: sourceName.trim() || undefined, seasonId,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? r.status);
+      setResult({ ok: true, item: d.item });
+      setItemId('');
+      onItemAdded?.();
+    } catch (err) {
+      setResult({ error: err.message });
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Add Item by ID</div>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Manually add a single item to this season's Item DB by Blizzard item ID — for raid BoEs and
+        other drops that don't sit on a journal manifest. Slot and armor type are derived
+        automatically; re-adding an existing ID updates it.
+      </p>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ flex: '0 0 auto' }}>
+          <label className="config-label" style={{ display: 'block', marginBottom: 4 }}>Item ID</label>
+          <input
+            className="config-input config-input-narrow"
+            value={itemId}
+            onChange={e => setItemId(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="e.g. 249287"
+            disabled={adding}
+            style={{ width: 120 }}
+          />
+        </div>
+
+        <div style={{ flex: '0 0 auto' }}>
+          <label className="config-label" style={{ display: 'block', marginBottom: 4 }}>Difficulty</label>
+          <select className="lh-diff-select" value={difficulty} onChange={e => setDifficulty(e.target.value)} disabled={adding}>
+            {DIFFICULTIES.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+          </select>
+        </div>
+
+        <div style={{ flex: '0 0 auto' }}>
+          <label className="config-label" style={{ display: 'block', marginBottom: 4 }}>Source label (optional)</label>
+          <input
+            className="config-input"
+            value={sourceName}
+            onChange={e => setSourceName(e.target.value)}
+            placeholder="BoE"
+            disabled={adding}
+            style={{ width: 160 }}
+          />
+        </div>
+
+        <button
+          className="btn-primary"
+          onClick={handleAdd}
+          disabled={adding || !itemId.trim() || !seasonId}
+          style={{ alignSelf: 'flex-end' }}
+        >
+          {adding ? 'Adding…' : 'Add Item'}
+        </button>
+      </div>
+
+      {result && (
+        result.ok
+          ? (
+            <p style={{ fontSize: 13, color: 'var(--bis)', marginBottom: 0 }}>
+              Added <ItemLink name={result.item.name} itemId={result.item.itemId} /> —{' '}
+              {result.item.slot} · {result.item.armorType} · {result.item.sourceType} ({result.item.difficulty}).
+            </p>
+          )
+          : <p style={{ fontSize: 13, color: 'var(--danger, #e05)', marginBottom: 0 }}>Error: {result.error}</p>
+      )}
+    </div>
+  );
+}
+
 export default function AdminItemDb() {
   const [seasons,  setSeasons]  = useState([]);
   const [seasonId, setSeasonId] = useState(null);
@@ -997,6 +1097,7 @@ export default function AdminItemDb() {
       <SourceManifestCard seasonId={seasonId} />
       <ManifestUpdateCard seasonId={seasonId} onItemsChanged={refresh} />
       <ItemDbCard seasonId={seasonId} onStatsChange={refresh} />
+      <AddItemCard seasonId={seasonId} onItemAdded={refresh} />
       <TierItemsCard seasonId={seasonId} onStatsChange={refresh} />
       <SeasonItemsCard seasonId={seasonId} refreshNonce={nonce} />
     </div>

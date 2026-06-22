@@ -860,6 +860,53 @@ export async function setSpecBisSource(db, seasonId, spec, source) {
 }
 
 /**
+ * Import (upsert) base Default BIS seed rows for a spec × source within a season.
+ * This is the season-aware write path used by the in-app guide importer — it replaces
+ * the retired Sheets-based seed script.
+ *
+ * Each row: { spec, slot, trueBis, trueBisItemId, raidBis, raidBisItemId }, where
+ * trueBisItemId / raidBisItemId are Blizzard item IDs (strings), '', or a sentinel.
+ * Blizzard IDs are resolved to item_db(id) PKs for this season; sentinels / unknown
+ * IDs store a null item ref (the text in true_bis / raid_bis is preserved either way).
+ *
+ * Upserts on the UNIQUE(season_id, spec, slot, source) key, so re-importing a spec
+ * overwrites its prior rows for that source rather than duplicating them.
+ * Returns { written }.
+ */
+export async function importDefaultBis(db, seasonId, source, rows) {
+  if (!rows?.length) return { written: 0 };
+
+  // Blizzard item_id (string) → item_db PK for this season.
+  const itemRows = await all(db, 'SELECT id, item_id FROM item_db WHERE season_id = ?', seasonId);
+  const pkByBlizzard = new Map(itemRows.map(r => [String(r.item_id), r.id]));
+  const resolvePk = (v) => (v && /^\d+$/.test(String(v))) ? (pkByBlizzard.get(String(v)) ?? null) : null;
+
+  const stmts = rows.map(r => db.prepare(
+    `INSERT INTO default_bis
+       (season_id, spec, slot, true_bis, true_bis_item_id, raid_bis, raid_bis_item_id, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(season_id, spec, slot, source) DO UPDATE SET
+       true_bis         = excluded.true_bis,
+       true_bis_item_id = excluded.true_bis_item_id,
+       raid_bis         = excluded.raid_bis,
+       raid_bis_item_id = excluded.raid_bis_item_id`
+  ).bind(
+    seasonId, r.spec, r.slot,
+    r.trueBis ?? '', resolvePk(r.trueBisItemId),
+    r.raidBis ?? '', resolvePk(r.raidBisItemId),
+    source
+  ));
+
+  for (let i = 0; i < stmts.length; i += 80) {
+    await db.batch(stmts.slice(i, i + 80));
+  }
+
+  cacheInvalidate(`default_bis:${seasonId}`);
+  cacheInvalidatePrefix(`effective_default_bis:${seasonId}:`);
+  return { written: rows.length };
+}
+
+/**
  * Narrow variant: returns effective default BIS rows for a single canonical spec.
  * Reads ~16 rows instead of the full 1,249-row table. Use this on the dashboard;
  * keep getEffectiveDefaultBis() for pages that need all specs (council, admin).
