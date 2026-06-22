@@ -69,6 +69,14 @@ export default function AdminGlobalConfig() {
   const [wclCraftedBonuses, setWclCraftedBonuses] = useState('');
   const [wclResult,         setWclResult]         = useState(null);
   const [wclSaving,         setWclSaving]         = useState(false);
+  const [detecting,         setDetecting]         = useState(false);
+  const [detectResult,      setDetectResult]      = useState(null);
+
+  // Expansion overrides (deploy-free patches over code defaults)
+  const [specOverrides,    setSpecOverrides]    = useState('');
+  const [tokenOverrides,   setTokenOverrides]   = useState('');
+  const [overridesResult,  setOverridesResult]  = useState(null);
+  const [overridesSaving,  setOverridesSaving]  = useState(false);
 
   // Migration (Sheets → D1)
   const [migrating,     setMigrating]     = useState(false);
@@ -97,6 +105,8 @@ export default function AdminGlobalConfig() {
         setWclZoneIds(        c.wcl_zone_ids              ?? '');
         setWclVeteranBonus(   c.wcl_veteran_bonus_id      ?? '');
         setWclCraftedBonuses( c.wcl_crafted_bonus_ids     ?? '');
+        setSpecOverrides(     c.spec_id_overrides         ?? '');
+        setTokenOverrides(    c.token_slot_overrides      ?? '');
         if (migData.error) setDbMigrationsErr(migData.error);
         else               setDbMigrations(migData.migrations ?? []);
       })
@@ -115,6 +125,15 @@ export default function AdminGlobalConfig() {
     setDiscordSaving(false);
   }
 
+  async function saveOverrides() {
+    setOverridesSaving(true); setOverridesResult(null);
+    setOverridesResult(await saveFields([
+      ['spec_id_overrides',    specOverrides],
+      ['token_slot_overrides', tokenOverrides],
+    ]));
+    setOverridesSaving(false);
+  }
+
   async function saveCurio() {
     setCurioSaving(true); setCurioResult(null);
     setCurioResult(await saveFields([['curio_item_id', curioItemId]]));
@@ -130,6 +149,21 @@ export default function AdminGlobalConfig() {
       ['wcl_crafted_bonus_ids', wclCraftedBonuses],
     ]));
     setWclSaving(false);
+  }
+
+  async function detectWclBonusIds() {
+    setDetecting(true); setDetectResult(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/detect-wcl-bonus-ids'), { method: 'POST', credentials: 'include' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Detect failed');
+      if (d.craftedIds?.length) setWclCraftedBonuses(d.craftedIds.join('|')); // reflect the saved value
+      setDetectResult({ ok: true, msg: `Saved ${d.veteranStarts.length} upgrade-track block(s) and ${d.craftedIds.length} crafted marker(s).` });
+    } catch (e) {
+      setDetectResult({ error: e.message });
+    } finally {
+      setDetecting(false);
+    }
   }
 
   async function runDbMigrations() {
@@ -245,8 +279,20 @@ export default function AdminGlobalConfig() {
         <Field label="Zone IDs" hint="Pipe-separated WCL zone IDs for the current tier, e.g. 38|41. Fights outside these zones are excluded.">
           <input className="config-input" value={wclZoneIds} onChange={e => setWclZoneIds(e.target.value)} placeholder="e.g. 38|41" />
         </Field>
-        <Field label="Veteran Track Bonus ID" hint="Starting bonus ID of the Veteran upgrade track. Each track uses 8 consecutive IDs. Update each new season.">
-          <input className="config-input config-input-narrow" value={wclVeteranBonus} onChange={e => setWclVeteranBonus(e.target.value)} placeholder="e.g. 12777" />
+        <Field label="Season Bonus IDs (tracks + crafted)" hint="Detect auto-finds, from Blizzard's data, every season's upgrade-track starts AND crafted-gear markers — covering current + future seasons, so it rarely needs re-running. It writes the track list and the Crafted Item Bonus IDs below. The Veteran fallback field is used only if Detect hasn't been run.">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="btn-secondary" onClick={detectWclBonusIds} disabled={detecting}>
+              {detecting ? 'Detecting…' : 'Detect WCL Bonus IDs'}
+            </button>
+            <input
+              className="config-input config-input-narrow"
+              value={wclVeteranBonus}
+              onChange={e => setWclVeteranBonus(e.target.value)}
+              placeholder="veteran fallback, e.g. 12777"
+              title="Manual Veteran start (used only if Detect hasn't been run)"
+            />
+          </div>
+          <ResultMsg result={detectResult} />
         </Field>
         <Field label="Crafted Item Bonus IDs" hint="Pipe-separated bonus IDs that identify crafted items in WCL gear data. Update each new season.">
           <input className="config-input" value={wclCraftedBonuses} onChange={e => setWclCraftedBonuses(e.target.value)} placeholder="e.g. 9481|9513" />
@@ -255,6 +301,25 @@ export default function AdminGlobalConfig() {
           {wclSaving ? 'Saving…' : 'Save'}
         </button>
         <ResultMsg result={wclResult} />
+      </div>
+
+      {/* ── Expansion Overrides ──────────────────────────────────────────── */}
+      <div className="card" style={{ marginTop: 24 }}>
+        <div className="card-title">Expansion Overrides (advanced)</div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+          Deploy-free patches for the two values still baked into code. Each merges <em>over</em> the
+          built-in defaults — leave blank unless a new expansion broke detection. Normally untouched.
+        </p>
+        <Field label="Spec ID Overrides" hint="Add/correct WoW spec-ID → spec-name entries for WCL parsing. Pipe-separated id:name pairs, e.g. 1480:Devourer DH|9999:New Spec.">
+          <input className="config-input" value={specOverrides} onChange={e => setSpecOverrides(e.target.value)} placeholder="e.g. 1480:Devourer DH" />
+        </Field>
+        <Field label="Tier Token Slot Overrides" hint="Map a new expansion's tier-token flavor word → slot. Pipe-separated word:slot pairs, e.g. Newword:Head|Otherword:Legs. Slot must be Head/Shoulders/Chest/Hands/Legs.">
+          <input className="config-input" value={tokenOverrides} onChange={e => setTokenOverrides(e.target.value)} placeholder="e.g. Riftbloom:Chest|Fanatical:Head" />
+        </Field>
+        <button className="btn-primary" onClick={saveOverrides} disabled={overridesSaving}>
+          {overridesSaving ? 'Saving…' : 'Save'}
+        </button>
+        <ResultMsg result={overridesResult} />
       </div>
 
       {/* ── Database Migrations ──────────────────────────────────────────── */}

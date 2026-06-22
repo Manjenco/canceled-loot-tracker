@@ -132,12 +132,21 @@ export async function createSeason(db, { name, startDate, isCurrent = false }) {
   return result.meta?.last_row_id;
 }
 
-export async function updateSeason(db, seasonId, { name, startDate }) {
+export async function updateSeason(db, seasonId, { name, startDate, mplusWse }) {
   await run(db,
-    'UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date) WHERE id = ?',
-    name ?? null, startDate ?? null, seasonId
+    `UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date),
+       mplus_wse = COALESCE(?, mplus_wse) WHERE id = ?`,
+    name ?? null, startDate ?? null,
+    (mplusWse === undefined || mplusWse === null || mplusWse === '') ? null : Number(mplusWse),
+    seasonId
   );
   cacheInvalidate('current_season');
+}
+
+/** Current M+ WorldStateExpressionID gate for a season (null if unset). */
+export async function getSeasonMplusWse(db, seasonId) {
+  const row = await first(db, 'SELECT mplus_wse FROM seasons WHERE id = ?', seasonId);
+  return row?.mplus_wse ?? null;
 }
 
 /**
@@ -759,6 +768,63 @@ export async function writeItemDb(db, items, seasonId, { replace = false } = {})
   }
 }
 
+/** Set of item_db.id values referenced by this season's default_bis (the only hard FKs to item_db). */
+export async function getDefaultBisItemRefs(db, seasonId) {
+  const rows = await all(db,
+    'SELECT true_bis_item_id, raid_bis_item_id FROM default_bis WHERE season_id = ?', seasonId);
+  const refs = new Set();
+  for (const r of rows) {
+    if (r.true_bis_item_id) refs.add(r.true_bis_item_id);
+    if (r.raid_bis_item_id) refs.add(r.raid_bis_item_id);
+  }
+  return refs;
+}
+
+/**
+ * Hard-delete items from a season by Blizzard item_id, after a hard-reference guard.
+ * default_bis.true_bis_item_id / raid_bis_item_id are the only true FKs to item_db(id);
+ * if any item being removed is referenced there, the whole delete is aborted with an
+ * ITEM_REFERENCED error naming them (so the officer clears those Default BIS entries first).
+ * Returns { deleted }.
+ */
+export async function deleteItemDbItems(db, seasonId, itemIds) {
+  if (!itemIds.length) return { deleted: 0 };
+  const ph  = itemIds.map(() => '?').join(',');
+  const rows = await all(db,
+    `SELECT id, item_id, name FROM item_db WHERE season_id = ? AND item_id IN (${ph})`,
+    seasonId, ...itemIds.map(String)
+  );
+  if (!rows.length) return { deleted: 0 };
+
+  const pks    = rows.map(r => r.id);
+  const byPk   = new Map(rows.map(r => [r.id, r]));
+  const pkPh   = pks.map(() => '?').join(',');
+  const refRows = await all(db,
+    `SELECT true_bis_item_id, raid_bis_item_id FROM default_bis
+     WHERE season_id = ? AND (true_bis_item_id IN (${pkPh}) OR raid_bis_item_id IN (${pkPh}))`,
+    seasonId, ...pks, ...pks
+  );
+  if (refRows.length) {
+    const refPks = new Set();
+    for (const r of refRows) {
+      if (pks.includes(r.true_bis_item_id)) refPks.add(r.true_bis_item_id);
+      if (pks.includes(r.raid_bis_item_id)) refPks.add(r.raid_bis_item_id);
+    }
+    const names = [...refPks].map(pk => byPk.get(pk)?.name).filter(Boolean);
+    const err = new Error(
+      `Cannot remove ${names.length} item(s) referenced by Default BIS: ${names.join(', ')}. ` +
+      'Clear those Default BIS entries first.'
+    );
+    err.code = 'ITEM_REFERENCED';
+    throw err;
+  }
+
+  await run(db, `DELETE FROM item_db WHERE season_id = ? AND id IN (${pkPh})`, seasonId, ...pks);
+  cacheInvalidate(`item_db:${seasonId}`);
+  cacheInvalidatePrefix(`item_db_armor:${seasonId}:`);
+  return { deleted: pks.length };
+}
+
 // ── Default BIS ───────────────────────────────────────────────────────────────
 
 export async function getDefaultBis(db, seasonId) {
@@ -938,6 +1004,35 @@ export async function setTierItems(db, seasonId, items) {
   for (const item of items) {
     await stmt.bind(seasonId, item.class, item.slot, item.itemId).run();
   }
+}
+
+// ── Season sources (item-source manifest) ──────────────────────────────────────
+
+export async function getSeasonSources(db, seasonId) {
+  return cachedRead(`season_sources:${seasonId}`, TTL.SHORT, () =>
+    all(db, 'SELECT * FROM season_sources WHERE season_id = ? ORDER BY source_type, label, difficulty', seasonId)
+  );
+}
+
+export async function addSeasonSource(db, seasonId, { sourceType = 'raid', sourceId, difficulty = 'MYTHIC', label = '' }) {
+  await run(db,
+    `INSERT INTO season_sources (season_id, source_type, source_id, difficulty, label)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(season_id, source_id, difficulty) DO UPDATE SET
+       source_type = excluded.source_type, label = excluded.label, enabled = 1`,
+    seasonId, sourceType, Number(sourceId), difficulty, label
+  );
+  cacheInvalidate(`season_sources:${seasonId}`);
+}
+
+export async function removeSeasonSource(db, seasonId, id) {
+  await run(db, 'DELETE FROM season_sources WHERE id = ? AND season_id = ?', id, seasonId);
+  cacheInvalidate(`season_sources:${seasonId}`);
+}
+
+export async function setSeasonSourceEnabled(db, seasonId, id, enabled) {
+  await run(db, 'UPDATE season_sources SET enabled = ? WHERE id = ? AND season_id = ?', enabled ? 1 : 0, id, seasonId);
+  cacheInvalidate(`season_sources:${seasonId}`);
 }
 
 // ── Raids ─────────────────────────────────────────────────────────────────────

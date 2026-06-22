@@ -24,6 +24,7 @@ import {
   getSeasons, createSeason, updateSeason, setCurrentSeason,
 } from '../../../lib/db.js';
 import { MIGRATIONS } from '../../../lib/migrations.js';
+import { fetchWagoTable, detectVeteranStarts, detectCraftedBonusIds } from '../../../lib/wago.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
 import { runWclSyncForTeam, runWclSyncWornBisOnly, runAttendanceBackfill } from '../../../lib/wcl-sync.js';
@@ -560,6 +561,34 @@ router.post('/global-config', requireGlobalOfficer, async (c) => {
   }
 });
 
+// ── POST /api/admin/detect-wcl-bonus-ids ──────────────────────────────────────
+// Auto-detect the season-specific WCL bonus IDs from DB2 (wago) and save them:
+//   • wcl_track_veteran_ids — every season's Veteran-track start (upgrade-track detection)
+//   • wcl_crafted_bonus_ids — every season's "<brand> Crafted" marker (crafted detection)
+// Both cover all live + staged blocks, so this rarely needs re-running.
+
+router.post('/detect-wcl-bonus-ids', requireGlobalOfficer, async (c) => {
+  const db = c.env.DB;
+  try {
+    const [groupEntries, nameDescriptions, itemBonus] = await Promise.all([
+      fetchWagoTable('ItemBonusListGroupEntry'),
+      fetchWagoTable('ItemNameDescription'),
+      fetchWagoTable('ItemBonus'),
+    ]);
+    const veteranStarts = detectVeteranStarts(groupEntries);
+    const craftedIds    = detectCraftedBonusIds(nameDescriptions, itemBonus);
+    if (!veteranStarts.length && !craftedIds.length) {
+      return c.json({ error: 'No track or crafted bonus IDs found in DB2.' }, 500);
+    }
+    if (veteranStarts.length) await setGlobalConfigValue(db, 'wcl_track_veteran_ids', veteranStarts.join('|'));
+    if (craftedIds.length)    await setGlobalConfigValue(db, 'wcl_crafted_bonus_ids', craftedIds.join('|'));
+    return c.json({ ok: true, veteranStarts, craftedIds });
+  } catch (err) {
+    console.error('[admin] detect-wcl-bonus-ids error:', err);
+    return c.json({ error: err.message ?? 'Detect failed' }, 500);
+  }
+});
+
 // ── POST /api/admin/migrate-from-sheets ───────────────────────────────────────
 
 router.post('/migrate-from-sheets', requireGlobalOfficer, async (c) => {
@@ -967,9 +996,9 @@ router.put('/seasons/:id', requireGlobalOfficer, async (c) => {
   if (!id) return c.json({ error: 'Invalid season id' }, 400);
   let body;
   try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
-  const { name, startDate } = body ?? {};
+  const { name, startDate, mplusWse } = body ?? {};
   try {
-    await updateSeason(db, id, { name, startDate });
+    await updateSeason(db, id, { name, startDate, mplusWse });
     return c.json({ ok: true });
   } catch (err) {
     console.error('[admin] PUT /seasons/:id error:', err);

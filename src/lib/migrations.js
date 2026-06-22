@@ -271,4 +271,41 @@ DROP TABLE _loot_summary_old;
 CREATE INDEX idx_loot_summary_owner ON loot_summary(season_id, team_id, owner_id);
 `.trim(),
   },
+
+  {
+    name: '0006_season_sources',
+    description: 'Add season_sources manifest table (per-season Blizzard item-source tracking)',
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'season_sources'"
+      ).first();
+      return !!row;
+    },
+    sql: `
+CREATE TABLE season_sources (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  season_id   INTEGER NOT NULL DEFAULT 1 REFERENCES seasons(id),
+  source_type TEXT    NOT NULL DEFAULT 'raid',
+  source_id   INTEGER NOT NULL,
+  difficulty  TEXT    NOT NULL DEFAULT 'MYTHIC',
+  label       TEXT    NOT NULL DEFAULT '',
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  added_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (season_id, source_id, difficulty)
+);
+CREATE INDEX idx_season_sources_season ON season_sources(season_id);
+`.trim(),
+  },
+
+  {
+    name: '0007_season_mplus_wse',
+    description: 'Add mplus_wse (current M+ WorldStateExpressionID gate) to seasons',
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM pragma_table_info('seasons') WHERE name = 'mplus_wse'"
+      ).first();
+      return !!row;
+    },
+    sql: `ALTER TABLE seasons ADD COLUMN mplus_wse INTEGER DEFAULT NULL`,
+  },
 ];
