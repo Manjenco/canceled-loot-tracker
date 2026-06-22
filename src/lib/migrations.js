@@ -296,4 +296,16 @@ CREATE TABLE season_sources (
 CREATE INDEX idx_season_sources_season ON season_sources(season_id);
 `.trim(),
   },
+
+  {
+    name: '0007_season_mplus_wse',
+    description: 'Add mplus_wse (current M+ WorldStateExpressionID gate) to seasons',
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM pragma_table_info('seasons') WHERE name = 'mplus_wse'"
+      ).first();
+      return !!row;
+    },
+    sql: `ALTER TABLE seasons ADD COLUMN mplus_wse INTEGER DEFAULT NULL`,
+  },
 ];

@@ -20,7 +20,8 @@ CREATE TABLE seasons (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT    NOT NULL DEFAULT 'Season 1',
   start_date TEXT    NOT NULL DEFAULT '',  -- ISO date, e.g. "2025-01-21"
-  is_current INTEGER NOT NULL DEFAULT 0    -- 1 = active season
+  is_current INTEGER NOT NULL DEFAULT 0,   -- 1 = active season
+  mplus_wse  INTEGER DEFAULT NULL          -- current M+ WorldStateExpressionID gate (DB2); per season
 );
 
 -- Raid and M+ item database, seeded via /admin → Sync Loot Tables

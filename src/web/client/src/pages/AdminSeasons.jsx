@@ -48,7 +48,7 @@ export default function AdminSeasons() {
 
   function hydrate(list) {
     setSeasons(list);
-    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date) }])));
+    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '' }])));
   }
 
   async function refresh() {
@@ -67,14 +67,18 @@ export default function AdminSeasons() {
   const setEdit = (id, patch) => setEdits(e => ({ ...e, [id]: { ...e[id], ...patch } }));
 
   async function saveSeason(id) {
-    const { name, startDate } = edits[id];
+    const { name, startDate, mplusWse } = edits[id];
     if (!name?.trim()) { setRow(id, { result: { error: 'Name is required' } }); return; }
     setRow(id, { saving: true, result: null });
     try {
       const r = await fetch(apiPath(`/api/admin/seasons/${id}`), {
         method: 'PUT', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), startDate: startDate ?? '' }),
+        body: JSON.stringify({
+          name: name.trim(),
+          startDate: startDate ?? '',
+          mplusWse: (mplusWse === '' || mplusWse == null) ? null : Number(mplusWse),
+        }),
       });
       const d = await r.json();
       setRow(id, { result: d.ok ? { ok: true } : { error: d.error ?? 'Save failed' } });
@@ -109,6 +113,27 @@ export default function AdminSeasons() {
     }
   }
 
+  async function detectWse(id) {
+    setRow(id, { detecting: true, result: null });
+    try {
+      const r = await fetch(apiPath('/api/admin/item-db/detect-mplus-wse'), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seasonId: id }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Detect failed');
+      const top = d.suggestions?.[0];
+      if (!top) { setRow(id, { result: { error: 'No shared WSE found across this season’s M+ sources.' } }); return; }
+      setEdit(id, { mplusWse: String(top.wse) });
+      setRow(id, { result: { ok: true, msg: `Suggested WSE ${top.wse} (shared by ${top.dungeonCount} dungeon${top.dungeonCount !== 1 ? 's' : ''}). Review, then Save.` } });
+    } catch (e) {
+      setRow(id, { result: { error: e.message } });
+    } finally {
+      setRow(id, { detecting: false });
+    }
+  }
+
   async function createSeason() {
     if (!newName.trim()) { setCreateResult({ error: 'Name is required' }); return; }
     setCreating(true); setCreateResult(null);
@@ -138,7 +163,9 @@ export default function AdminSeasons() {
 
   const dirty = (s) => {
     const e = edits[s.id] ?? {};
-    return e.name !== s.name || (e.startDate ?? '') !== normaliseDate(s.start_date);
+    return e.name !== s.name
+      || (e.startDate ?? '') !== normaliseDate(s.start_date)
+      || String(e.mplusWse ?? '') !== String(s.mplus_wse ?? '');
   };
 
   return (
@@ -159,6 +186,7 @@ export default function AdminSeasons() {
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 60 }}>ID</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500 }}>Name</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 160 }}>Start Date</th>
+              <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 200 }} title="Current Mythic+ WorldStateExpression gate (DB2). Used to pick this season's M+ loot.">M+ WSE</th>
               <th style={{ textAlign: 'center', padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 110 }}>Current</th>
               <th style={{ textAlign: 'right',  padding: '4px 0 8px',     color: 'var(--text-muted)', fontWeight: 500, width: 220 }}>Actions</th>
             </tr>
@@ -185,6 +213,24 @@ export default function AdminSeasons() {
                       onChange={ev => setEdit(s.id, { startDate: ev.target.value })}
                       placeholder="YYYY-MM-DD"
                     />
+                  </td>
+                  <td style={{ padding: '8px 8px 8px 0', whiteSpace: 'nowrap' }}>
+                    <input
+                      className="config-input config-input-narrow"
+                      style={{ width: 84 }}
+                      value={e.mplusWse ?? ''}
+                      onChange={ev => setEdit(s.id, { mplusWse: ev.target.value })}
+                      placeholder="WSE id"
+                    />
+                    <button
+                      className="btn-secondary"
+                      style={{ marginLeft: 6, fontSize: 12, padding: '3px 8px' }}
+                      onClick={() => detectWse(s.id)}
+                      disabled={rs.detecting}
+                      title="Suggest the WSE shared across this season's M+ manifest sources"
+                    >
+                      {rs.detecting ? '…' : 'Detect'}
+                    </button>
                   </td>
                   <td style={{ padding: '8px 8px 8px 0', textAlign: 'center' }}>
                     {s.is_current

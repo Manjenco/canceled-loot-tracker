@@ -132,12 +132,21 @@ export async function createSeason(db, { name, startDate, isCurrent = false }) {
   return result.meta?.last_row_id;
 }
 
-export async function updateSeason(db, seasonId, { name, startDate }) {
+export async function updateSeason(db, seasonId, { name, startDate, mplusWse }) {
   await run(db,
-    'UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date) WHERE id = ?',
-    name ?? null, startDate ?? null, seasonId
+    `UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date),
+       mplus_wse = COALESCE(?, mplus_wse) WHERE id = ?`,
+    name ?? null, startDate ?? null,
+    (mplusWse === undefined || mplusWse === null || mplusWse === '') ? null : Number(mplusWse),
+    seasonId
   );
   cacheInvalidate('current_season');
+}
+
+/** Current M+ WorldStateExpressionID gate for a season (null if unset). */
+export async function getSeasonMplusWse(db, seasonId) {
+  const row = await first(db, 'SELECT mplus_wse FROM seasons WHERE id = ?', seasonId);
+  return row?.mplus_wse ?? null;
 }
 
 /**

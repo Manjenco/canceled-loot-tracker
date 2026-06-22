@@ -15,11 +15,12 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getGlobalConfig, writeItemDb, setTierItems, getTierItems, getItemDb, getCurrentSeasonId, getSeasons,
   getSeasonSources, addSeasonSource, removeSeasonSource, setSeasonSourceEnabled,
-  getDefaultBisItemRefs, deleteItemDbItems,
+  getDefaultBisItemRefs, deleteItemDbItems, getSeasonMplusWse,
 } from '../../../lib/db.js';
 import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
-import { mapItem, TIER_ITEM_SLOT_MAP, filterSeasonalMplusItems } from '../../../lib/item-seeder.js';
+import { mapItem, TIER_ITEM_SLOT_MAP } from '../../../lib/item-seeder.js';
+import { computeMplusItemPicks, fetchWagoTable, detectSeasonWse } from '../../../lib/wago.js';
 
 const router = new Hono();
 
@@ -72,13 +73,42 @@ async function getBlizzardCreds(db, env) {
 // ── Manifest diff helpers ─────────────────────────────────────────────────────
 
 /**
- * Fetch one source's items, mapped to item_db rows. For Mythic+ pulls the per-dungeon
- * seasonal filter is applied (drop off-season stragglers + NON_EQUIP junk); raids are
- * returned as-is.
+ * Fetch one source's items, mapped to item_db rows.
+ *  - Raids / current-expansion content: the Blizzard journal is authoritative.
+ *  - Mythic+ (MYTHIC_KEYSTONE): the REST journal mixes legacy + current for reused
+ *    dungeons with no discriminator, so we derive the CURRENT item-id set from the
+ *    DB2 journal tables (wago.tools) using the season's WorldStateExpression gate,
+ *    then fetch those items' details from Blizzard and map them. (NON_EQUIP junk is
+ *    dropped by mapItem.)
  */
-async function fetchSourceItems(creds, sourceId, difficulty) {
-  let raw = await fetchRaidItems(Number(sourceId), difficulty, creds);
-  if (difficulty === 'MYTHIC_KEYSTONE') raw = filterSeasonalMplusItems(raw);
+async function fetchSourceItems(db, env, source, seasonId) {
+  const creds      = await getBlizzardCreds(db, env);
+  const difficulty = source.difficulty;
+
+  if (difficulty === 'MYTHIC_KEYSTONE') {
+    const seasonWse = await getSeasonMplusWse(db, seasonId);
+    if (!seasonWse) {
+      throw new Error('No Mythic+ WorldStateExpression set for this season — set it on the Seasons page (or use Detect) before syncing M+ sources.');
+    }
+    const [instances, encounters, encounterItems] = await Promise.all([
+      fetchWagoTable('JournalInstance'),
+      fetchWagoTable('JournalEncounter'),
+      fetchWagoTable('JournalEncounterItem'),
+    ]);
+    const instanceName = instances.find(r => String(r.ID) === String(source.source_id))?.Name_lang ?? String(source.source_id);
+    const picks = computeMplusItemPicks(encounters, encounterItems, source.source_id, seasonWse);
+    const detailed = await pLimit(
+      picks.map(p => () =>
+        getItemDetails(Number(p.itemId), creds)
+          .then(details => mapItem({ details, encounterName: p.encounterName, instanceName, difficulty }))
+          .catch(() => null)
+      ),
+      8,
+    );
+    return detailed.filter(Boolean);
+  }
+
+  const raw = await fetchRaidItems(Number(source.source_id), difficulty, creds);
   return raw.map(mapItem).filter(Boolean);
 }
 
@@ -89,13 +119,13 @@ async function fetchSourceItems(creds, sourceId, difficulty) {
  */
 async function fetchManifestDesired(db, env, seasonId) {
   const sources = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
-  const creds   = await getBlizzardCreds(db, env);
+  await getBlizzardCreds(db, env); // fail fast if Blizzard creds are missing
   const perSource = [];
   const errors    = [];
   const items     = [];
   for (const src of sources) {
     try {
-      const mapped = await fetchSourceItems(creds, src.source_id, src.difficulty);
+      const mapped = await fetchSourceItems(db, env, src, seasonId);
       items.push(...mapped);
       perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: mapped.length });
     } catch (err) {
@@ -203,10 +233,9 @@ router.post('/sync', async (c) => {
 
   try {
     const seasonId = await resolveSeasonId(db, reqSeason);
-    const creds = await getBlizzardCreds(db, c.env);
 
-    // Fetch items from Blizzard (Mythic+ pulls get the per-dungeon seasonal filter)
-    const items = await fetchSourceItems(creds, instanceId, difficulty);
+    // Fetch items (raids via journal; Mythic+ via the DB2 current-season rule)
+    const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId);
 
     if (!items.length) {
       return c.json({ ok: true, written: 0, skipped: 0, total: 0, instanceName: '(unknown)', message: 'No mappable items found for this instance/difficulty.' });
@@ -310,6 +339,31 @@ router.delete('/sources/:id', async (c) => {
     await removeSeasonSource(db, seasonId, id);
     return c.json({ ok: true });
   } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── POST /detect-mplus-wse ────────────────────────────────────────────────────
+// Suggest the current season's Mythic+ WorldStateExpression gate by finding the
+// WSE shared across the season's manifest M+ sources (the gated import dungeons).
+
+router.post('/detect-mplus-wse', async (c) => {
+  const db = c.env.DB;
+  const { seasonId: reqSeason } = await c.req.json().catch(() => ({}));
+  try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
+    const mplus = (await getSeasonSources(db, seasonId)).filter(s => s.difficulty === 'MYTHIC_KEYSTONE');
+    if (!mplus.length) {
+      return c.json({ error: 'Add this season’s Mythic+ dungeons to the manifest first, then detect.' }, 400);
+    }
+    const [encounters, encounterItems] = await Promise.all([
+      fetchWagoTable('JournalEncounter'),
+      fetchWagoTable('JournalEncounterItem'),
+    ]);
+    const suggestions = detectSeasonWse(encounters, encounterItems, mplus.map(s => s.source_id)).slice(0, 5);
+    return c.json({ seasonId, suggestions });
+  } catch (err) {
+    console.error('[admin-items] detect-mplus-wse error:', err);
     return c.json({ error: err.message }, 500);
   }
 });
