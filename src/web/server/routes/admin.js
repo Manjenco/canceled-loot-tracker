@@ -18,6 +18,7 @@ import {
   approveBisSubmission, rejectBisSubmission, getTeamConfig, setTeamConfigValue, clearWornBis,
   invalidateWornBisSlots, getRoster, approvePrimarySpecChange, rejectPrimarySpecChange,
   getEffectiveDefaultBis, getEffectiveDefaultBisForSpec, getAllTeams, getGlobalConfig, setGlobalConfigValue,
+  importDefaultBis, getTierItems,
   getRclcResponseMapRows, setRclcResponseMap, getRosterPendingSpecChanges,
   getBisSubmissionsPending, getBisSubmissionsForChar, rebuildLootSummary,
   getAppliedMigrations, runMigrations, getCurrentSeasonId,
@@ -26,6 +27,7 @@ import {
 import { MIGRATIONS } from '../../../lib/migrations.js';
 import { fetchWagoTable, detectVeteranStarts, detectCraftedBonusIds } from '../../../lib/wago.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
+import { parseBisDocument, resolveBisItems, bisGuideUrl, splitSpecClass, ALL_SLOTS as BIS_SLOTS, VALID_SOURCES as BIS_SOURCES } from '../../../lib/bis-parser.js';
 import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
 import { runWclSyncForTeam, runWclSyncWornBisOnly, runAttendanceBackfill } from '../../../lib/wcl-sync.js';
 import {
@@ -84,6 +86,36 @@ function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '', raidOnly = 
       const db = DIFF_ORDER[b.difficulty] ?? 9;
       return da !== db ? da - db : a.name.localeCompare(b.name);
     });
+}
+
+/**
+ * After a spec's effective Default BIS changes (override save or base import),
+ * invalidate Worn BIS for every roster character on that spec whose affected slots
+ * fall back to the default (i.e. have no approved personal submission for that slot).
+ * Spans all teams since Default BIS is guild-wide.
+ */
+async function invalidateWornBisForSpec(db, seasonId, canonicalSpec, changedSlots) {
+  if (!changedSlots.size) return;
+  const allTeams = await getAllTeams(db);
+  await Promise.all(allTeams.map(async team => {
+    const [roster, subs] = await Promise.all([
+      getRoster(db, team.id),
+      getBisSubmissions(db, team.id, seasonId),
+    ]);
+    const personalApproved = new Set(
+      subs
+        .filter(s => s.status === 'Approved' && s.char_id && changedSlots.has(s.slot))
+        .map(s => `${s.char_id}:${s.slot}`),
+    );
+    const targets = [];
+    for (const char of roster) {
+      if (toCanonical(char.spec) !== canonicalSpec) continue;
+      for (const slot of changedSlots) {
+        if (!personalApproved.has(`${char.id}:${slot}`)) targets.push({ charId: char.id, slot });
+      }
+    }
+    if (targets.length) await invalidateWornBisSlots(db, team.id, targets, seasonId);
+  }));
 }
 
 const router = new Hono();
@@ -191,29 +223,7 @@ router.post('/default-bis', requireGlobalOfficer, async (c) => {
     await updateDefaultBisOverrides(db, seasonId, writes);
 
     // Invalidate worn BIS across all teams for chars using spec defaults for these slots
-    const changedSlots = new Set(writes.map(w => w.slot));
-    const allTeams     = await getAllTeams(db);
-    await Promise.all(allTeams.map(async team => {
-      const [roster, subs] = await Promise.all([
-        getRoster(db, team.id),
-        getBisSubmissions(db, team.id, seasonId),
-      ]);
-      const personalApproved = new Set(
-        subs
-          .filter(s => s.status === 'Approved' && s.char_id && changedSlots.has(s.slot))
-          .map(s => `${s.char_id}:${s.slot}`),
-      );
-      const targets = [];
-      for (const char of roster) {
-        if (toCanonical(char.spec) !== canonicalSpec) continue;
-        for (const slot of changedSlots) {
-          if (!personalApproved.has(`${char.id}:${slot}`)) {
-            targets.push({ charId: char.id, slot });
-          }
-        }
-      }
-      if (targets.length) await invalidateWornBisSlots(db, team.id, targets, seasonId);
-    }));
+    await invalidateWornBisForSpec(db, seasonId, canonicalSpec, new Set(writes.map(w => w.slot)));
 
     return c.json({ ok: true, updated: writes.length });
   } catch (err) {
@@ -236,6 +246,178 @@ router.post('/spec-bis-source', requireGlobalOfficer, async (c) => {
   } catch (err) {
     console.error('[ADMIN] spec-bis-source POST error:', err);
     return c.json({ error: 'Failed to save preferred source' }, 500);
+  }
+});
+
+// ── Default BIS guide import ─────────────────────────────────────────────────────
+// Only these hosts may be fetched server-side (prevents the endpoint being used as
+// an open proxy). Paste mode bypasses fetch entirely.
+const BIS_FETCH_HOSTS = ['wowhead.com', 'maxroll.gg'];
+
+async function fetchGuideHtml(url) {
+  let u;
+  try { u = new URL(url); } catch { const e = new Error('Invalid URL'); e.status = 400; throw e; }
+  if (u.protocol !== 'https:') { const e = new Error('URL must be https'); e.status = 400; throw e; }
+  if (!BIS_FETCH_HOSTS.some(h => u.hostname === h || u.hostname.endsWith(`.${h}`))) {
+    const e = new Error(`Only ${BIS_FETCH_HOSTS.join(' / ')} URLs can be fetched`); e.status = 400; throw e;
+  }
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+      'Accept':          'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+  if (!res.ok) { const e = new Error(`HTTP ${res.status}`); e.status = 502; throw e; }
+  return res.text();
+}
+
+function tierSetPrefixesFromConfig(gc) {
+  return String(gc.bis_tier_set_prefixes ?? '')
+    .split('|').map(s => s.trim()).filter(Boolean);
+}
+
+// ── POST /api/admin/default-bis/parse ──────────────────────────────────────────
+// Body: { spec, source, url?, html? }
+// Fetches (or accepts pasted) guide HTML, parses it, and resolves items against the
+// season's Item DB. Returns review rows; on fetch failure returns needsPaste:true.
+router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
+  const { spec, source, url, html } = await c.req.json();
+  if (!spec || !source) return c.json({ error: 'spec and source are required' }, 400);
+  if (!BIS_SOURCES.includes(source)) {
+    return c.json({ error: `Unsupported source. Use one of: ${BIS_SOURCES.join(', ')}` }, 400);
+  }
+
+  const db = c.env.DB;
+  try {
+    const seasonId      = await getCurrentSeasonId(db);
+    const canonicalSpec = toCanonical(spec);
+    const [itemDb, gc, tierItems] = await Promise.all([
+      getItemDb(db, seasonId), getGlobalConfig(db), getTierItems(db, seasonId),
+    ]);
+    const tierSetPrefixes = tierSetPrefixesFromConfig(gc);
+    // Known tier-set piece IDs for this spec's class → exact-ID promotion to <Tier>.
+    const { cls } = splitSpecClass(canonicalSpec);
+    const tierItemIds = new Set(
+      tierItems.filter(t => t.class === cls).map(t => String(t.item_id)),
+    );
+    const opts = { tierItemIds, ...(tierSetPrefixes.length ? { tierSetPrefixes } : {}) };
+
+    const suggestedUrl = url?.trim() || bisGuideUrl(canonicalSpec, source);
+
+    let pageHtml = typeof html === 'string' && html.trim() ? html : null;
+    let fetched  = false;
+    if (!pageHtml) {
+      try {
+        pageHtml = await fetchGuideHtml(suggestedUrl);
+        fetched  = true;
+      } catch (err) {
+        return c.json({
+          error: `Couldn't fetch the guide (${err.message}). Open the URL in your browser, copy the page source, and paste it instead.`,
+          needsPaste: true, suggestedUrl,
+        }, err.status === 400 ? 400 : 502);
+      }
+    }
+
+    const { rows: parsed, meta } = parseBisDocument(pageHtml, source);
+    if (!parsed.length) {
+      // #4 — explain WHY no table matched rather than failing silently.
+      const reasons = [...new Set(meta.rejects ?? [])];
+      const detail = meta.tablesSeen
+        ? `Scanned ${meta.tablesSeen} candidate table(s) but none looked like a BIS list (${reasons.join('; ')}).`
+        : (source === 'Maxroll'
+            ? 'No gear tables were found — Maxroll renders its tables with JavaScript, so the raw page source rarely contains them. Paste the rendered page instead (DevTools → Elements → copy the <html> outerHTML).'
+            : 'No gear tables were found in the page.');
+      return c.json({ error: `No BIS table found. ${detail}`, needsPaste: true, suggestedUrl }, 422);
+    }
+
+    const resolved  = resolveBisItems(parsed, itemDb, opts);
+    const armorType = getArmorType(canonicalSpec);
+    const bySlot    = new Map(resolved.map(r => [r.slot, r]));
+
+    // Return a row for every slot (parsed values or blank) enriched with per-slot
+    // Item DB options, so the review table can reuse the editor's ItemSelect.
+    const rows = BIS_SLOTS.map(slot => {
+      const r = bySlot.get(slot)
+        ?? { slot, trueBis: '', trueBisItemId: '', raidBis: '', raidBisItemId: '', status: 'empty' };
+      return {
+        ...r,
+        options:        itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, true),
+        overallOptions: itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, false),
+        hasTier:        TIER_SLOTS.has(slot),
+        hasCatalyst:    CATALYST_SLOTS.has(slot),
+      };
+    });
+
+    // ── Warnings — surface the brittle spots (#1–#6) so failures aren't silent ──
+    const warnings = [];
+    const unmatched = resolved.filter(r => r.status === 'unmatched').length;
+    const notFound  = resolved.filter(r => r.status === 'not_found').length;
+    const filledSlots = resolved.filter(r => r.trueBis).map(r => r.slot);
+    // Off-Hand is legitimately empty whenever the build uses a two-hander, so never
+    // warn about it — only flag other slots that the guide genuinely didn't yield.
+    const missingSlots = BIS_SLOTS.filter(s => s !== 'Off-Hand' && !filledSlots.includes(s));
+
+    if (tierItemIds.size === 0) {                                   // #6
+      warnings.push(`No tier-set items are seeded for ${cls} this season, so tier pieces won't be auto-detected as <Tier>. Run Admin → Item DB → Sync Tier Items, or set tier slots manually below.`);
+    }
+    if (source === 'Wowhead' && meta.usedBBCode && (meta.nameJsonCount ?? 0) === 0) {  // #3
+      warnings.push(`Couldn't read item names from this Wowhead page (its data format may have changed) — items may appear as raw IDs or "not found". Verify each row.`);
+    }
+    if (source === 'Wowhead' && meta.toggleFellBack) {              // #5
+      warnings.push(`No "Overall" section was found; used the "${meta.toggleTitleUsed}" section instead. Confirm this is the raid BIS list, not an alternate build.`);
+    }
+    if (notFound) {                                                 // #3
+      warnings.push(`${notFound} item${notFound === 1 ? '' : 's'} couldn't be identified at all (unknown item IDs). Set ${notFound === 1 ? 'it' : 'them'} manually below.`);
+    }
+    if (unmatched) {                                                // #1 / Item DB gaps
+      warnings.push(`${unmatched} item${unmatched === 1 ? ' is' : 's are'} not in this season's Item DB — ${unmatched === 1 ? 'it' : 'they'} will import by name only. Check for a typo or a missing Item DB entry.`);
+    }
+    if (missingSlots.length) {
+      warnings.push(`No item was parsed for: ${missingSlots.join(', ')}. The guide may omit ${missingSlots.length === 1 ? 'this slot' : 'these slots'}, or the format differs — fill in manually if needed.`);
+    }
+
+    const parsedCount = resolved.length;
+    return c.json({ spec: canonicalSpec, source, url: suggestedUrl, fetched, parsedCount, warnings, rows });
+  } catch (err) {
+    console.error('[ADMIN] default-bis parse error:', err);
+    return c.json({ error: 'Failed to parse guide' }, 500);
+  }
+});
+
+// ── POST /api/admin/default-bis/import ─────────────────────────────────────────
+// Body: { spec, source, rows: [{ slot, trueBis, trueBisItemId, raidBis, raidBisItemId }] }
+// Writes (upserts) base Default BIS seed rows for the spec × source in the current season.
+router.post('/default-bis/import', requireGlobalOfficer, async (c) => {
+  const { spec, source, rows } = await c.req.json();
+  if (!spec || !source || !Array.isArray(rows)) {
+    return c.json({ error: 'spec, source, and rows[] are required' }, 400);
+  }
+  if (!BIS_SOURCES.includes(source)) {
+    return c.json({ error: `Unsupported source. Use one of: ${BIS_SOURCES.join(', ')}` }, 400);
+  }
+
+  const db = c.env.DB;
+  try {
+    const seasonId      = await getCurrentSeasonId(db);
+    const canonicalSpec = toCanonical(spec);
+
+    const writeRows = rows
+      .filter(r => r?.slot && (r.trueBis || r.trueBisItemId))
+      .map(r => ({
+        spec: canonicalSpec, slot: r.slot,
+        trueBis:       r.trueBis       ?? '', trueBisItemId: r.trueBisItemId ?? '',
+        raidBis:       r.raidBis       ?? '', raidBisItemId: r.raidBisItemId ?? '',
+      }));
+    if (!writeRows.length) return c.json({ error: 'No valid rows to import' }, 400);
+
+    const result = await importDefaultBis(db, seasonId, source, writeRows);
+    await invalidateWornBisForSpec(db, seasonId, canonicalSpec, new Set(writeRows.map(r => r.slot)));
+
+    return c.json({ ok: true, spec: canonicalSpec, source, ...result });
+  } catch (err) {
+    console.error('[ADMIN] default-bis import error:', err);
+    return c.json({ error: 'Failed to import Default BIS' }, 500);
   }
 });
 

@@ -282,6 +282,53 @@ router.post('/sync', async (c) => {
   }
 });
 
+// ── POST /add-item ────────────────────────────────────────────────────────────
+// Manually add a single item to a season's Item DB by Blizzard item ID. For raid
+// BoEs and other drops that don't sit on a clean journal manifest. Fetches the item
+// from Blizzard, maps it (slot/armor type auto-derived), and upserts it.
+
+router.post('/add-item', async (c) => {
+  const db = c.env.DB;
+  const { itemId, difficulty = 'MYTHIC', sourceName, seasonId: reqSeason } = await c.req.json().catch(() => ({}));
+
+  const id = Number(itemId);
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: 'A numeric item ID is required.' }, 400);
+  if (!VALID_DIFFICULTIES.includes(difficulty)) {
+    return c.json({ error: `difficulty must be one of: ${VALID_DIFFICULTIES.join(', ')}` }, 400);
+  }
+
+  try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
+    setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
+    const creds = await getBlizzardCreds(db, c.env);
+
+    let details;
+    try {
+      details = await getItemDetails(id, creds);
+    } catch (err) {
+      return c.json({ error: `Couldn't fetch item ${id} from Blizzard (${err.message}). Double-check the ID.` }, 404);
+    }
+
+    const mapped = mapItem({
+      details,
+      encounterName: (sourceName || 'BoE').trim(),
+      instanceName:  '',
+      difficulty,
+    });
+    if (!mapped) {
+      return c.json({
+        error: `"${details.name}" (${id}) isn't an equippable gear slot we track (inventory type: ${details.inventory_type?.type ?? 'unknown'}).`,
+      }, 422);
+    }
+
+    await writeItemDb(db, [mapped], seasonId, { replace: false });
+    return c.json({ ok: true, seasonId, item: mapped });
+  } catch (err) {
+    console.error('[admin-items] item-db/add-item error:', err);
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ── POST /clear ───────────────────────────────────────────────────────────────
 
 router.post('/clear', async (c) => {

@@ -13,8 +13,9 @@
 
 import { apiPath } from '../lib/api.js';
 import { useState, useEffect, useCallback } from 'react';
-import ItemLink   from '../components/ItemLink.jsx';
-import ItemSelect from '../components/ItemSelect.jsx';
+import ItemLink     from '../components/ItemLink.jsx';
+import ItemSelect   from '../components/ItemSelect.jsx';
+import ImportBisCard from '../components/ImportBisCard.jsx';
 
 const ALL_SLOTS = [
   'Head', 'Neck', 'Shoulders', 'Back', 'Chest', 'Wrists',
@@ -212,6 +213,11 @@ export default function AdminDefaultBis() {
 
       {error && <p className="error">{error}</p>}
 
+      {/* Import-from-guide tool — available whether or not data already exists */}
+      {selectedSpec && !loadingSpec && (
+        <ImportBisCard spec={selectedSpec} onImported={(src) => loadSpec(selectedSpec, src)} />
+      )}
+
       {/* Source tabs — shown once we know what sources exist for this spec */}
       {selectedSpec && !loadingSpec && availableSources.length > 0 && (
         <div className="card source-selector-card">
@@ -349,7 +355,7 @@ export default function AdminDefaultBis() {
 
       {selectedSpec && !loadingSpec && rows.length === 0 && !error && (
         <div className="card">
-          <p className="empty">No Default BIS data found for this spec. Run the seed script first.</p>
+          <p className="empty">No Default BIS data for this spec yet. Use “Import from guide” above to pull a Wowhead or Maxroll list in.</p>
         </div>
       )}
     </div>

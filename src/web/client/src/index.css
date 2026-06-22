@@ -1092,6 +1092,96 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .btn-secondary:disabled { opacity: 0.5; cursor: default; }
 .btn-sm { padding: 4px 12px; font-size: 12px; }
 
+/* ── Import-from-guide card ────────────────────────────────────── */
+.input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+.input:focus { outline: none; border-color: var(--accent); }
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+.btn-link:hover { color: var(--text); }
+
+.badge-warn  { background: rgba(234,179,8,0.15);  color: #eab308; }
+.badge-error { background: rgba(204,16,16,0.18);  color: var(--primary); }
+
+/* No overflow:hidden here — it would clip the ItemSelect dropdown popovers. */
+.import-bis-card { padding: 0; }
+.import-bis-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 20px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius);
+}
+.import-bis-toggle:hover { background: rgba(255,255,255,0.03); }
+.import-bis-toggle-icon { color: var(--text-muted); font-size: 12px; }
+.import-bis-body { padding: 4px 20px 18px; border-top: 1px solid var(--border); }
+.import-bis-controls {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px 14px;
+  margin: 14px 0 6px;
+}
+.import-bis-actions {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.import-bis-hint { grid-column: 1 / -1; margin: 2px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.import-bis-hint kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+.import-bis-paste { grid-column: 1 / -1; font-family: ui-monospace, monospace; font-size: 12px; }
+.import-bis-warnings {
+  margin: 10px 0 0;
+  padding: 10px 12px 10px 14px;
+  list-style: none;
+  border: 1px solid rgba(234,179,8,0.35);
+  border-radius: 6px;
+  background: rgba(234,179,8,0.08);
+}
+.import-bis-warnings li { font-size: 12px; color: #eab308; line-height: 1.5; }
+.import-bis-warnings li + li { margin-top: 4px; }
+.import-bis-table { margin-top: 12px; }
+.import-bis-status { white-space: nowrap; }
+.import-bis-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 .bis-row-dirty td  { background: rgba(204,16,16,0.06); }
 .bis-row-empty td  { opacity: 0.35; }
 
