@@ -19,7 +19,7 @@ import {
 } from '../../../lib/db.js';
 import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
-import { mapItem, TIER_ITEM_SLOT_MAP } from '../../../lib/item-seeder.js';
+import { mapItem, TIER_ITEM_SLOT_MAP, setTokenSlotOverrides, parseTokenSlotOverrides } from '../../../lib/item-seeder.js';
 import { computeMplusItemPicks, fetchWagoTable, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
 
 const TIER_CLASSES = new Set([
@@ -133,6 +133,7 @@ async function fetchSourceItems(db, env, source, seasonId) {
 async function fetchManifestDesired(db, env, seasonId) {
   const sources = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
   await getBlizzardCreds(db, env); // fail fast if Blizzard creds are missing
+  setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
   const perSource = [];
   const errors    = [];
   const items     = [];
@@ -246,6 +247,7 @@ router.post('/sync', async (c) => {
 
   try {
     const seasonId = await resolveSeasonId(db, reqSeason);
+    setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
 
     // Fetch items (raids via journal; Mythic+ via the DB2 current-season rule)
     const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId);

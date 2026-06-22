@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tierTokenInfo, mapItem } from '../src/lib/item-seeder.js';
+import { tierTokenInfo, mapItem, setTokenSlotOverrides, parseTokenSlotOverrides } from '../src/lib/item-seeder.js';
 
 const tok = (name, classes, invType = 'NON_EQUIP') => ({
   id: 1,
@@ -44,6 +44,14 @@ test('tierTokenInfo', async (t) => {
 
   await t.test('equippable item is never a token (must be NON_EQUIP)', () => {
     assert.equal(tierTokenInfo(tok('Hood of Testing', CLOTH, 'HEAD')), null);
+  });
+
+  await t.test('token-slot overrides merge over the built-in word map (deploy-free)', () => {
+    assert.deepEqual(parseTokenSlotOverrides('Mysterious:Shoulders|Glimmering:Hands'), { Mysterious: 'Shoulders', Glimmering: 'Hands' });
+    setTokenSlotOverrides(parseTokenSlotOverrides('Mysterious:Shoulders'));
+    assert.deepEqual(tierTokenInfo(tok('Aetherweave Mysterious Relic', CLOTH)), { slot: 'Shoulders', armorType: 'Cloth' }); // override resolves a new word
+    assert.deepEqual(tierTokenInfo(tok('Voidwoven Fanatical Nullcore', CLOTH)), { slot: 'Head', armorType: 'Cloth' });        // built-in still works
+    setTokenSlotOverrides({}); // reset module state for other tests
   });
 
   await t.test('mapItem emits a tier-token row for a token', () => {

@@ -75,7 +75,7 @@ import {
   getCombatantInfo,
 } from './wcl.js';
 import { matchesBis, PAIRED_BIS_SLOTS } from './bis-match.js';
-import { getArmorType, toCanonical, getCharSpecs, WOW_SPEC_ID_TO_NAME, mergeTrack, TRACK_ORDER, buildTrackRanges, getItemTrack } from './specs.js';
+import { getArmorType, toCanonical, getCharSpecs, specNameForId, setSpecIdOverrides, parseSpecIdOverrides, mergeTrack, TRACK_ORDER, buildTrackRanges, getItemTrack } from './specs.js';
 
 // WCL difficulty integer → human label
 const DIFFICULTY_LABEL = {
@@ -118,7 +118,7 @@ function extractWornBis(combatantEvents, actors, rosterLookup, bisLookup, itemDb
     // Resolve the spec the character was actually playing in this report.
     // event.specID is the WoW spec ID from CombatantInfo. Fall back to roster primary spec
     // if specID is missing or unrecognised (e.g. older logs, unknown specs).
-    const specFromEvent = event.specID ? WOW_SPEC_ID_TO_NAME[event.specID] : undefined;
+    const specFromEvent = event.specID ? specNameForId(event.specID) : undefined;
     const charSpec      = specFromEvent ?? char.spec;
 
     // bisLookup is keyed as id:spec (all specs) or "name:<char_name>" fallback for primary
@@ -271,8 +271,10 @@ async function buildWclContext(db) {
   ]);
   if (!currentSeason) throw new Error('No current season configured. Visit /admin/seasons to set one up.');
 
-  const { wcl_client_id, wcl_zone_ids, wcl_veteran_bonus_id, wcl_track_veteran_ids, wcl_crafted_bonus_ids } = globalConfig;
+  const { wcl_client_id, wcl_zone_ids, wcl_veteran_bonus_id, wcl_track_veteran_ids, wcl_crafted_bonus_ids, spec_id_overrides } = globalConfig;
   const seasonId         = currentSeason.id;
+  // Officer-supplied spec-ID overrides (e.g. a new spec) merged over the built-in map — deploy-free.
+  setSpecIdOverrides(parseSpecIdOverrides(spec_id_overrides));
   // Prefer the auto-detected multi-season list (wcl_track_veteran_ids, pipe-separated);
   // fall back to the single manual wcl_veteran_bonus_id. Building ranges for every season's
   // block is harmless (disjoint) and means track detection needs no "current season" value.
@@ -860,7 +862,7 @@ async function processReport(report, reportData, validEncounterIds, tierItemsByC
     if (!actor) continue;
     const char = resolveActor(actor, rosterLookup);
     if (!char || !char.id) continue;
-    const specFromEvent = event.specID ? WOW_SPEC_ID_TO_NAME[event.specID] : undefined;
+    const specFromEvent = event.specID ? specNameForId(event.specID) : undefined;
     specByCharId.set(char.id, specFromEvent ?? char.spec); // overwrite = last boss wins
   }
 

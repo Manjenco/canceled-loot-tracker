@@ -115,10 +115,28 @@ const LEGACY_SLOT_KEYWORDS = [
   ['Legs',      ['Leggings', 'Legplates', 'Breeches', 'Trousers', 'Greaves', 'Kilt']],
 ];
 
+// Optional officer-supplied overrides, merged over TOKEN_SLOT_WORDS at runtime so a new
+// expansion's token flavor words can be mapped from Global Config without a deploy. Set
+// once per seed run from global_config.token_slot_overrides ("Word:Slot|Word:Slot").
+let _tokenSlotOverrides = {};
+
+/** Parse a "Word:Slot|Word:Slot" string into a { [word]: slot } map. */
+export function parseTokenSlotOverrides(str) {
+  const out = {};
+  for (const pair of String(str ?? '').split('|')) {
+    const [word, slot] = pair.split(':').map(s => s.trim());
+    if (word && slot) out[word] = slot;
+  }
+  return out;
+}
+
+export function setTokenSlotOverrides(overrides) { _tokenSlotOverrides = overrides ?? {}; }
+
 function tierTokenSlot(name) {
   const words = new Set(name.split(/\s+/).map(w => w.replace(/[''’]s$/i, '')));
-  for (const [word, slot] of Object.entries(TOKEN_SLOT_WORDS)) if (words.has(word)) return slot;
-  for (const [slot, keywords] of LEGACY_SLOT_KEYWORDS) if (keywords.some(kw => name.includes(kw))) return slot;
+  for (const [word, slot] of Object.entries(_tokenSlotOverrides)) if (words.has(word)) return slot; // override wins
+  for (const [word, slot] of Object.entries(TOKEN_SLOT_WORDS))    if (words.has(word)) return slot;
+  for (const [slot, keywords] of LEGACY_SLOT_KEYWORDS)            if (keywords.some(kw => name.includes(kw))) return slot;
   return null;
 }
 

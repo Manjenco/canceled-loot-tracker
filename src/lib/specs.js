@@ -145,6 +145,31 @@ export const WOW_SPEC_ID_TO_NAME = {
   71: 'Arms Warrior', 72: 'Fury Warrior', 73: 'Prot Warrior',
 };
 
+// Optional officer-supplied overrides, merged over the built-in map at runtime so a
+// new/changed spec can be added from Global Config without a deploy. Set once per
+// WCL run from global_config.spec_id_overrides ("1480:Devourer DH|...").
+let _specIdOverrides = {};
+
+/** Parse a "id:Name|id:Name" string into a { [id]: name } map (string keys). */
+export function parseSpecIdOverrides(str) {
+  const out = {};
+  for (const pair of String(str ?? '').split('|')) {
+    const i = pair.indexOf(':');
+    if (i < 0) continue;
+    const id = pair.slice(0, i).trim();
+    const name = pair.slice(i + 1).trim();
+    if (/^\d+$/.test(id) && name) out[id] = name;
+  }
+  return out;
+}
+
+export function setSpecIdOverrides(overrides) { _specIdOverrides = overrides ?? {}; }
+
+/** App spec name for a WoW spec ID — officer override wins over the built-in map. */
+export function specNameForId(specId) {
+  return _specIdOverrides[specId] ?? WOW_SPEC_ID_TO_NAME[specId];
+}
+
 /** All sheet spec names, grouped by class. */
 export const CLASS_SPECS = {
   'Death Knight':  ['Blood DK', 'Frost DK', 'Unholy DK'],
