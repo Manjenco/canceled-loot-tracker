@@ -25,7 +25,7 @@ crons = ["*/10 * * * *"]
 
 [build]
 command = "npm run build"
-watch_dir = ["src/web/client/src", "src/web/server"]
+watch_dir = ["src/web/client/src", "src/web/server", "src/lib"]
 
 [observability]
 [observability.logs]
