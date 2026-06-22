@@ -84,6 +84,28 @@ export function findInstanceId(instances, name) {
 }
 
 /**
+ * PURE — tier-set candidates from the ItemSet table: 5-piece, non-system sets,
+ * newest first. Tier sets are exactly 5 items (head/shoulder/chest/hands/legs);
+ * [DNT] / SetFlags-bit-4 sets are dev/system noise. The caller resolves which of
+ * these are the *current* tier by live-API resolvability (future-patch sets 404).
+ */
+export function tierSetCandidates(itemSetRows) {
+  const out = [];
+  for (const r of itemSetRows) {
+    if ((Number(r.SetFlags) || 0) & 4) continue;          // system / DNT
+    if (/\[DNT\]/i.test(r.Name_lang ?? '')) continue;
+    const items = [];
+    for (let i = 0; i <= 16; i++) {
+      const v = r[`ItemID_${i}`];
+      if (v && v !== '0') items.push(v);
+    }
+    if (items.length !== 5) continue;                     // tier = 5 pieces
+    out.push({ id: Number(r.ID), name: r.Name_lang ?? '', items });
+  }
+  return out.sort((a, b) => b.id - a.id);                 // newest first
+}
+
+/**
  * PURE — the current-season loot rule. Given parsed JournalEncounter and
  * JournalEncounterItem rows, return [{ itemId, encounterName }] for one dungeon.
  */

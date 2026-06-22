@@ -241,6 +241,27 @@ function TierItemsCard({ seasonId, onStatsChange }) {
   const [setIds, setSetIds] = useState(() => Object.fromEntries(TIER_CLASSES.map(c => [c, ''])));
   const [syncing, setSyncing] = useState(false);
   const [result,  setResult]  = useState(null);
+  const [autoSyncing, setAutoSyncing] = useState(false);
+  const [autoResult,  setAutoResult]  = useState(null);
+
+  async function autoSync() {
+    setAutoSyncing(true); setAutoResult(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/tier-items/auto-sync'), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seasonId }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? r.status);
+      setAutoResult({ ok: true, data: d });
+      onStatsChange?.();
+    } catch (err) {
+      setAutoResult({ error: err.message });
+    } finally {
+      setAutoSyncing(false);
+    }
+  }
 
   async function handleSync() {
     const sets = TIER_CLASSES
@@ -274,13 +295,49 @@ function TierItemsCard({ seasonId, onStatsChange }) {
   return (
     <div className="card" style={{ marginTop: 24 }}>
       <div className="card-title">Tier Items</div>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+        Auto-detects this season’s tier sets from Blizzard’s data — one set per class — and writes
+        the pieces directly to tier items. Future-patch tiers are skipped automatically, so it
+        targets the current live tier with no set IDs to look up.
+      </p>
+
+      <button className="btn-primary" onClick={autoSync} disabled={autoSyncing || !seasonId}>
+        {autoSyncing ? 'Detecting…' : 'Auto-Detect & Sync Tier'}
+      </button>
+
+      {autoResult && (
+        <div style={{ marginTop: 12, fontSize: 13 }}>
+          {autoResult.error ? (
+            <p style={{ color: 'var(--danger, #e05)' }}>Error: {autoResult.error}</p>
+          ) : (
+            <>
+              <p style={{ color: 'var(--bis)', marginBottom: 6 }}>
+                Synced {autoResult.data.total} tier rows across {autoResult.data.sets.length} class{autoResult.data.sets.length !== 1 ? 'es' : ''}.
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--text-muted)', columns: 2 }}>
+                {autoResult.data.sets.map(s => (
+                  <li key={s.className}>{s.className}: {s.setName} ({s.slots})</li>
+                ))}
+              </ul>
+              {autoResult.data.missing?.length > 0 && (
+                <p style={{ marginTop: 6, color: '#fbbf24' }}>
+                  ⚠ Couldn’t resolve: {autoResult.data.missing.join(', ')} — use manual entry below for these.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      <hr style={{ margin: '20px 0', borderColor: 'var(--border, #333)' }} />
+
+      <div className="card-title" style={{ fontSize: 14 }}>Manual entry (fallback)</div>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-        Enter the Blizzard item set ID for each class's current tier. Run once per season when
-        new tier content releases. Find set IDs at{' '}
+        Enter the Blizzard item set ID per class — for a class auto-detect missed, or to pre-seed a
+        future season before its tier is live. Find set IDs at{' '}
         <a href="https://www.wowhead.com/item-sets" target="_blank" rel="noreferrer" style={{ color: 'var(--primary, #CC1010)' }}>
           wowhead.com/item-sets
-        </a>.
-        Leave a class blank to skip it.
+        </a>. Leave a class blank to skip it.
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '8px 16px', marginBottom: 16 }}>

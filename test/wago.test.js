@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId } from '../src/lib/wago.js';
+import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId, tierSetCandidates } from '../src/lib/wago.js';
 
 const encounters = [
   { ID: '965',  JournalInstanceID: '476',  Name_lang: 'Ranjit' },
@@ -70,6 +70,23 @@ test('wago M+ rule', async (t) => {
     assert.equal(rows.length, 2);
     assert.equal(rows[1].Name_lang, 'Tazavesh, the Veiled Market');
     assert.equal(findInstanceId(rows, 'Tazavesh, the Veiled Market'), '1194');
+  });
+
+  await t.test('tierSetCandidates: keeps 5-item non-DNT sets, newest first', () => {
+    const set = (ID, Name_lang, SetFlags, items) => {
+      const o = { ID: String(ID), Name_lang, SetFlags: String(SetFlags) };
+      for (let i = 0; i <= 16; i++) o[`ItemID_${i}`] = String(items[i] ?? 0);
+      return o;
+    };
+    const rows = [
+      set(2067, 'Jade Warlord (future)', 0, [271459, 271457, 271456, 271455, 271454]),
+      set(1990, 'Rage of the Night Ender', 0, [249955, 249953, 249952, 249951, 249950]),
+      set(2052, '[DNT] War Mode Set', 4, [0, 0, 0, 0, 0]),               // system → out
+      set(2070, 'Bite of Zul\'jan', 0, [270173, 268209, 268213]),        // 3 items → out
+    ];
+    const cands = tierSetCandidates(rows);
+    assert.deepEqual(cands.map(c => c.id), [2067, 1990]);                // sorted desc, noise removed
+    assert.equal(cands[0].items.length, 5);
   });
 
   await t.test('parseWagoCsv handles NEWLINES inside quoted cells (the real DB2 bug)', () => {

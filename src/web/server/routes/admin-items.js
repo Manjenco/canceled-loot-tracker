@@ -20,7 +20,20 @@ import {
 import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
 import { mapItem, TIER_ITEM_SLOT_MAP } from '../../../lib/item-seeder.js';
-import { computeMplusItemPicks, fetchWagoTable, detectSeasonWse } from '../../../lib/wago.js';
+import { computeMplusItemPicks, fetchWagoTable, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
+
+const TIER_CLASSES = new Set([
+  'Death Knight', 'Demon Hunter', 'Druid', 'Evoker', 'Hunter', 'Mage', 'Monk',
+  'Paladin', 'Priest', 'Rogue', 'Shaman', 'Warlock', 'Warrior',
+]);
+
+/** Single restricted class for a tier piece, from Blizzard's requirements; null if none/unknown. */
+function tierClassOf(details) {
+  const ds = details?.preview_item?.requirements?.playable_classes?.display_string;
+  if (!ds) return null;
+  const cls = ds.replace(/^Classes?:\s*/i, '').split(',')[0].trim();
+  return TIER_CLASSES.has(cls) ? cls : null;
+}
 
 const router = new Hono();
 
@@ -570,6 +583,71 @@ tierRouter.post('/sync', async (c) => {
     });
   } catch (err) {
     console.error('[admin-items] tier-items/sync error:', err);
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── POST /auto-sync ───────────────────────────────────────────────────────────
+// Auto-detect the current tier sets from DB2 (ItemSet) + Blizzard, and write
+// tier_items directly. "Current" is self-anchoring: walk ItemSet newest-first and
+// probe each set's first piece on the LIVE Blizzard API — future-patch sets 404
+// (skipped), prior tiers are older (we stop once we have one set per class). Class
+// comes from the item's playable-class requirement.
+
+tierRouter.post('/auto-sync', async (c) => {
+  const db = c.env.DB;
+  const { seasonId: reqSeason } = await c.req.json().catch(() => ({}));
+  try {
+    const seasonId = await resolveSeasonId(db, reqSeason);
+    const creds    = await getBlizzardCreds(db, c.env);
+
+    const candidates = tierSetCandidates(await fetchWagoTable('ItemSet'));
+
+    const found  = new Map(); // className → { setId, name, rows }
+    const errors = [];
+    let scanned = 0;
+    for (const set of candidates) {
+      if (found.size >= TIER_CLASSES.size) break;
+      if (scanned >= 80) break; // safety window
+      scanned++;
+
+      // Probe the first piece: 404 → future/unreleased (skip without further calls).
+      let first;
+      try { first = await getItemDetails(Number(set.items[0]), creds); }
+      catch { continue; }
+
+      const cls = tierClassOf(first);
+      if (!cls || found.has(cls)) continue; // not class-restricted, or class already taken (older set)
+
+      const rest = await pLimit(
+        set.items.slice(1).map(id => () => getItemDetails(Number(id), creds).catch(() => null)),
+        5,
+      );
+      const rows = [];
+      for (const d of [first, ...rest.filter(Boolean)]) {
+        const slot = TIER_ITEM_SLOT_MAP[d.inventory_type?.type];
+        if (slot) rows.push({ class: cls, slot, itemId: String(d.id) });
+      }
+      if (rows.length) found.set(cls, { setId: set.id, name: set.name, slots: rows.length, rows });
+    }
+
+    const allRows = [...found.values()].flatMap(f => f.rows);
+    if (!allRows.length) {
+      return c.json({ error: 'No current tier sets detected — all candidates were unreleased (404) or not class-restricted.' }, 400);
+    }
+    await setTierItems(db, seasonId, allRows);
+
+    const missing = [...TIER_CLASSES].filter(c => !found.has(c));
+    return c.json({
+      ok: true,
+      seasonId,
+      total: allRows.length,
+      sets: [...found.entries()].map(([className, f]) => ({ className, setId: f.setId, setName: f.name, slots: f.slots })),
+      missing, // classes we couldn't resolve (worth flagging in the UI)
+      errors,
+    });
+  } catch (err) {
+    console.error('[admin-items] tier-items/auto-sync error:', err);
     return c.json({ error: err.message }, 500);
   }
 });
