@@ -24,6 +24,7 @@ import {
   getSeasons, createSeason, updateSeason, setCurrentSeason,
 } from '../../../lib/db.js';
 import { MIGRATIONS } from '../../../lib/migrations.js';
+import { fetchWagoTable, detectVeteranStarts } from '../../../lib/wago.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
 import { runWclSyncForTeam, runWclSyncWornBisOnly, runAttendanceBackfill } from '../../../lib/wcl-sync.js';
@@ -557,6 +558,25 @@ router.post('/global-config', requireGlobalOfficer, async (c) => {
     return c.json({ ok: true });
   } catch (err) {
     return c.json({ error: err.message ?? 'Failed to save global config' }, 500);
+  }
+});
+
+// ── POST /api/admin/detect-track-ranges ───────────────────────────────────────
+// Auto-detect every season's Veteran-track start bonus ID from DB2 (wago) and save
+// them to global_config.wcl_track_veteran_ids. Covers the live season plus all staged
+// future blocks, so it rarely needs re-running and never needs a per-season number.
+
+router.post('/detect-track-ranges', requireGlobalOfficer, async (c) => {
+  const db = c.env.DB;
+  try {
+    const entries = await fetchWagoTable('ItemBonusListGroupEntry');
+    const starts  = detectVeteranStarts(entries);
+    if (!starts.length) return c.json({ error: 'No upgrade-track blocks found in DB2.' }, 500);
+    await setGlobalConfigValue(db, 'wcl_track_veteran_ids', starts.join('|'));
+    return c.json({ ok: true, veteranStarts: starts });
+  } catch (err) {
+    console.error('[admin] detect-track-ranges error:', err);
+    return c.json({ error: err.message ?? 'Detect failed' }, 500);
   }
 });
 

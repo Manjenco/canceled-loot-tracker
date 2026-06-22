@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId, tierSetCandidates } from '../src/lib/wago.js';
+import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId, tierSetCandidates, detectVeteranStarts } from '../src/lib/wago.js';
 
 const encounters = [
   { ID: '965',  JournalInstanceID: '476',  Name_lang: 'Ranjit' },
@@ -70,6 +70,26 @@ test('wago M+ rule', async (t) => {
     assert.equal(rows.length, 2);
     assert.equal(rows[1].Name_lang, 'Tazavesh, the Veiled Market');
     assert.equal(findInstanceId(rows, 'Tazavesh, the Veiled Market'), '1194');
+  });
+
+  await t.test('detectVeteranStarts: Veteran = run-max − 24, all seasons, ignores short runs', () => {
+    // group → entries (only ItemBonusListID matters). Build a few ladders.
+    const e = (group, ...ids) => ids.map(ItemBonusListID => ({ ItemBonusListGroupID: String(group), ItemBonusListID: String(ItemBonusListID) }));
+    const rows = [
+      // Midnight S1 ladder: Adventurer..Myth = 12769,12777,12785,12793,12801 (each group an 8-list track)
+      ...e('608', 12769, 12770, 12771), ...e('609', 12777, 12778), ...e('610', 12785),
+      ...e('611', 12793), ...e('612', 12801),
+      // a staged future ladder: 12865..12897 (5 groups, +8)
+      ...e('626', 12865), ...e('627', 12873), ...e('628', 12881), ...e('629', 12889), ...e('630', 12897),
+      // a short run (2 tracks) → ignored
+      ...e('700', 13000), ...e('701', 13008),
+      // an isolated group → ignored
+      ...e('800', 9999),
+      // a selector-only entry (no ItemBonusListID) → skipped
+      { ItemBonusListGroupID: '900', ItemBonusListID: '' },
+    ];
+    const vets = detectVeteranStarts(rows);
+    assert.deepEqual(vets, [12777, 12873]); // 12801−24, 12897−24
   });
 
   await t.test('tierSetCandidates: keeps 5-item non-DNT sets, newest first', () => {

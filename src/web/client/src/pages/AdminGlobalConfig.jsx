@@ -69,6 +69,8 @@ export default function AdminGlobalConfig() {
   const [wclCraftedBonuses, setWclCraftedBonuses] = useState('');
   const [wclResult,         setWclResult]         = useState(null);
   const [wclSaving,         setWclSaving]         = useState(false);
+  const [detecting,         setDetecting]         = useState(false);
+  const [detectResult,      setDetectResult]      = useState(null);
 
   // Migration (Sheets → D1)
   const [migrating,     setMigrating]     = useState(false);
@@ -130,6 +132,20 @@ export default function AdminGlobalConfig() {
       ['wcl_crafted_bonus_ids', wclCraftedBonuses],
     ]));
     setWclSaving(false);
+  }
+
+  async function detectTrackRanges() {
+    setDetecting(true); setDetectResult(null);
+    try {
+      const r = await fetch(apiPath('/api/admin/detect-track-ranges'), { method: 'POST', credentials: 'include' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Detect failed');
+      setDetectResult({ ok: true, msg: `Saved ${d.veteranStarts.length} upgrade-track block(s): ${d.veteranStarts.join(', ')}` });
+    } catch (e) {
+      setDetectResult({ error: e.message });
+    } finally {
+      setDetecting(false);
+    }
   }
 
   async function runDbMigrations() {
@@ -245,8 +261,20 @@ export default function AdminGlobalConfig() {
         <Field label="Zone IDs" hint="Pipe-separated WCL zone IDs for the current tier, e.g. 38|41. Fights outside these zones are excluded.">
           <input className="config-input" value={wclZoneIds} onChange={e => setWclZoneIds(e.target.value)} placeholder="e.g. 38|41" />
         </Field>
-        <Field label="Veteran Track Bonus ID" hint="Starting bonus ID of the Veteran upgrade track. Each track uses 8 consecutive IDs. Update each new season.">
-          <input className="config-input config-input-narrow" value={wclVeteranBonus} onChange={e => setWclVeteranBonus(e.target.value)} placeholder="e.g. 12777" />
+        <Field label="Upgrade Track Bonus IDs" hint="Detect auto-finds every season's Veteran-track start from Blizzard's data (covers current + future seasons, rarely needs re-running). The manual field below is a fallback — Detect takes precedence.">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="btn-secondary" onClick={detectTrackRanges} disabled={detecting}>
+              {detecting ? 'Detecting…' : 'Detect Track Ranges'}
+            </button>
+            <input
+              className="config-input config-input-narrow"
+              value={wclVeteranBonus}
+              onChange={e => setWclVeteranBonus(e.target.value)}
+              placeholder="fallback, e.g. 12777"
+              title="Manual Veteran start (used only if Detect hasn't been run)"
+            />
+          </div>
+          <ResultMsg result={detectResult} />
         </Field>
         <Field label="Crafted Item Bonus IDs" hint="Pipe-separated bonus IDs that identify crafted items in WCL gear data. Update each new season.">
           <input className="config-input" value={wclCraftedBonuses} onChange={e => setWclCraftedBonuses(e.target.value)} placeholder="e.g. 9481|9513" />

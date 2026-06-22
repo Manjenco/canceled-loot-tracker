@@ -84,6 +84,41 @@ export function findInstanceId(instances, name) {
 }
 
 /**
+ * PURE — detect every season's Veteran-track start bonus ID from ItemBonusListGroupEntry.
+ *
+ * Upgrade tracks are ItemBonusListGroups; each group's bonus-list IDs start at some ID,
+ * and a season's track ladder is a run of group-starts spaced +8 apart (one per track).
+ * The top of a run is the Myth track, so Veteran = run-max − 24 (the app only tracks
+ * Veteran/Champion/Hero/Myth — anything below Veteran is irrelevant). Returns ALL seasons'
+ * Veteran starts: because track blocks are disjoint and the track-name offsets are identical
+ * in every block, feeding all of them to buildTrackRanges() covers the live season AND any
+ * staged future/past seasons with no "which is current?" decision — and never needs updating.
+ */
+export function detectVeteranStarts(bonusListGroupEntries) {
+  const minByGroup = new Map();
+  for (const e of bonusListGroupEntries) {
+    const id = Number(e.ItemBonusListID);
+    if (!id) continue; // selector-only entries have no bonus-list ID
+    const g = e.ItemBonusListGroupID;
+    if (!minByGroup.has(g) || id < minByGroup.get(g)) minByGroup.set(g, id);
+  }
+  const starts = [...minByGroup.values()].sort((a, b) => a - b);
+
+  const runs = [];
+  let cur = [];
+  for (const s of starts) {
+    if (!cur.length || s - cur[cur.length - 1] === 8) cur.push(s);
+    else { runs.push(cur); cur = [s]; }
+  }
+  if (cur.length) runs.push(cur);
+
+  return runs
+    .filter(r => r.length >= 4)              // need at least the 4 tracks Veteran..Myth
+    .map(r => r[r.length - 1] - 24)          // Veteran = Myth − 24
+    .sort((a, b) => a - b);
+}
+
+/**
  * PURE — tier-set candidates from the ItemSet table: 5-piece, non-system sets,
  * newest first. Tier sets are exactly 5 items (head/shoulder/chest/hands/legs);
  * [DNT] / SetFlags-bit-4 sets are dev/system noise. The caller resolves which of

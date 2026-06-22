@@ -271,9 +271,14 @@ async function buildWclContext(db) {
   ]);
   if (!currentSeason) throw new Error('No current season configured. Visit /admin/seasons to set one up.');
 
-  const { wcl_client_id, wcl_zone_ids, wcl_veteran_bonus_id, wcl_crafted_bonus_ids } = globalConfig;
+  const { wcl_client_id, wcl_zone_ids, wcl_veteran_bonus_id, wcl_track_veteran_ids, wcl_crafted_bonus_ids } = globalConfig;
   const seasonId         = currentSeason.id;
-  const trackRanges      = buildTrackRanges(Number(wcl_veteran_bonus_id) || 0);
+  // Prefer the auto-detected multi-season list (wcl_track_veteran_ids, pipe-separated);
+  // fall back to the single manual wcl_veteran_bonus_id. Building ranges for every season's
+  // block is harmless (disjoint) and means track detection needs no "current season" value.
+  const veteranStarts    = String(wcl_track_veteran_ids || wcl_veteran_bonus_id || '')
+    .split('|').map(Number).filter(Boolean);
+  const trackRanges      = veteranStarts.flatMap(buildTrackRanges);
   // Pipe-separated list of bonus IDs that identify crafted items, e.g. "9481|9513|9484"
   const craftedBonusIds  = new Set(
     String(wcl_crafted_bonus_ids ?? '').split('|').map(Number).filter(Boolean)
@@ -290,7 +295,7 @@ async function buildWclContext(db) {
   if (!validEncounterIds.size) throw new Error('No encounters found for configured zone IDs — check wcl_zone_ids');
 
   if (!trackRanges.length) {
-    log.warn('[wcl-sync] wcl_veteran_bonus_id not set in Global Config — tier track detection will show Unknown');
+    log.warn('[wcl-sync] no upgrade-track bonus IDs configured (run Detect Track Ranges in Global Config, or set wcl_veteran_bonus_id) — track detection will show Unknown');
   }
   if (!craftedBonusIds.size) {
     log.warn('[wcl-sync] wcl_crafted_bonus_ids not set in Global Config — crafted items will not be detected');
