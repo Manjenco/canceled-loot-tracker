@@ -71,4 +71,17 @@ test('wago M+ rule', async (t) => {
     assert.equal(rows[1].Name_lang, 'Tazavesh, the Veiled Market');
     assert.equal(findInstanceId(rows, 'Tazavesh, the Veiled Market'), '1194');
   });
+
+  await t.test('parseWagoCsv handles NEWLINES inside quoted cells (the real DB2 bug)', () => {
+    // A multi-line Description_lang must not desync the rows that follow it.
+    const csv =
+      'ID,JournalInstanceID,Description_lang\n' +
+      '2509,1201,"Line one.\nLine two, with comma."\n' +
+      '2510,1201,Simple';
+    const rows = parseWagoCsv(csv);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].JournalInstanceID, '1201');           // not garbled by the embedded newline
+    assert.equal(rows[1].ID, '2510');                          // the next row stays aligned
+    assert.equal(rows[1].JournalInstanceID, '1201');
+  });
 });

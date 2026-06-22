@@ -20,14 +20,21 @@ const WAGO_BASE = 'https://wago.tools/db2';
 const TTL_MS    = 60 * 60 * 1000; // tables change per game build; 1h is plenty for admin syncs
 const _cache    = new Map();      // name → { rows, expiresAt }
 
-/** Minimal RFC4180 CSV parser (handles quoted fields with commas/quotes). */
+/**
+ * RFC4180 CSV parser. Critically, it is quote-aware across newlines: DB2 tables
+ * (JournalInstance/JournalEncounter) carry multi-line Description_lang cells, so a
+ * naive line-split would misalign every row after one — which silently mis-maps
+ * encounters to instances and drops their loot. This parses the whole text in one
+ * pass, treating newlines as record separators only outside quotes.
+ */
 export function parseWagoCsv(text) {
-  const lines = text.split(/\r?\n/);
-  const cols  = splitCsvLine(lines[0] ?? '');
-  const rows  = [];
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i]) continue;
-    const vals = splitCsvLine(lines[i]);
+  const records = parseCsvRecords(text);
+  if (!records.length) return [];
+  const cols = records[0];
+  const rows = [];
+  for (let i = 1; i < records.length; i++) {
+    const vals = records[i];
+    if (vals.length === 1 && vals[0] === '') continue; // trailing blank line
     const o = {};
     for (let j = 0; j < cols.length; j++) o[cols[j]] = vals[j];
     rows.push(o);
@@ -35,20 +42,29 @@ export function parseWagoCsv(text) {
   return rows;
 }
 
-function splitCsvLine(line) {
-  const out = []; let cur = ''; let q = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
+function parseCsvRecords(text) {
+  const records = [];
+  let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
     if (q) {
-      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      if (ch === '"' && text[i + 1] === '"') { cur += '"'; i++; }
       else if (ch === '"') q = false;
       else cur += ch;
-    } else if (ch === '"') q = true;
-    else if (ch === ',') { out.push(cur); cur = ''; }
-    else cur += ch;
+    } else if (ch === '"') {
+      q = true;
+    } else if (ch === ',') {
+      row.push(cur); cur = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++; // CRLF
+      row.push(cur); cur = '';
+      records.push(row); row = [];
+    } else {
+      cur += ch;
+    }
   }
-  out.push(cur);
-  return out;
+  if (cur !== '' || row.length) { row.push(cur); records.push(row); }
+  return records;
 }
 
 /** Fetch + cache a DB2 table (latest build) as parsed rows. */
