@@ -64,39 +64,50 @@ export const TIER_ITEM_SLOT_MAP = {
 
 // ── Tier token detection ───────────────────────────────────────────────────────
 //
-// Midnight uses two NON_EQUIP tier token families:
-//   Nullcore  — Head/Shoulders/Hands/Legs
-//   Riftbloom — Chest only
+// A tier token is a NON_EQUIP item restricted to exactly one armor class-group (e.g.
+// all three Cloth classes). That class-group IS the armor type — a robust, name-free
+// signal Blizzard exposes as preview_item.requirements.playable_classes. So identifying
+// tokens and their armor type needs NO per-expansion names.
 //
-// Armor type is inferred from the suffix of the first word:
-//   *forged → Plate   *cast → Mail   *cured → Leather   *woven → Cloth
-//
-// Legacy expansions used Conqueror/Protector/Vanquisher tokens — also supported.
+// The SLOT, however, only lives in the token's flavor word (Midnight: Riftbloom=Chest,
+// Fanatical=Head, …) and isn't cheaply derivable from game data (the token→piece
+// conversion is an indirect player-choice spell). So slot stays a small per-expansion
+// map — update TOKEN_SLOT_WORDS when a new expansion's tokens appear. A token that's
+// recognised by class-group but whose slot is unknown is logged loudly and skipped,
+// rather than silently vanishing.
 
-const ARMOR_WORD_SUFFIX = {
-  forged: 'Plate',
-  cast:   'Mail',
-  cured:  'Leather',
-  woven:  'Cloth',
+const ARMOR_CLASS_GROUPS = {
+  Cloth:   ['Mage', 'Priest', 'Warlock'],
+  Leather: ['Demon Hunter', 'Druid', 'Monk', 'Rogue'],
+  Mail:    ['Evoker', 'Hunter', 'Shaman'],
+  Plate:   ['Death Knight', 'Paladin', 'Warrior'],
 };
+const ARMOR_BY_CLASS_KEY = new Map(
+  Object.entries(ARMOR_CLASS_GROUPS).map(([armor, classes]) => [classes.slice().sort().join('|'), armor])
+);
 
-function armorTypeFromWord(word) {
-  const lower = word.toLowerCase();
-  for (const [suffix, type] of Object.entries(ARMOR_WORD_SUFFIX)) {
-    if (lower.endsWith(suffix)) return type;
-  }
-  return null;
+/** Armor type if `classNames` is exactly one armor class-group (a tier token), else null. */
+function tierArmorFromClasses(classNames) {
+  if (!classNames?.length) return null;
+  const key = [...new Set(classNames)].sort().join('|');
+  return ARMOR_BY_CLASS_KEY.get(key) ?? null;
 }
 
-const NULLCORE_SLOT_WORD = {
-  Fanatical: 'Head',
-  Unraveled: 'Shoulders',
-  Hungering: 'Hands',
-  Corrupted: 'Legs',
-};
+/** Restricted class names from a Blizzard item detail (requirements.playable_classes). */
+function playableClasses(details) {
+  const pc = details?.preview_item?.requirements?.playable_classes;
+  if (pc?.links?.length) return pc.links.map(l => l.name).filter(Boolean);
+  const ds = pc?.display_string;
+  if (!ds) return [];
+  return ds.replace(/^Classes?:\s*/i, '').split(',').map(s => s.trim()).filter(Boolean);
+}
 
-const LEGACY_TOKEN_SUFFIXES = new Set(['Conqueror', 'Protector', 'Vanquisher']);
-const LEGACY_SLOT_KEYWORDS  = [
+// The one per-expansion touch: the token flavor word → slot. Matched as whole words.
+const TOKEN_SLOT_WORDS = {
+  Riftbloom: 'Chest', Fanatical: 'Head', Unraveled: 'Shoulders', Hungering: 'Hands', Corrupted: 'Legs', // Midnight
+};
+// Descriptive fallback for expansions that name tokens after gear types (stable).
+const LEGACY_SLOT_KEYWORDS = [
   ['Head',      ['Helm', 'Helmet', 'Hood', 'Crown', 'Circlet', 'Cap', 'Headpiece']],
   ['Shoulders', ['Mantle', 'Spaulders', 'Pauldrons', 'Shoulderguards', 'Shoulderpads', 'Epaulets']],
   ['Chest',     ['Chestplate', 'Chestguard', 'Tunic', 'Robes', 'Robe', 'Vest', 'Hauberk', 'Breastplate', 'Jerkin', 'Coat']],
@@ -104,40 +115,28 @@ const LEGACY_SLOT_KEYWORDS  = [
   ['Legs',      ['Leggings', 'Legplates', 'Breeches', 'Trousers', 'Greaves', 'Kilt']],
 ];
 
-function isNullcore(name)    { return name.endsWith('Nullcore'); }
-function isRiftbloom(name)   { return name.endsWith('Riftbloom'); }
-function isLegacyToken(name) {
-  return name.split(/\s+/).some(w => LEGACY_TOKEN_SUFFIXES.has(w.replace(/[''’]s$/i, '')));
-}
-function looksLikeTierToken(name) {
-  return isNullcore(name) || isRiftbloom(name) || isLegacyToken(name);
+function tierTokenSlot(name) {
+  const words = new Set(name.split(/\s+/).map(w => w.replace(/[''’]s$/i, '')));
+  for (const [word, slot] of Object.entries(TOKEN_SLOT_WORDS)) if (words.has(word)) return slot;
+  for (const [slot, keywords] of LEGACY_SLOT_KEYWORDS) if (keywords.some(kw => name.includes(kw))) return slot;
+  return null;
 }
 
 /**
- * Infer { slot, armorType } for a tier token item name.
- * Returns null if the name is not a recognised tier token pattern.
+ * If a Blizzard item detail is a tier token, return { slot, armorType }; else null.
+ * Armor type is derived from the restricted class-group (robust); slot from the word
+ * map above. A recognised token with an unknown slot is logged and returns null.
  */
-export function inferTierToken(name) {
-  const words = name.split(/\s+/);
-
-  if (isNullcore(name)) {
-    const armorType = armorTypeFromWord(words[0]);
-    const slot      = NULLCORE_SLOT_WORD[words[1]] ?? null;
-    if (!slot) return null;
-    return { slot, armorType: armorType ?? 'Tier Token' };
+export function tierTokenInfo(details) {
+  if (details?.inventory_type?.type !== 'NON_EQUIP') return null;
+  const armorType = tierArmorFromClasses(playableClasses(details));
+  if (!armorType) return null; // not a tier token
+  const slot = tierTokenSlot(details.name ?? '');
+  if (!slot) {
+    console.warn(`[item-seeder] Tier token "${details.name}" (#${details.id}) recognised (${armorType}) but slot unknown — add its word to TOKEN_SLOT_WORDS`);
+    return null;
   }
-
-  if (isRiftbloom(name)) {
-    const armorType = armorTypeFromWord(words[0]);
-    if (!armorType) return null;
-    return { slot: 'Chest', armorType };
-  }
-
-  // Legacy Conqueror/Protector/Vanquisher
-  for (const [slot, keywords] of LEGACY_SLOT_KEYWORDS) {
-    if (keywords.some(kw => name.includes(kw))) return { slot, armorType: 'Tier Token' };
-  }
-  return null;
+  return { slot, armorType };
 }
 
 /**
@@ -151,26 +150,22 @@ export function mapItem({ details, encounterName, instanceName, difficulty }) {
   const invTypeId = details.inventory_type?.type;
   let slot        = INVENTORY_SLOT[invTypeId];
 
-  // NON_EQUIP: only keep recognised tier tokens
+  // NON_EQUIP: only keep recognised tier tokens (class-group identifies; word gives slot)
   if (!slot && invTypeId === 'NON_EQUIP') {
-    if (looksLikeTierToken(details.name)) {
-      const tier = inferTierToken(details.name);
-      if (tier) {
-        return {
-          itemId:      String(details.id),
-          name:        details.name,
-          slot:        tier.slot,
-          sourceType:  difficulty === 'MYTHIC_KEYSTONE' ? 'Mythic+' : 'Raid',
-          sourceName:  encounterName,
-          instance:    instanceName,
-          difficulty:  DIFFICULTY_LABEL[difficulty] ?? difficulty,
-          armorType:   tier.armorType,
-          isTierToken: true,
-          weaponType:  '',
-        };
-      }
-    }
-    return null;
+    const token = tierTokenInfo(details);
+    if (!token) return null;
+    return {
+      itemId:      String(details.id),
+      name:        details.name,
+      slot:        token.slot,
+      sourceType:  difficulty === 'MYTHIC_KEYSTONE' ? 'Mythic+' : 'Raid',
+      sourceName:  encounterName,
+      instance:    instanceName,
+      difficulty:  DIFFICULTY_LABEL[difficulty] ?? difficulty,
+      armorType:   token.armorType,
+      isTierToken: true,
+      weaponType:  '',
+    };
   }
 
   if (!slot) return null;
