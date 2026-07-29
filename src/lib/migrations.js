@@ -308,4 +308,16 @@ CREATE INDEX idx_season_sources_season ON season_sources(season_id);
     },
     sql: `ALTER TABLE seasons ADD COLUMN mplus_wse INTEGER DEFAULT NULL`,
   },
+
+  {
+    name: '0008_season_pre_release',
+    description: 'Add pre_release flag to seasons (seed from the latest/PTR DB2 build when set)',
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM pragma_table_info('seasons') WHERE name = 'pre_release'"
+      ).first();
+      return !!row;
+    },
+    sql: `ALTER TABLE seasons ADD COLUMN pre_release INTEGER NOT NULL DEFAULT 0`,
+  },
 ];

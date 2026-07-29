@@ -1178,9 +1178,9 @@ router.put('/seasons/:id', requireGlobalOfficer, async (c) => {
   if (!id) return c.json({ error: 'Invalid season id' }, 400);
   let body;
   try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
-  const { name, startDate, mplusWse } = body ?? {};
+  const { name, startDate, mplusWse, preRelease } = body ?? {};
   try {
-    await updateSeason(db, id, { name, startDate, mplusWse });
+    await updateSeason(db, id, { name, startDate, mplusWse, preRelease });
     return c.json({ ok: true });
   } catch (err) {
     console.error('[admin] PUT /seasons/:id error:', err);

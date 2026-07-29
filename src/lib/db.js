@@ -132,12 +132,13 @@ export async function createSeason(db, { name, startDate, isCurrent = false }) {
   return result.meta?.last_row_id;
 }
 
-export async function updateSeason(db, seasonId, { name, startDate, mplusWse }) {
+export async function updateSeason(db, seasonId, { name, startDate, mplusWse, preRelease }) {
   await run(db,
     `UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date),
-       mplus_wse = COALESCE(?, mplus_wse) WHERE id = ?`,
+       mplus_wse = COALESCE(?, mplus_wse), pre_release = COALESCE(?, pre_release) WHERE id = ?`,
     name ?? null, startDate ?? null,
     (mplusWse === undefined || mplusWse === null || mplusWse === '') ? null : Number(mplusWse),
+    (preRelease === undefined || preRelease === null) ? null : (preRelease ? 1 : 0),
     seasonId
   );
   cacheInvalidate('current_season');

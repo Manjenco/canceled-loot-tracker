@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tierTokenInfo, mapItem, setTokenSlotOverrides, parseTokenSlotOverrides } from '../src/lib/item-seeder.js';
+import { tierTokenInfo, mapItem, mapDb2Item, setTokenSlotOverrides, parseTokenSlotOverrides } from '../src/lib/item-seeder.js';
 
 const tok = (name, classes, invType = 'NON_EQUIP') => ({
   id: 1,
@@ -60,5 +60,78 @@ test('tierTokenInfo', async (t) => {
     assert.equal(row.armorType, 'Cloth');
     assert.equal(row.isTierToken, true);
     assert.equal(row.sourceType, 'Raid');
+  });
+});
+
+// ── DB2 mapper (mapDb2Item) — same rows as mapItem, from raw ItemSparse + Item ──────
+const db2 = (sparse, item, difficulty = 'MYTHIC') =>
+  mapDb2Item({ sparse, item, encounterName: 'Boss', instanceName: 'The Venomous Abyss', difficulty });
+
+test('mapDb2Item', async (t) => {
+  await t.test('plate chest → Chest / Plate, not a token', () => {
+    const r = db2({ ID: '100', Display_lang: 'Breastplate', InventoryType: '5', ItemSet: '0', AllowableClass: '35' }, { ClassID: '4', SubclassID: '4' });
+    assert.equal(r.slot, 'Chest');
+    assert.equal(r.armorType, 'Plate');
+    assert.equal(r.isTierToken, false);
+    assert.equal(r.itemId, '100');
+  });
+
+  await t.test('cloth robe (InventoryType 20) → Chest / Cloth', () => {
+    const r = db2({ ID: '101', Display_lang: 'Robe', InventoryType: '20', ItemSet: '0' }, { ClassID: '4', SubclassID: '1' });
+    assert.equal(r.slot, 'Chest');
+    assert.equal(r.armorType, 'Cloth');
+  });
+
+  await t.test('one-hand sword → Weapon / Accessory / weaponType Sword', () => {
+    const r = db2({ ID: '102', Display_lang: 'Blade', InventoryType: '13', ItemSet: '0' }, { ClassID: '2', SubclassID: '7' });
+    assert.equal(r.slot, 'Weapon');
+    assert.equal(r.armorType, 'Accessory');
+    assert.equal(r.weaponType, 'Sword');
+  });
+
+  await t.test('shield (InventoryType 14) → Off-Hand / weaponType Shield', () => {
+    const r = db2({ ID: '103', Display_lang: 'Bulwark', InventoryType: '14', ItemSet: '0' }, { ClassID: '4', SubclassID: '6' });
+    assert.equal(r.slot, 'Off-Hand');
+    assert.equal(r.weaponType, 'Shield');
+  });
+
+  await t.test('trinket → Trinket / Accessory', () => {
+    const r = db2({ ID: '104', Display_lang: 'Idol of Power', InventoryType: '12', ItemSet: '0' }, { ClassID: '4', SubclassID: '0' });
+    assert.equal(r.slot, 'Trinket');
+    assert.equal(r.armorType, 'Accessory');
+  });
+
+  await t.test('tier-set armor (ItemSet != 0 on a tier slot) → isTierToken true', () => {
+    const r = db2({ ID: '105', Display_lang: 'Jade Warlord Helm', InventoryType: '1', ItemSet: '2067' }, { ClassID: '4', SubclassID: '4' });
+    assert.equal(r.slot, 'Head');
+    assert.equal(r.isTierToken, true);
+  });
+
+  await t.test('NON_EQUIP tier token: armor from AllowableClass, slot from word override', () => {
+    setTokenSlotOverrides(parseTokenSlotOverrides('Idol:Chest'));
+    const r = db2({ ID: '270913', Display_lang: 'Venomforged Idol', InventoryType: '0', ItemSet: '0', AllowableClass: '35' }, { ClassID: '15', SubclassID: '0' });
+    assert.equal(r.slot, 'Chest');       // from the Idol→Chest override
+    assert.equal(r.armorType, 'Plate');  // from AllowableClass 35
+    assert.equal(r.isTierToken, true);
+    setTokenSlotOverrides({});
+  });
+
+  await t.test('NON_EQUIP with no armor-class-group → skipped (null)', () => {
+    assert.equal(db2({ ID: '106', Display_lang: 'Some Quest Item', InventoryType: '0', AllowableClass: '0' }, { ClassID: '15', SubclassID: '0' }), null);
+  });
+
+  await t.test('unmapped inventory type (Bag=18) → null', () => {
+    assert.equal(db2({ ID: '107', Display_lang: 'Big Bag', InventoryType: '18' }, { ClassID: '1', SubclassID: '0' }), null);
+  });
+
+  await t.test('missing ItemSparse row → null', () => {
+    assert.equal(db2(undefined, { ClassID: '4', SubclassID: '4' }), null);
+  });
+
+  await t.test('M+ difficulty tags sourceType Mythic+', () => {
+    const r = db2({ ID: '108', Display_lang: 'Ring', InventoryType: '11', ItemSet: '0' }, { ClassID: '4', SubclassID: '0' }, 'MYTHIC_KEYSTONE');
+    assert.equal(r.slot, 'Ring');
+    assert.equal(r.sourceType, 'Mythic+');
+    assert.equal(r.difficulty, 'Mythic+');
   });
 });

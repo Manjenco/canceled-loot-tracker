@@ -17,10 +17,10 @@ import {
   getSeasonSources, addSeasonSource, removeSeasonSource, setSeasonSourceEnabled,
   getDefaultBisItemRefs, deleteItemDbItems, getSeasonMplusWse,
 } from '../../../lib/db.js';
-import { listInstances, getInstance, fetchRaidItems, getItemSet, getItemDetails, pLimit }
+import { getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
-import { mapItem, TIER_ITEM_SLOT_MAP, setTokenSlotOverrides, parseTokenSlotOverrides } from '../../../lib/item-seeder.js';
-import { computeMplusItemPicks, fetchWagoTable, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
+import { mapItem, mapDb2Item, TIER_ITEM_SLOT_MAP, setTokenSlotOverrides, parseTokenSlotOverrides } from '../../../lib/item-seeder.js';
+import { computeMplusItemPicks, fetchWagoTable, fetchWagoRowsById, latestLiveBuild, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
 
 const TIER_CLASSES = new Set([
   'Death Knight', 'Demon Hunter', 'Druid', 'Evoker', 'Hunter', 'Mage', 'Monk',
@@ -67,6 +67,17 @@ async function resolveSeasonId(db, requested) {
   return id;
 }
 
+// ── DB2 build selection ───────────────────────────────────────────────────────
+// wago serves the LATEST build by default (currently a PTR build). A season flagged
+// pre_release seeds from that (to prep before a patch ships); a released season pins
+// its DB2 reads to the newest LIVE build so a live season is never sourced from PTR.
+
+async function buildForSeason(db, seasonId) {
+  const season = (await getSeasons(db)).find(s => s.id === seasonId);
+  if (season?.pre_release) return undefined;   // latest build (includes PTR content)
+  return await latestLiveBuild();              // pin to the newest released build
+}
+
 // ── Blizzard creds helper ─────────────────────────────────────────────────────
 
 async function getBlizzardCreds(db, env) {
@@ -86,43 +97,63 @@ async function getBlizzardCreds(db, env) {
 // ── Manifest diff helpers ─────────────────────────────────────────────────────
 
 /**
- * Fetch one source's items, mapped to item_db rows.
- *  - Raids / current-expansion content: the Blizzard journal is authoritative.
- *  - Mythic+ (MYTHIC_KEYSTONE): the REST journal mixes legacy + current for reused
- *    dungeons with no discriminator, so we derive the CURRENT item-id set from the
- *    DB2 journal tables (wago.tools) using the season's WorldStateExpression gate,
- *    then fetch those items' details from Blizzard and map them. (NON_EQUIP junk is
- *    dropped by mapItem.)
+ * Fetch one source's items, mapped to item_db rows — entirely from wago DB2, so a
+ * season can be seeded before its patch is live (the Blizzard REST item API only serves
+ * live content). Item IDs are proven stable PTR→live.
+ *  - Mythic+ (MYTHIC_KEYSTONE): the current item-id set comes from the DB2 journal
+ *    tables gated by the season's WorldStateExpression (reused dungeons mix legacy +
+ *    current with no other discriminator).
+ *  - Raids: single-season, so simply every all-difficulty (DifficultyMask -1) drop
+ *    across the raid's encounters — no WSE gate.
+ * Details (name/slot/armor) come from ItemSparse + Item via mapDb2Item().
  */
-async function fetchSourceItems(db, env, source, seasonId) {
-  const creds      = await getBlizzardCreds(db, env);
+async function fetchSourceItems(db, env, source, seasonId, build) {
   const difficulty = source.difficulty;
+  const [instances, encounters, encounterItems] = await Promise.all([
+    fetchWagoTable('JournalInstance',     { build }),
+    fetchWagoTable('JournalEncounter',    { build }),
+    fetchWagoTable('JournalEncounterItem', { build }),
+  ]);
+  const instanceName = instances.find(r => String(r.ID) === String(source.source_id))?.Name_lang ?? String(source.source_id);
 
+  let picks; // [{ itemId, encounterName }]
   if (difficulty === 'MYTHIC_KEYSTONE') {
     const seasonWse = await getSeasonMplusWse(db, seasonId);
     if (!seasonWse) {
       throw new Error('No Mythic+ WorldStateExpression set for this season — set it on the Seasons page (or use Detect) before syncing M+ sources.');
     }
-    const [instances, encounters, encounterItems] = await Promise.all([
-      fetchWagoTable('JournalInstance'),
-      fetchWagoTable('JournalEncounter'),
-      fetchWagoTable('JournalEncounterItem'),
-    ]);
-    const instanceName = instances.find(r => String(r.ID) === String(source.source_id))?.Name_lang ?? String(source.source_id);
-    const picks = computeMplusItemPicks(encounters, encounterItems, source.source_id, seasonWse);
-    const detailed = await pLimit(
-      picks.map(p => () =>
-        getItemDetails(Number(p.itemId), creds)
-          .then(details => mapItem({ details, encounterName: p.encounterName, instanceName, difficulty }))
-          .catch(() => null)
-      ),
-      8,
+    picks = computeMplusItemPicks(encounters, encounterItems, source.source_id, seasonWse)
+      .map(p => ({ itemId: p.itemId, encounterName: p.encounterName }));
+  } else {
+    const encName = new Map(
+      encounters.filter(e => String(e.JournalInstanceID) === String(source.source_id))
+        .map(e => [String(e.ID), e.Name_lang ?? '']),
     );
-    return detailed.filter(Boolean);
+    const seen = new Set();
+    picks = [];
+    for (const it of encounterItems) {
+      const encId = String(it.JournalEncounterID);
+      if (!encName.has(encId) || it.DifficultyMask !== '-1') continue;
+      const id = String(it.ItemID);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      picks.push({ itemId: id, encounterName: encName.get(encId) });
+    }
   }
 
-  const raw = await fetchRaidItems(Number(source.source_id), difficulty, creds);
-  return raw.map(mapItem).filter(Boolean);
+  if (!picks.length) return [];
+
+  const ids = picks.map(p => p.itemId);
+  const [sparse, items] = await Promise.all([
+    fetchWagoRowsById('ItemSparse', ids, { build }),
+    fetchWagoRowsById('Item', ids, { build }),
+  ]);
+  return picks
+    .map(p => mapDb2Item({
+      sparse: sparse.get(p.itemId), item: items.get(p.itemId),
+      encounterName: p.encounterName, instanceName, difficulty,
+    }))
+    .filter(Boolean);
 }
 
 /**
@@ -132,14 +163,15 @@ async function fetchSourceItems(db, env, source, seasonId) {
  */
 async function fetchManifestDesired(db, env, seasonId) {
   const sources = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
-  await getBlizzardCreds(db, env); // fail fast if Blizzard creds are missing
+  // Item seeding is now entirely DB2-sourced — no Blizzard creds required.
   setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
+  const build = await buildForSeason(db, seasonId);
   const perSource = [];
   const errors    = [];
   const items     = [];
   for (const src of sources) {
     try {
-      const mapped = await fetchSourceItems(db, env, src, seasonId);
+      const mapped = await fetchSourceItems(db, env, src, seasonId, build);
       items.push(...mapped);
       perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: mapped.length });
     } catch (err) {
@@ -216,15 +248,17 @@ router.get('/list', async (c) => {
 });
 
 // ── GET /instances ────────────────────────────────────────────────────────────
-// Returns a lightweight list for the instance picker (id + name only).
+// Lightweight list for the instance picker (id + name), sourced from wago DB2 so
+// upcoming-patch instances appear during PTR (the live journal API only has released
+// content) — consistent with the rest of item seeding.
 
 router.get('/instances', async (c) => {
-  const db = c.env.DB;
   try {
-    const creds = await getBlizzardCreds(db, c.env);
-    const raw   = await listInstances(creds);
-    // Return id + name only — the full object is large
-    const instances = raw.map(i => ({ id: i.id, name: i.name }));
+    const rows = await fetchWagoTable('JournalInstance');
+    const instances = rows
+      .map(i => ({ id: Number(i.ID), name: i.Name_lang }))
+      .filter(i => i.id && i.name)
+      .sort((a, b) => b.id - a.id);
     return c.json({ instances });
   } catch (err) {
     return c.json({ error: err.message }, 500);
@@ -249,8 +283,10 @@ router.post('/sync', async (c) => {
     const seasonId = await resolveSeasonId(db, reqSeason);
     setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
 
-    // Fetch items (raids via journal; Mythic+ via the DB2 current-season rule)
-    const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId);
+    // Fetch items from DB2 (M+ via the WSE rule, raids via encounter loot), pinned to
+    // the season's build (latest/PTR for pre_release, else newest live).
+    const build = await buildForSeason(db, seasonId);
+    const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId, build);
 
     if (!items.length) {
       return c.json({ ok: true, written: 0, skipped: 0, total: 0, instanceName: '(unknown)', message: 'No mappable items found for this instance/difficulty.' });
@@ -339,6 +375,71 @@ router.post('/clear', async (c) => {
     await writeItemDb(db, [], seasonId, { replace: true });
     return c.json({ ok: true, seasonId });
   } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+// ── GET /readiness ────────────────────────────────────────────────────────────
+// Read-only: is the datamine complete enough to seed this season's Item DB? Reports,
+// per configured source, how many items DB2 yields right now — so an officer can tell
+// (in-app, not via probe scripts) whether a PTR build has settled before seeding.
+// Uses only the small journal tables (no per-item detail fetches), so it's cheap.
+
+router.get('/readiness', async (c) => {
+  const db = c.env.DB;
+  try {
+    const seasonId = await resolveSeasonId(db, c.req.query('seasonId'));
+    const build = await buildForSeason(db, seasonId);
+    const [sources, seasonWse, instances, encounters, encounterItems] = await Promise.all([
+      getSeasonSources(db, seasonId),
+      getSeasonMplusWse(db, seasonId),
+      fetchWagoTable('JournalInstance',     { build }),
+      fetchWagoTable('JournalEncounter',    { build }),
+      fetchWagoTable('JournalEncounterItem', { build }),
+    ]);
+    const instName    = new Map(instances.map(i => [String(i.ID), i.Name_lang]));
+    const labelOf     = s => s.label || instName.get(String(s.source_id)) || String(s.source_id);
+    const mplusSources = sources.filter(s => s.difficulty === 'MYTHIC_KEYSTONE');
+    const raidSources  = sources.filter(s => s.difficulty !== 'MYTHIC_KEYSTONE');
+
+    // Which WSE the configured M+ pool clusters on (should match the season's seasonWse).
+    const detected     = detectSeasonWse(encounters, encounterItems, mplusSources.map(s => Number(s.source_id)));
+    const detectedWse  = detected[0]?.wse ?? null;
+
+    const mplus = mplusSources.map(s => {
+      const label = labelOf(s);
+      if (!seasonWse) return { sourceId: s.source_id, label, items: 0, spread: 0, flags: ['no-wse'] };
+      const ids = computeMplusItemPicks(encounters, encounterItems, s.source_id, seasonWse).map(p => Number(p.itemId));
+      const idMin = ids.length ? Math.min(...ids) : null;
+      const idMax = ids.length ? Math.max(...ids) : null;
+      const spread = ids.length ? idMax - idMin : 0;
+      const flags = [];
+      if (!ids.length) flags.push('empty');
+      // A tight ID cluster = one era (settled). A wide spread = stale prior-expansion
+      // items still mixed in — a sign this dungeon's data hasn't finished baking.
+      else if (spread > 30000) flags.push('mixed-era');
+      return { sourceId: s.source_id, label, items: ids.length, idMin, idMax, spread, flags };
+    });
+
+    const raid = raidSources.map(s => {
+      const label = labelOf(s);
+      const encIds = new Set(encounters.filter(e => String(e.JournalInstanceID) === String(s.source_id)).map(e => String(e.ID)));
+      const items = new Set(encounterItems.filter(it => encIds.has(String(it.JournalEncounterID)) && it.DifficultyMask === '-1').map(it => String(it.ItemID)));
+      const flags = [];
+      if (!encIds.size) flags.push('not-in-datamine');
+      else if (!items.size) flags.push('empty');
+      return { sourceId: s.source_id, label, difficulty: s.difficulty, encounters: encIds.size, items: items.size, flags };
+    });
+
+    return c.json({
+      seasonId, seasonWse, detectedWse,
+      detectedCoverage: detected[0]?.dungeonCount ?? 0,
+      mplusConfigured: mplusSources.length,
+      build: build ?? null, // null = latest (PTR) build; a version = pinned live build
+      mplus, raid,
+    });
+  } catch (err) {
+    console.error('[admin-items] readiness error:', err);
     return c.json({ error: err.message }, 500);
   }
 });

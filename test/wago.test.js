@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId, tierSetCandidates, detectVeteranStarts, detectCraftedBonusIds } from '../src/lib/wago.js';
+import { parseWagoCsv, computeMplusItemPicks, detectSeasonWse, findInstanceId, tierSetCandidates, detectVeteranStarts, detectCraftedBonusIds, fetchWagoTable, latestLiveBuild } from '../src/lib/wago.js';
 
 const encounters = [
   { ID: '965',  JournalInstanceID: '476',  Name_lang: 'Ranjit' },
@@ -123,6 +123,26 @@ test('wago M+ rule', async (t) => {
     const cands = tierSetCandidates(rows);
     assert.deepEqual(cands.map(c => c.id), [2067, 1990]);                // sorted desc, noise removed
     assert.equal(cands[0].items.length, 5);
+  });
+
+  await t.test('fetchWagoTable: build param isolates cache (PTR vs live never share)', async () => {
+    const calls = [];
+    const mock = async (url) => { calls.push(url); return { ok: true, text: async () => 'ID\n1' }; };
+    await fetchWagoTable('ZTbl', { fetchImpl: mock });                       // latest
+    await fetchWagoTable('ZTbl', { build: '12.0.7.1', fetchImpl: mock });    // pinned live
+    assert.ok(calls[0].endsWith('/db2/ZTbl/csv'), 'latest has no build param');
+    assert.ok(calls[1].includes('build=12.0.7.1'), 'pinned passes ?build=');
+    assert.equal(calls.length, 2, 'different builds are separate cache entries');
+    await fetchWagoTable('ZTbl', { fetchImpl: mock });                       // repeat latest → cached
+    assert.equal(calls.length, 2, 'same key served from cache, no refetch');
+  });
+
+  await t.test('latestLiveBuild picks the newest live (wow) build, ignoring PTR', async () => {
+    const mock = async () => ({ ok: true, json: async () => ({
+      wowt: [{ version: '12.1.0.99999' }],
+      wow:  [{ version: '12.0.7.68887' }, { version: '12.0.7.1' }],
+    }) });
+    assert.equal(await latestLiveBuild(mock), '12.0.7.68887');
   });
 
   await t.test('parseWagoCsv handles NEWLINES inside quoted cells (the real DB2 bug)', () => {

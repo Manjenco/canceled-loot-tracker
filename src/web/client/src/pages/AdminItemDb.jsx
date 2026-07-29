@@ -1020,6 +1020,108 @@ function AddItemCard({ seasonId, onItemAdded }) {
   );
 }
 
+// ── Season data readiness card ──────────────────────────────────────────────────
+
+const READINESS_FLAG = {
+  empty:             '⛔ no items yet',
+  'mixed-era':       '⚠ mixed-era IDs (may be unsettled)',
+  'no-wse':          '⛔ set M+ WSE first',
+  'not-in-datamine': '⛔ not in datamine',
+};
+
+function ReadinessTable({ title, rows, isRaid }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>{title}</div>
+      <table className="bis-table" style={{ fontSize: 13, width: '100%' }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'left' }}>Source</th>
+            <th>Items</th>
+            <th>{isRaid ? 'Bosses' : 'ID range'}</th>
+            <th style={{ textAlign: 'left' }}>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.sourceId}>
+              <td>{r.label}</td>
+              <td style={{ textAlign: 'center' }}>{r.items}</td>
+              <td style={{ textAlign: 'center' }}>{isRaid ? r.encounters : (r.idMin ? `${r.idMin}–${r.idMax}` : '—')}</td>
+              <td>
+                {r.flags.length
+                  ? r.flags.map(f => READINESS_FLAG[f] ?? f).join(', ')
+                  : <span style={{ color: '#22c55e' }}>✓ ready</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReadinessCard({ seasonId }) {
+  const [loading, setLoading] = useState(false);
+  const [data,    setData]    = useState(null);
+  const [error,   setError]   = useState(null);
+
+  async function check() {
+    setLoading(true); setError(null); setData(null);
+    try {
+      const r = await fetch(apiPath(`/api/admin/item-db/readiness?seasonId=${seasonId}`), { credentials: 'include' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? r.status);
+      setData(d);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const wseMismatch = data?.seasonWse && data?.detectedWse && String(data.seasonWse) !== String(data.detectedWse);
+
+  return (
+    <div className="card">
+      <div className="card-title">Season Data Readiness</div>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+        Checks the datamine (wago DB2) for this season's configured sources — how many items each yields
+        right now. Item IDs are stable PTR→live, so once these look settled you can seed the Item DB
+        before the patch launches. Read-only; nothing is written.
+      </p>
+
+      <button className="btn-primary" onClick={check} disabled={loading || !seasonId}>
+        {loading ? 'Checking…' : 'Check readiness'}
+      </button>
+
+      {error && <p style={{ fontSize: 13, color: 'var(--danger, #e05)', marginTop: 10 }}>Error: {error}</p>}
+
+      {data && (
+        <div style={{ marginTop: 14 }}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Reading {data.build
+              ? <>pinned live build <strong>{data.build}</strong></>
+              : <><strong style={{ color: '#fbbf24' }}>latest (PTR)</strong> build — season is marked pre-release</>}
+          </p>
+          <p style={{ fontSize: 13, marginBottom: 10 }}>
+            M+ gate: configured WSE <strong>{data.seasonWse ?? '(none)'}</strong>, datamine clusters on{' '}
+            <strong>{data.detectedWse ?? '(none)'}</strong> ({data.detectedCoverage} of {data.mplusConfigured} dungeons)
+            {wseMismatch && <span style={{ color: '#fbbf24' }}> — ⚠ mismatch, check the season's WSE</span>}
+          </p>
+          {data.mplus.length > 0 && <ReadinessTable title="Mythic+ dungeons" rows={data.mplus} isRaid={false} />}
+          {data.raid.length  > 0 && <ReadinessTable title="Raid" rows={data.raid} isRaid />}
+          {data.mplus.length === 0 && data.raid.length === 0 && (
+            <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              No sources configured for this season yet — add them in the manifest above.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AdminItemDb() {
   const [seasons,  setSeasons]  = useState([]);
   const [seasonId, setSeasonId] = useState(null);
@@ -1095,6 +1197,7 @@ export default function AdminItemDb() {
       </div>
 
       <SourceManifestCard seasonId={seasonId} />
+      <ReadinessCard seasonId={seasonId} />
       <ManifestUpdateCard seasonId={seasonId} onItemsChanged={refresh} />
       <ItemDbCard seasonId={seasonId} onStatsChange={refresh} />
       <AddItemCard seasonId={seasonId} onItemAdded={refresh} />

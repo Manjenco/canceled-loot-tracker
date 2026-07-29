@@ -48,7 +48,7 @@ export default function AdminSeasons() {
 
   function hydrate(list) {
     setSeasons(list);
-    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '' }])));
+    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release }])));
   }
 
   async function refresh() {
@@ -67,7 +67,7 @@ export default function AdminSeasons() {
   const setEdit = (id, patch) => setEdits(e => ({ ...e, [id]: { ...e[id], ...patch } }));
 
   async function saveSeason(id) {
-    const { name, startDate, mplusWse } = edits[id];
+    const { name, startDate, mplusWse, preRelease } = edits[id];
     if (!name?.trim()) { setRow(id, { result: { error: 'Name is required' } }); return; }
     setRow(id, { saving: true, result: null });
     try {
@@ -78,6 +78,7 @@ export default function AdminSeasons() {
           name: name.trim(),
           startDate: startDate ?? '',
           mplusWse: (mplusWse === '' || mplusWse == null) ? null : Number(mplusWse),
+          preRelease: !!preRelease,
         }),
       });
       const d = await r.json();
@@ -165,7 +166,8 @@ export default function AdminSeasons() {
     const e = edits[s.id] ?? {};
     return e.name !== s.name
       || (e.startDate ?? '') !== normaliseDate(s.start_date)
-      || String(e.mplusWse ?? '') !== String(s.mplus_wse ?? '');
+      || String(e.mplusWse ?? '') !== String(s.mplus_wse ?? '')
+      || !!e.preRelease !== !!s.pre_release;
   };
 
   return (
@@ -187,6 +189,7 @@ export default function AdminSeasons() {
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500 }}>Name</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 160 }}>Start Date</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 200 }} title="Current Mythic+ WorldStateExpression gate (DB2). Used to pick this season's M+ loot.">M+ WSE</th>
+              <th style={{ textAlign: 'center', padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 90 }} title="Seed the Item DB from the latest (PTR) datamine build instead of the newest live build. Use while prepping a season before its patch launches.">Pre-release</th>
               <th style={{ textAlign: 'center', padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 110 }}>Current</th>
               <th style={{ textAlign: 'right',  padding: '4px 0 8px',     color: 'var(--text-muted)', fontWeight: 500, width: 220 }}>Actions</th>
             </tr>
@@ -231,6 +234,14 @@ export default function AdminSeasons() {
                     >
                       {rs.detecting ? '…' : 'Detect'}
                     </button>
+                  </td>
+                  <td style={{ padding: '8px 8px 8px 0', textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={!!e.preRelease}
+                      onChange={ev => setEdit(s.id, { preRelease: ev.target.checked })}
+                      title="Pre-release: seed from the latest (PTR) build"
+                    />
                   </td>
                   <td style={{ padding: '8px 8px 8px 0', textAlign: 'center' }}>
                     {s.is_current

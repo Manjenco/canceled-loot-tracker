@@ -209,3 +209,92 @@ export function mapItem({ details, encounterName, instanceName, difficulty }) {
     weaponType,
   };
 }
+
+// ── DB2 mapping (wago.tools) ─────────────────────────────────────────────────────
+//
+// The Blizzard REST item API only carries LIVE content, so it can't seed a season
+// before its patch ships. wago.tools mirrors the game's DB2 tables (which include PTR
+// content), so mapDb2Item() reconstructs the same row mapItem() produces, but from the
+// raw ItemSparse + Item rows. Everything below is a FIXED game-schema enum (numeric in
+// DB2, string-named in the REST API) — none of it drifts per season.
+
+// Numeric ItemSparse.InventoryType → the INVENTORY_SLOT key above. Stable since Vanilla.
+const INV_TYPE_KEY = {
+  1: 'HEAD', 2: 'NECK', 3: 'SHOULDER', 5: 'CHEST', 20: 'ROBE', 6: 'WAIST', 7: 'LEGS',
+  8: 'FEET', 9: 'WRIST', 10: 'HAND', 11: 'FINGER', 12: 'TRINKET', 16: 'CLOAK',
+  13: 'WEAPON', 17: 'TWOHWEAPON', 21: 'MAIN_HAND', 22: 'OFF_HAND', 14: 'SHIELD',
+  15: 'RANGED', 26: 'RANGEDRIGHT', 23: 'HOLDABLE',
+};
+
+// Item.ClassID=2 (Weapon) SubclassID → weapon type name (matches WEAPON_PROFICIENCY_BY_CLASS).
+const WEAPON_SUBCLASS_NAME = {
+  0: 'Axe', 1: 'Two-Handed Axe', 2: 'Bow', 3: 'Gun', 4: 'Mace', 5: 'Two-Handed Mace',
+  6: 'Polearm', 7: 'Sword', 8: 'Two-Handed Sword', 9: 'Warglaives', 10: 'Staff',
+  13: 'Fist Weapon', 15: 'Dagger', 18: 'Crossbow', 19: 'Wand',
+};
+// Item.ClassID=4 (Armor) SubclassID for off-hand items: shield / held-in-off-hand.
+const ARMOR_OFFHAND_NAME = { 0: 'Miscellaneous', 6: 'Shield' };
+
+function db2SubclassName(classId, subId) {
+  if (classId === 2) return WEAPON_SUBCLASS_NAME[subId] ?? '';
+  if (classId === 4) return ARMOR_OFFHAND_NAME[subId]  ?? '';
+  return '';
+}
+
+// ItemSparse.AllowableClass bitmask → armor type, computed from ARMOR_CLASS_GROUPS so a
+// class moving groups is a one-line change (same source of truth as tier-token detection).
+// Class bit = 1 << (classId-1); e.g. Plate = Warrior|Paladin|DK = 1|2|32 = 35.
+const CLASS_ID = {
+  Warrior: 1, Paladin: 2, Hunter: 3, Rogue: 4, Priest: 5, 'Death Knight': 6,
+  Shaman: 7, Mage: 8, Warlock: 9, Monk: 10, Druid: 11, 'Demon Hunter': 12, Evoker: 13,
+};
+const classMask = names => names.reduce((m, n) => m | (1 << (CLASS_ID[n] - 1)), 0);
+const ARMOR_BY_ALLOWABLE_CLASS = new Map(
+  Object.entries(ARMOR_CLASS_GROUPS).map(([armor, classes]) => [classMask(classes), armor]),
+);
+
+/**
+ * Map a wago DB2 ItemSparse (+ Item) row pair to an item_db row — the DB2-sourced twin
+ * of mapItem(). Returns null for items to skip (unmapped slots, non-token NON_EQUIP).
+ *
+ * @param {{ sparse: object, item: object, encounterName: string, instanceName: string, difficulty: string }} args
+ */
+export function mapDb2Item({ sparse, item, encounterName, instanceName, difficulty }) {
+  if (!sparse) return null;
+  const invNum  = Number(sparse.InventoryType);
+  const classId = Number(item?.ClassID);
+  const subId   = Number(item?.SubclassID);
+  const name    = sparse.Display_lang ?? '';
+  const base = {
+    itemId:     String(sparse.ID),
+    name,
+    sourceType: difficulty === 'MYTHIC_KEYSTONE' ? 'Mythic+' : 'Raid',
+    sourceName: encounterName,
+    instance:   instanceName,
+    difficulty: DIFFICULTY_LABEL[difficulty] ?? difficulty,
+  };
+
+  // NON_EQUIP: keep only recognised tier tokens. Armor type from AllowableClass (robust,
+  // name-free); slot from the token flavor word (per-expansion, overridable).
+  if (invNum === 0) {
+    const armorType = ARMOR_BY_ALLOWABLE_CLASS.get(Number(sparse.AllowableClass));
+    if (!armorType) return null; // not a tier token
+    const slot = tierTokenSlot(name);
+    if (!slot) {
+      console.warn(`[item-seeder] DB2 tier token "${name}" (#${sparse.ID}) recognised (${armorType}) but slot unknown — map its word via token_slot_overrides`);
+      return null;
+    }
+    return { ...base, slot, armorType, isTierToken: true, weaponType: '' };
+  }
+
+  const slotKey = INV_TYPE_KEY[invNum];
+  const slot    = slotKey ? INVENTORY_SLOT[slotKey] : undefined;
+  if (!slot) return null;
+
+  const isAccessory = ACCESSORY_SLOTS.has(slot);
+  const armorType   = isAccessory ? 'Accessory' : (ARMOR_SUBCLASS[subId] ?? 'Accessory');
+  const isTierToken = TIER_SLOTS.has(slot) && Number(sparse.ItemSet) > 0;
+  const weaponType  = (slot === 'Weapon' || slot === 'Off-Hand') ? db2SubclassName(classId, subId) : '';
+
+  return { ...base, slot, armorType, isTierToken, weaponType };
+}
