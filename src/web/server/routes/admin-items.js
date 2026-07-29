@@ -17,7 +17,7 @@ import {
   getSeasonSources, addSeasonSource, removeSeasonSource, setSeasonSourceEnabled,
   getDefaultBisItemRefs, deleteItemDbItems, getSeasonMplusWse,
 } from '../../../lib/db.js';
-import { listInstances, getInstance, getItemSet, getItemDetails, pLimit }
+import { getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
 import { mapItem, mapDb2Item, TIER_ITEM_SLOT_MAP, setTokenSlotOverrides, parseTokenSlotOverrides } from '../../../lib/item-seeder.js';
 import { computeMplusItemPicks, fetchWagoTable, fetchWagoRowsById, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
@@ -236,15 +236,17 @@ router.get('/list', async (c) => {
 });
 
 // ── GET /instances ────────────────────────────────────────────────────────────
-// Returns a lightweight list for the instance picker (id + name only).
+// Lightweight list for the instance picker (id + name), sourced from wago DB2 so
+// upcoming-patch instances appear during PTR (the live journal API only has released
+// content) — consistent with the rest of item seeding.
 
 router.get('/instances', async (c) => {
-  const db = c.env.DB;
   try {
-    const creds = await getBlizzardCreds(db, c.env);
-    const raw   = await listInstances(creds);
-    // Return id + name only — the full object is large
-    const instances = raw.map(i => ({ id: i.id, name: i.name }));
+    const rows = await fetchWagoTable('JournalInstance');
+    const instances = rows
+      .map(i => ({ id: Number(i.ID), name: i.Name_lang }))
+      .filter(i => i.id && i.name)
+      .sort((a, b) => b.id - a.id);
     return c.json({ instances });
   } catch (err) {
     return c.json({ error: err.message }, 500);
