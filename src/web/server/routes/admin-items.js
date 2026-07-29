@@ -20,7 +20,7 @@ import {
 import { getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
 import { mapItem, mapDb2Item, TIER_ITEM_SLOT_MAP, setTokenSlotOverrides, parseTokenSlotOverrides } from '../../../lib/item-seeder.js';
-import { computeMplusItemPicks, fetchWagoTable, fetchWagoRowsById, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
+import { computeMplusItemPicks, fetchWagoTable, fetchWagoRowsById, latestLiveBuild, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
 
 const TIER_CLASSES = new Set([
   'Death Knight', 'Demon Hunter', 'Druid', 'Evoker', 'Hunter', 'Mage', 'Monk',
@@ -67,6 +67,17 @@ async function resolveSeasonId(db, requested) {
   return id;
 }
 
+// ── DB2 build selection ───────────────────────────────────────────────────────
+// wago serves the LATEST build by default (currently a PTR build). A season flagged
+// pre_release seeds from that (to prep before a patch ships); a released season pins
+// its DB2 reads to the newest LIVE build so a live season is never sourced from PTR.
+
+async function buildForSeason(db, seasonId) {
+  const season = (await getSeasons(db)).find(s => s.id === seasonId);
+  if (season?.pre_release) return undefined;   // latest build (includes PTR content)
+  return await latestLiveBuild();              // pin to the newest released build
+}
+
 // ── Blizzard creds helper ─────────────────────────────────────────────────────
 
 async function getBlizzardCreds(db, env) {
@@ -96,12 +107,12 @@ async function getBlizzardCreds(db, env) {
  *    across the raid's encounters — no WSE gate.
  * Details (name/slot/armor) come from ItemSparse + Item via mapDb2Item().
  */
-async function fetchSourceItems(db, env, source, seasonId) {
+async function fetchSourceItems(db, env, source, seasonId, build) {
   const difficulty = source.difficulty;
   const [instances, encounters, encounterItems] = await Promise.all([
-    fetchWagoTable('JournalInstance'),
-    fetchWagoTable('JournalEncounter'),
-    fetchWagoTable('JournalEncounterItem'),
+    fetchWagoTable('JournalInstance',     { build }),
+    fetchWagoTable('JournalEncounter',    { build }),
+    fetchWagoTable('JournalEncounterItem', { build }),
   ]);
   const instanceName = instances.find(r => String(r.ID) === String(source.source_id))?.Name_lang ?? String(source.source_id);
 
@@ -134,8 +145,8 @@ async function fetchSourceItems(db, env, source, seasonId) {
 
   const ids = picks.map(p => p.itemId);
   const [sparse, items] = await Promise.all([
-    fetchWagoRowsById('ItemSparse', ids),
-    fetchWagoRowsById('Item', ids),
+    fetchWagoRowsById('ItemSparse', ids, { build }),
+    fetchWagoRowsById('Item', ids, { build }),
   ]);
   return picks
     .map(p => mapDb2Item({
@@ -154,12 +165,13 @@ async function fetchManifestDesired(db, env, seasonId) {
   const sources = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
   // Item seeding is now entirely DB2-sourced — no Blizzard creds required.
   setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
+  const build = await buildForSeason(db, seasonId);
   const perSource = [];
   const errors    = [];
   const items     = [];
   for (const src of sources) {
     try {
-      const mapped = await fetchSourceItems(db, env, src, seasonId);
+      const mapped = await fetchSourceItems(db, env, src, seasonId, build);
       items.push(...mapped);
       perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: mapped.length });
     } catch (err) {
@@ -271,8 +283,10 @@ router.post('/sync', async (c) => {
     const seasonId = await resolveSeasonId(db, reqSeason);
     setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
 
-    // Fetch items (raids via journal; Mythic+ via the DB2 current-season rule)
-    const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId);
+    // Fetch items from DB2 (M+ via the WSE rule, raids via encounter loot), pinned to
+    // the season's build (latest/PTR for pre_release, else newest live).
+    const build = await buildForSeason(db, seasonId);
+    const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId, build);
 
     if (!items.length) {
       return c.json({ ok: true, written: 0, skipped: 0, total: 0, instanceName: '(unknown)', message: 'No mappable items found for this instance/difficulty.' });
@@ -375,12 +389,13 @@ router.get('/readiness', async (c) => {
   const db = c.env.DB;
   try {
     const seasonId = await resolveSeasonId(db, c.req.query('seasonId'));
+    const build = await buildForSeason(db, seasonId);
     const [sources, seasonWse, instances, encounters, encounterItems] = await Promise.all([
       getSeasonSources(db, seasonId),
       getSeasonMplusWse(db, seasonId),
-      fetchWagoTable('JournalInstance'),
-      fetchWagoTable('JournalEncounter'),
-      fetchWagoTable('JournalEncounterItem'),
+      fetchWagoTable('JournalInstance',     { build }),
+      fetchWagoTable('JournalEncounter',    { build }),
+      fetchWagoTable('JournalEncounterItem', { build }),
     ]);
     const instName    = new Map(instances.map(i => [String(i.ID), i.Name_lang]));
     const labelOf     = s => s.label || instName.get(String(s.source_id)) || String(s.source_id);
@@ -420,6 +435,7 @@ router.get('/readiness', async (c) => {
       seasonId, seasonWse, detectedWse,
       detectedCoverage: detected[0]?.dungeonCount ?? 0,
       mplusConfigured: mplusSources.length,
+      build: build ?? null, // null = latest (PTR) build; a version = pinned live build
       mplus, raid,
     });
   } catch (err) {

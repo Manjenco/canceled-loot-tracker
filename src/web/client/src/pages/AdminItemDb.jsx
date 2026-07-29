@@ -1099,6 +1099,11 @@ function ReadinessCard({ seasonId }) {
 
       {data && (
         <div style={{ marginTop: 14 }}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Reading {data.build
+              ? <>pinned live build <strong>{data.build}</strong></>
+              : <><strong style={{ color: '#fbbf24' }}>latest (PTR)</strong> build — season is marked pre-release</>}
+          </p>
           <p style={{ fontSize: 13, marginBottom: 10 }}>
             M+ gate: configured WSE <strong>{data.seasonWse ?? '(none)'}</strong>, datamine clusters on{' '}
             <strong>{data.detectedWse ?? '(none)'}</strong> ({data.detectedCoverage} of {data.mplusConfigured} dungeons)

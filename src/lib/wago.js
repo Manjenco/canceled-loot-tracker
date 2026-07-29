@@ -67,15 +67,35 @@ function parseCsvRecords(text) {
   return records;
 }
 
-/** Fetch + cache a DB2 table (latest build) as parsed rows. */
-export async function fetchWagoTable(name, fetchImpl = fetch) {
-  const hit = _cache.get(name);
+/**
+ * Fetch + cache a DB2 table as parsed rows. Without `build`, wago serves the LATEST
+ * build (which includes unreleased PTR content); pass a `build` version to pin the read
+ * to a specific build (e.g. the newest LIVE build for a released season). Cache is keyed
+ * by build so PTR and live reads don't collide.
+ */
+export async function fetchWagoTable(name, { build, fetchImpl = fetch } = {}) {
+  const key = build ? `${name}@${build}` : name;
+  const hit = _cache.get(key);
   if (hit && Date.now() < hit.expiresAt) return hit.rows;
-  const r = await fetchImpl(`${WAGO_BASE}/${encodeURIComponent(name)}/csv`);
-  if (!r.ok) throw new Error(`wago.tools ${name}: HTTP ${r.status}`);
+  const url = `${WAGO_BASE}/${encodeURIComponent(name)}/csv${build ? `?build=${encodeURIComponent(build)}` : ''}`;
+  const r = await fetchImpl(url);
+  if (!r.ok) throw new Error(`wago.tools ${name}${build ? `@${build}` : ''}: HTTP ${r.status}`);
   const rows = parseWagoCsv(await r.text());
-  _cache.set(name, { rows, expiresAt: Date.now() + TTL_MS });
+  _cache.set(key, { rows, expiresAt: Date.now() + TTL_MS });
   return rows;
+}
+
+// Newest LIVE (retail 'wow') build on wago, cached — used to pin a released season's DB2
+// reads to shipped data instead of the latest (PTR) build.
+let _liveBuild = null;
+export async function latestLiveBuild(fetchImpl = fetch) {
+  if (_liveBuild && Date.now() < _liveBuild.expiresAt) return _liveBuild.build;
+  const r = await fetchImpl('https://wago.tools/api/builds');
+  if (!r.ok) throw new Error(`wago.tools builds: HTTP ${r.status}`);
+  const data = await r.json();
+  const build = (data.wow ?? [])[0]?.version ?? null; // list is newest-first
+  _liveBuild = { build, expiresAt: Date.now() + TTL_MS };
+  return build;
 }
 
 /**
@@ -84,14 +104,15 @@ export async function fetchWagoTable(name, fetchImpl = fetch) {
  * wago's `?filter[ID]=` matches one ID per request and has no working batch form, so
  * this fans out one request per id at a small concurrency. Returns Map(idString → row).
  */
-export async function fetchWagoRowsById(table, ids, { concurrency = 8, fetchImpl = fetch } = {}) {
+export async function fetchWagoRowsById(table, ids, { concurrency = 8, build, fetchImpl = fetch } = {}) {
   const unique = [...new Set(ids.map(String))];
+  const buildQ = build ? `&build=${encodeURIComponent(build)}` : '';
   const out = new Map();
   let next = 0;
   async function worker() {
     while (next < unique.length) {
       const id = unique[next++];
-      const r = await fetchImpl(`${WAGO_BASE}/${encodeURIComponent(table)}/csv?filter[ID]=${encodeURIComponent(id)}`);
+      const r = await fetchImpl(`${WAGO_BASE}/${encodeURIComponent(table)}/csv?filter[ID]=${encodeURIComponent(id)}${buildQ}`);
       if (!r.ok) continue;
       const row = parseWagoCsv(await r.text())[0];
       if (row) out.set(id, row);
