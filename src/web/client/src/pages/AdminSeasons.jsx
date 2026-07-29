@@ -17,7 +17,7 @@ async function loadSeasons() {
   const r = await fetch(apiPath('/api/admin/seasons'), { credentials: 'include' });
   const d = await r.json();
   if (d.error) throw new Error(d.error);
-  return d.seasons ?? [];
+  return d; // { seasons, currentSeasonId }
 }
 
 function ResultMsg({ result }) {
@@ -35,6 +35,7 @@ export default function AdminSeasons() {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
   const [seasons, setSeasons] = useState([]);
+  const [currentSeasonId, setCurrentSeasonId] = useState(null); // resolved current (override or date rule)
 
   // Per-row editable buffers: { [id]: { name, startDate } }
   const [edits,    setEdits]    = useState({});
@@ -46,14 +47,23 @@ export default function AdminSeasons() {
   const [creating,   setCreating]   = useState(false);
   const [createResult, setCreateResult] = useState(null);
 
-  function hydrate(list) {
+  function hydrate(d) {
+    const list = d.seasons ?? [];
     setSeasons(list);
+    setCurrentSeasonId(d.currentSeasonId ?? null);
     setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release }])));
   }
 
   async function refresh() {
-    const list = await loadSeasons();
-    hydrate(list);
+    hydrate(await loadSeasons());
+  }
+
+  async function clearOverride() {
+    if (!window.confirm('Clear the manual current-season override? The current season will then be resolved automatically — the latest season whose start date has already passed.')) return;
+    try {
+      const r = await fetch(apiPath('/api/admin/seasons/clear-current'), { method: 'POST', credentials: 'include' });
+      if ((await r.json()).ok) await refresh();
+    } catch { /* non-critical */ }
   }
 
   useEffect(() => {
@@ -177,10 +187,18 @@ export default function AdminSeasons() {
       <div className="card">
         <div className="card-title">All Seasons</div>
         <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-          Each season partitions its own loot, raids, BIS, item DB, and tier data. Exactly one
-          season is current at a time — that’s the one shown across the app and written to by
-          new loot imports and WCL syncs. Switching the current season never deletes data.
+          Each season partitions its own loot, raids, BIS, item DB, and tier data. The
+          <strong> current</strong> season — where new loot and WCL syncs are written — is normally
+          resolved automatically: the latest season whose start date has already passed (pre-release
+          seasons are excluded). Use <em>Set current</em> to pin one manually as an override. Everyone
+          can switch which season they’re <em>viewing</em> from the top bar; that never affects writes.
         </p>
+        {seasons.some(s => s.is_current) && (
+          <p style={{ fontSize: 13, marginBottom: 16 }}>
+            <span style={{ color: '#fbbf24' }}>⚙ A manual current-season override is active.</span>{' '}
+            <button className="btn-link" onClick={clearOverride}>Clear it (use automatic)</button>
+          </p>
+        )}
 
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
@@ -244,8 +262,8 @@ export default function AdminSeasons() {
                     />
                   </td>
                   <td style={{ padding: '8px 8px 8px 0', textAlign: 'center' }}>
-                    {s.is_current
-                      ? <span style={{ color: '#4caf50', fontWeight: 600 }}>● Current</span>
+                    {s.id === currentSeasonId
+                      ? <span style={{ color: '#4caf50', fontWeight: 600 }}>● Current{s.is_current ? ' (manual)' : ' (auto)'}</span>
                       : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                   </td>
                   <td style={{ padding: '8px 0', textAlign: 'right', whiteSpace: 'nowrap' }}>

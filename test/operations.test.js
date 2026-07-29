@@ -22,11 +22,11 @@ test('data layer operations (season-partitioned)', async (t) => {
   const { teamId, chars, helmItemId } = await seedBaseline(D);
   const [c1, c2] = chars;
 
-  await t.test('current season resolves to 1', async () => {
+  await t.test('current season resolves to 1 (via the start-date rule, no override)', async () => {
     assert.equal(await db.getCurrentSeasonId(D), 1);
     const s = await db.getCurrentSeason(D);
     assert.equal(s.id, 1);
-    assert.equal(s.is_current, 1);
+    assert.equal(s.is_current, 0); // Season 1 is current by the date rule, not a manual override
   });
 
   await t.test('roster reads back seeded characters', async () => {

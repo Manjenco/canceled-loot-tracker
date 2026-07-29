@@ -12,6 +12,7 @@ import {
   upsertWornBis, upsertTierSnapshot,
   getItemDb, getBisSubmissions, getEffectiveDefaultBis, getRoster, getCurrentSeasonId,
 } from '../../../lib/db.js';
+import { viewSeasonId } from '../util/season.js';
 import { toCanonical, getCharSpecs, getArmorType, buildTrackRanges, getItemTrack, mergeTrack } from '../../../lib/specs.js';
 import { matchesBis, applyRaidBisInference, PAIRED_BIS_SLOTS } from '../../../lib/bis-match.js';
 import { parseSimcGear, parseSimcHeader } from '../../../lib/simc.js';
@@ -35,7 +36,7 @@ router.get('/', requireAuth, async (c) => {
     const activeSpec    = charSpecs.all.includes(requestedSpec) ? requestedSpec : charSpecs.primary;
     const canonicalSpec = toCanonical(activeSpec);
 
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
 
     // Phase 2 — all narrow queries in parallel; each scoped to this char/spec
     const [lootLog, bisSubmissions, wornBisMap, effectiveBis] = await Promise.all([
@@ -127,7 +128,7 @@ router.post('/simc', requireAuth, async (c) => {
   const db = c.env.DB;
 
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [globalConfig, itemDbRows, tierItemRows, allSubs, effectiveDefaultBis, roster] = await Promise.all([
       getGlobalConfig(db),
       getItemDb(db, seasonId),

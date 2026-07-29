@@ -104,10 +104,35 @@ export async function getSeasons(db) {
   return all(db, 'SELECT * FROM seasons ORDER BY id');
 }
 
+/**
+ * Resolve the current season:
+ *   1. an explicit manual override (is_current = 1) always wins, else
+ *   2. the newest NON-pre-release season whose start_date has already passed
+ *      (empty start_date counts as long-passed, so a lone Season 1 resolves), else
+ *   3. any non-pre-release season, else any season at all.
+ * A pre-release season is never auto-current — it's being prepped for a future patch.
+ */
 export async function getCurrentSeason(db) {
-  return cachedRead('current_season', TTL.SHORT, () =>
-    first(db, 'SELECT * FROM seasons WHERE is_current = 1 LIMIT 1')
-  );
+  return cachedRead('current_season', TTL.SHORT, async () => {
+    const override = await first(db, 'SELECT * FROM seasons WHERE is_current = 1 LIMIT 1');
+    if (override) return override;
+    const today = new Date().toISOString().slice(0, 10);
+    const byDate = await first(db,
+      `SELECT * FROM seasons
+       WHERE pre_release = 0 AND (start_date = '' OR start_date <= ?)
+       ORDER BY (start_date = '') ASC, start_date DESC, id DESC LIMIT 1`,
+      today,
+    );
+    if (byDate) return byDate;
+    return (await first(db, 'SELECT * FROM seasons WHERE pre_release = 0 ORDER BY id DESC LIMIT 1'))
+      ?? (await first(db, 'SELECT * FROM seasons ORDER BY id LIMIT 1'));
+  });
+}
+
+/** Clear the manual current-season override, reverting to automatic (date-rule) resolution. */
+export async function clearCurrentSeasonOverride(db) {
+  await run(db, 'UPDATE seasons SET is_current = 0');
+  cacheInvalidate('current_season');
 }
 
 /**

@@ -105,10 +105,10 @@ test('0005_seasons migrates a dirty pre-season database cleanly', async (t) => {
   assert.ok(all.every(r => r.status !== 'error'), `a migration errored: ${JSON.stringify(all)}`);
 
   // ── 5. assertions ────────────────────────────────────────────────────────────
-  await t.test('seasons table seeded with current season 1', async () => {
+  await t.test('seasons table seeded with season 1 (is_current cleared by 0009; date-rule governs)', async () => {
     const s = await D.prepare('SELECT * FROM seasons WHERE id = 1').first();
     assert.ok(s, 'season 1 exists');
-    assert.equal(s.is_current, 1);
+    assert.equal(s.is_current, 0); // 0009 clears the seeded override so the start-date rule resolves current
   });
 
   await t.test('season_id added to operational tables, defaulted to 1', async () => {

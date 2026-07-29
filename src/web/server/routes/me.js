@@ -16,10 +16,11 @@
 
 import { Hono } from 'hono';
 import { requireAuth } from '../middleware/requireAuth.js';
+import { getSeasons, getCurrentSeasonId } from '../../../lib/db.js';
 
 const router = new Hono();
 
-router.get('/', (c) => {
+router.get('/', async (c) => {
   const session = c.get('session');
   if (!session?.user) return c.json({ error: 'Not authenticated' }, 401);
 
@@ -28,7 +29,24 @@ router.get('/', (c) => {
     teamName, charId, charName, spec, role, status, isOfficer, isGlobalOfficer,
     chars, teams,
   } = session.user;
-  return c.json({ id, username, avatar, teamName, charId, charName, spec, role, status, isOfficer, isGlobalOfficer: isGlobalOfficer ?? false, chars: chars ?? [], teams: teams ?? [] });
+
+  // Season selection — fetched live so newly-created seasons appear without re-login.
+  // The effective "view season" is the user's selection if it still exists, else current.
+  let seasons = [], seasonId = null, seasonName = null;
+  try {
+    seasons = await getSeasons(c.env.DB);
+    const currentId = await getCurrentSeasonId(c.env.DB).catch(() => null);
+    const selected  = session.user.seasonId;
+    seasonId   = seasons.some(s => s.id === selected) ? selected : currentId;
+    seasonName = seasons.find(s => s.id === seasonId)?.name ?? null;
+  } catch { /* seasons are optional; a fresh DB may have none configured */ }
+
+  return c.json({
+    id, username, avatar, teamName, charId, charName, spec, role, status,
+    isOfficer, isGlobalOfficer: isGlobalOfficer ?? false, chars: chars ?? [], teams: teams ?? [],
+    seasonId, seasonName,
+    seasons: seasons.map(s => ({ id: s.id, name: s.name })),
+  });
 });
 
 router.post('/active-char', requireAuth, async (c) => {
@@ -71,6 +89,24 @@ router.post('/active-team', requireAuth, async (c) => {
   session.user.status      = activeChar?.status   ?? null;
 
   return c.json({ ok: true, teamName: target.teamName });
+});
+
+// Switch the "view season" (which season's data every page shows). Pass a valid
+// seasonId, or null to revert to following the current season. Session-only — it
+// never changes where new data is written (cron/bot always target the current season).
+router.post('/active-season', requireAuth, async (c) => {
+  const { seasonId } = await c.req.json().catch(() => ({}));
+  const session = c.get('session');
+
+  if (seasonId == null) {
+    session.user.seasonId = null; // follow current
+    return c.json({ ok: true, seasonId: null });
+  }
+  const target = (await getSeasons(c.env.DB)).find(s => s.id === Number(seasonId));
+  if (!target) return c.json({ error: 'Season not found' }, 400);
+
+  session.user.seasonId = target.id;
+  return c.json({ ok: true, seasonId: target.id, seasonName: target.name });
 });
 
 export default router;

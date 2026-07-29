@@ -18,6 +18,17 @@ export default function Layout({ children }) {
     window.location.reload();
   }
 
+  async function switchSeason(seasonId) {
+    await fetch(apiPath('/api/me/active-season'), {
+      method:      'POST',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ seasonId: Number(seasonId) }),
+    });
+    await refreshMe();
+    window.location.reload();
+  }
+
   return (
     <div className="layout">
       <header className="nav-header">
@@ -36,6 +47,20 @@ export default function Layout({ children }) {
               >
                 {user.teams.map(t => (
                   <option key={t.teamName} value={t.teamName}>{t.teamName}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {user?.seasons?.length > 1 && (
+            <div className="nav-team">
+              <span className="nav-team-label">Season:</span>
+              <select
+                className="nav-team-select"
+                value={user.seasonId ?? ''}
+                onChange={e => switchSeason(e.target.value)}
+              >
+                {user.seasons.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
             </div>
