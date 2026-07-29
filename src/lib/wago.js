@@ -78,6 +78,29 @@ export async function fetchWagoTable(name, fetchImpl = fetch) {
   return rows;
 }
 
+/**
+ * Fetch specific rows from a DB2 table by ID — for when we need details for a bounded
+ * set of items (a season's loot) without pulling the whole table (ItemSparse is huge).
+ * wago's `?filter[ID]=` matches one ID per request and has no working batch form, so
+ * this fans out one request per id at a small concurrency. Returns Map(idString → row).
+ */
+export async function fetchWagoRowsById(table, ids, { concurrency = 8, fetchImpl = fetch } = {}) {
+  const unique = [...new Set(ids.map(String))];
+  const out = new Map();
+  let next = 0;
+  async function worker() {
+    while (next < unique.length) {
+      const id = unique[next++];
+      const r = await fetchImpl(`${WAGO_BASE}/${encodeURIComponent(table)}/csv?filter[ID]=${encodeURIComponent(id)}`);
+      if (!r.ok) continue;
+      const row = parseWagoCsv(await r.text())[0];
+      if (row) out.set(id, row);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, unique.length) }, worker));
+  return out;
+}
+
 /** Resolve a JournalInstance id by exact name (Name_lang). */
 export function findInstanceId(instances, name) {
   return instances.find(r => r.Name_lang === name)?.ID ?? null;
