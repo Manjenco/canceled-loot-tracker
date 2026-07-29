@@ -17,6 +17,7 @@ import {
   reassignLootEntries, backfillLootEntryIds, getRaids,
   getTeamConfig, getCurrentSeasonId,
 } from '../../../lib/db.js';
+import { viewSeasonId } from '../util/season.js';
 import { parseRclcCsv, buildLootEntries, buildExistingKeys, isRecipeItem } from '../../../lib/rclc.js';
 
 const COUNTED      = new Set(['BIS', 'Non-BIS']);
@@ -35,7 +36,7 @@ router.get('/history', async (c) => {
   const { teamId } = c.get('session').user;
   const db = c.env.DB;
 
-  const seasonId = await getCurrentSeasonId(db);
+  const seasonId = await viewSeasonId(c, db);
   const [roster, lootLog, lootSummaryRows, raids, config] = await Promise.all([
     getRoster(db, teamId),
     getLootLog(db, teamId, seasonId),
@@ -132,7 +133,7 @@ router.get('/history/:charId', async (c) => {
   if (!charId) return c.json({ error: 'charId is required' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const roster   = await getRoster(db, teamId);
     const char     = roster.find(r => r.id === charId);
     if (!char) return c.json({ error: 'Character not found' }, 404);
@@ -157,7 +158,7 @@ router.get('/audit', async (c) => {
   const { teamId } = c.get('session').user;
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [lootLog, roster] = await Promise.all([
       getLootLog(db, teamId, seasonId),
       getRoster(db, teamId),
@@ -201,7 +202,7 @@ router.patch('/entries/reassign', async (c) => {
 
   const { teamId } = c.get('session').user;
   const db = c.env.DB;
-  const seasonId = await getCurrentSeasonId(db);
+  const seasonId = await viewSeasonId(c, db);
   const roster   = await getRoster(db, teamId);
   const charById = new Map(roster.map(r => [r.id, r]));
 
@@ -233,7 +234,7 @@ router.patch('/entries/upgrade-type', async (c) => {
   if (!valid.length) return c.json({ error: 'No valid corrections supplied.' }, 400);
   const db = c.env.DB;
   const { teamId } = c.get('session').user;
-  const seasonId = await getCurrentSeasonId(db);
+  const seasonId = await viewSeasonId(c, db);
   await patchLootEntryUpgradeType(db, teamId, seasonId, valid);
   return c.json({ updated: valid.length });
 });
@@ -250,7 +251,7 @@ router.patch('/ignored', async (c) => {
   }
   const db = c.env.DB;
   const { teamId } = c.get('session').user;
-  const seasonId = await getCurrentSeasonId(db);
+  const seasonId = await viewSeasonId(c, db);
   await patchLootEntryIgnored(db, teamId, seasonId, ids, ignored);
   return c.json({ updated: ids.length });
 });
@@ -275,7 +276,7 @@ router.patch('/entries', async (c) => {
 
   const db = c.env.DB;
   const { teamId } = c.get('session').user;
-  const seasonId = await getCurrentSeasonId(db);
+  const seasonId = await viewSeasonId(c, db);
   await patchLootEntryDifficulties(db, teamId, seasonId, valid);
   return c.json({ updated: valid.length });
 });
@@ -298,7 +299,7 @@ router.post('/import', async (c) => {
     const rows = parseRclcCsv(csvText);
     if (!rows.length) return c.json({ error: 'CSV appears to be empty or invalid.' }, 400);
 
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [roster, responseMap, existingLog] = await Promise.all([
       getRoster(db, teamId),
       getRclcResponseMap(db, teamId),

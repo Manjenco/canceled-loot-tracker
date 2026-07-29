@@ -310,4 +310,5 @@ INSERT OR IGNORE INTO roster (id, team_id, char_name, class, spec, role, owner_i
 
 -- Initial season — required so DEFAULT 1 on season_id columns satisfies FK constraints.
 -- Update name and start_date via the season management admin page before going live.
-INSERT OR IGNORE INTO seasons (id, name, start_date, is_current) VALUES (1, 'Season 1', '', 1);
+-- is_current = 0: current-season resolution uses the start-date rule by default; is_current is a manual override.
+INSERT OR IGNORE INTO seasons (id, name, start_date, is_current) VALUES (1, 'Season 1', '', 0);

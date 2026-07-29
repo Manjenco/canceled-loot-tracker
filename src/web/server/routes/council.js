@@ -13,6 +13,7 @@ import {
   getEffectiveDefaultBis, getRaids, getTeamConfig, getGlobalConfig, getTierSnapshot,
   getWornBis, getCurrentSeasonId,
 } from '../../../lib/db.js';
+import { viewSeasonId } from '../util/season.js';
 import { toCanonical, getArmorType, canUseWeapon, canDualWield, getCharSpecs } from '../../../lib/specs.js';
 import { matchesBis } from '../../../lib/bis-match.js';
 import { log } from '../../../lib/logger.js';
@@ -173,7 +174,7 @@ router.get('/items', async (c) => {
   if (!teamId) return c.json({ instances: [], currentInstance: '', currentDifficulty: '' });
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [itemDb, config, globalConfig] = await Promise.all([getItemDb(db, seasonId), getTeamConfig(db, teamId), getGlobalConfig(db)]);
     const instanceMap = new Map();
     for (const item of itemDb) {
@@ -216,7 +217,7 @@ router.get('/candidates', async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [itemDb, effectiveBis, roster, lootSummary, bisSubmissions, raids, wornBisMap] = await Promise.all([
       getItemDb(db, seasonId), getEffectiveDefaultBis(db, seasonId),
       getRoster(db, teamId), getLootSummary(db, teamId, seasonId),
@@ -327,7 +328,7 @@ router.get('/curio-candidates', async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [effectiveBis, roster, lootSummary, bisSubmissions, raids, globalConfig, tierSnapshots] = await Promise.all([
       getEffectiveDefaultBis(db, seasonId),
       getRoster(db, teamId), getLootSummary(db, teamId, seasonId), getBisSubmissions(db, teamId, seasonId),

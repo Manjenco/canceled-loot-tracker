@@ -320,4 +320,11 @@ CREATE INDEX idx_season_sources_season ON season_sources(season_id);
     },
     sql: `ALTER TABLE seasons ADD COLUMN pre_release INTEGER NOT NULL DEFAULT 0`,
   },
+
+  {
+    name: '0009_clear_seeded_is_current',
+    description: 'Clear the seeded is_current so current-season resolution uses the start-date rule; is_current stays a manual override',
+    check: async () => false, // one-time data change — gated by the schema_migrations table, not a schema probe
+    sql: `UPDATE seasons SET is_current = 0`,
+  },
 ];

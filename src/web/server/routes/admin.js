@@ -22,8 +22,9 @@ import {
   getRclcResponseMapRows, setRclcResponseMap, getRosterPendingSpecChanges,
   getBisSubmissionsPending, getBisSubmissionsForChar, rebuildLootSummary,
   getAppliedMigrations, runMigrations, getCurrentSeasonId,
-  getSeasons, createSeason, updateSeason, setCurrentSeason,
+  getSeasons, createSeason, updateSeason, setCurrentSeason, clearCurrentSeasonOverride,
 } from '../../../lib/db.js';
+import { viewSeasonId } from '../util/season.js';
 import { MIGRATIONS } from '../../../lib/migrations.js';
 import { fetchWagoTable, detectVeteranStarts, detectCraftedBonusIds } from '../../../lib/wago.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
@@ -141,7 +142,7 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
   const db = c.env.DB;
 
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [allRows, overrideRows, itemDb, specConfig] = await Promise.all([
       getDefaultBis(db, seasonId), getDefaultBisOverrides(db, seasonId), getItemDb(db, seasonId), getSpecBisConfig(db, seasonId),
     ]);
@@ -212,7 +213,7 @@ router.post('/default-bis', requireGlobalOfficer, async (c) => {
   }
   const db = c.env.DB;
   try {
-    const seasonId      = await getCurrentSeasonId(db);
+    const seasonId      = await viewSeasonId(c, db);
     const canonicalSpec = toCanonical(spec);
     const writes = updates.map(u => ({
       spec: canonicalSpec, source,
@@ -239,7 +240,7 @@ router.post('/spec-bis-source', requireGlobalOfficer, async (c) => {
   if (!spec || !source) return c.json({ error: 'spec and source are required' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId      = await getCurrentSeasonId(db);
+    const seasonId      = await viewSeasonId(c, db);
     const canonicalSpec = toCanonical(spec);
     await setSpecBisSource(db, seasonId, canonicalSpec, source);
     return c.json({ ok: true, spec: canonicalSpec, source });
@@ -290,7 +291,7 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
 
   const db = c.env.DB;
   try {
-    const seasonId      = await getCurrentSeasonId(db);
+    const seasonId      = await viewSeasonId(c, db);
     const canonicalSpec = toCanonical(spec);
     const [itemDb, gc, tierItems] = await Promise.all([
       getItemDb(db, seasonId), getGlobalConfig(db), getTierItems(db, seasonId),
@@ -399,7 +400,7 @@ router.post('/default-bis/import', requireGlobalOfficer, async (c) => {
 
   const db = c.env.DB;
   try {
-    const seasonId      = await getCurrentSeasonId(db);
+    const seasonId      = await viewSeasonId(c, db);
     const canonicalSpec = toCanonical(spec);
 
     const writeRows = rows
@@ -432,7 +433,7 @@ router.get('/bis-review', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     // Phase 1 — load only Pending submissions (small) + roster spec-change requests in parallel.
     // Source info for each item is pre-joined — no separate item_db load needed.
     const [pending, rosterPendingSpec] = await Promise.all([
@@ -539,7 +540,7 @@ router.post('/bis-review/approve', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const subs = await getBisSubmissions(db, teamId, seasonId);
     const sub  = subs.find(s => s.id === id);
 
@@ -565,7 +566,7 @@ router.post('/bis-review/reject', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const subs = await getBisSubmissions(db, teamId, seasonId);
     const sub  = subs.find(s => s.id === id);
     await rejectBisSubmission(db, id, officerChar ?? username ?? 'Officer', officerNote, sub?.char_id ?? null);
@@ -1080,7 +1081,7 @@ router.delete('/worn-bis', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     await clearWornBis(db, teamId, seasonId);
     return c.json({ ok: true });
   } catch (err) {
@@ -1098,7 +1099,7 @@ router.post('/rebuild-loot-summary', requireOfficer, async (c) => {
   if (!teamId) return c.json({ error: 'No team configured' }, 400);
   const db = c.env.DB;
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     await rebuildLootSummary(db, teamId, seasonId);
     return c.json({ ok: true });
   } catch (err) {
@@ -1150,7 +1151,8 @@ router.get('/seasons', requireGlobalOfficer, async (c) => {
   const db = c.env.DB;
   try {
     const seasons = await getSeasons(db);
-    return c.json({ seasons });
+    const currentSeasonId = await getCurrentSeasonId(db).catch(() => null); // resolved (override or date rule)
+    return c.json({ seasons, currentSeasonId });
   } catch (err) {
     console.error('[admin] GET /seasons error:', err);
     return c.json({ error: err.message ?? 'Failed to load seasons' }, 500);
@@ -1198,6 +1200,17 @@ router.post('/seasons/:id/set-current', requireGlobalOfficer, async (c) => {
   } catch (err) {
     console.error('[admin] POST /seasons/:id/set-current error:', err);
     return c.json({ error: err.message ?? 'Failed to set current season' }, 500);
+  }
+});
+
+// Clear the manual override so current-season resolution reverts to the start-date rule.
+router.post('/seasons/clear-current', requireGlobalOfficer, async (c) => {
+  try {
+    await clearCurrentSeasonOverride(c.env.DB);
+    return c.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] POST /seasons/clear-current error:', err);
+    return c.json({ error: err.message ?? 'Failed to clear current season override' }, 500);
   }
 });
 

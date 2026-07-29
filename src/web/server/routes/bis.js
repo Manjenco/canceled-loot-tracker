@@ -14,6 +14,7 @@ import {
   clearBisSubmission, resetBisRaidBisField,
   getRosterMember, setPendingPrimarySpec, getCurrentSeasonId,
 } from '../../../lib/db.js';
+import { viewSeasonId } from '../util/season.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { toCanonical, getArmorType, canUseWeapon, canDualWield, CLASS_SPECS, getCharSpecs } from '../../../lib/specs.js';
 
@@ -81,7 +82,7 @@ router.get('/', async (c) => {
     const canonicalSpec = toCanonical(activeSpec);
     const armorType     = getArmorType(canonicalSpec);
 
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
 
     // Phase 2 — narrow queries in parallel, scoped to this char/spec/armorType
     const [submissions, itemDb, effectiveBis] = await Promise.all([
@@ -181,7 +182,7 @@ router.post('/', async (c) => {
   }
 
   try {
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     let saved   = 0;
     let cleared = 0;
 

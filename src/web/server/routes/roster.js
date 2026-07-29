@@ -26,6 +26,7 @@ import {
   approvePrimarySpecChange, rejectPrimarySpecChange,
   setAttendanceAdjustment, getCurrentSeasonId,
 } from '../../../lib/db.js';
+import { viewSeasonId } from '../util/season.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { toCanonical, CLASS_SPECS, getCharSpecs, specToRole } from '../../../lib/specs.js';
 
@@ -194,7 +195,7 @@ router.get('/:charId', async (c) => {
   const db = c.env.DB;
   try {
     // Phase 1 — season ID + roster + item db (long-cached; needed to identify char before narrow queries)
-    const seasonId = await getCurrentSeasonId(db);
+    const seasonId = await viewSeasonId(c, db);
     const [roster, itemDb] = await Promise.all([
       getRoster(db, teamId),
       getItemDb(db, seasonId),
