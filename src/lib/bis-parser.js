@@ -23,17 +23,17 @@ export const ALL_SLOTS = [
   'Ring 1', 'Ring 2', 'Trinket 1', 'Trinket 2', 'Weapon', 'Off-Hand',
 ];
 
-// Slots that carry a tier set piece — <Catalyst> is invalid here, always <Tier>.
+// Slots that carry a tier set piece.
 export const TIER_SLOTS = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
-// Non-tier armor slots where <Catalyst> is valid (accessory slots get neither).
-export const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 
-export const SENTINELS = new Set(['<Tier>', '<Catalyst>', '<Crafted>']);
+// <Tier> is only a transitional placeholder for an annotation-only tier row (resolved to
+// the class's real piece downstream). <Crafted> stays a true sentinel. <Catalyst> is gone.
+export const SENTINELS = new Set(['<Tier>', '<Crafted>']);
 
 /**
  * Tier-set item-name prefixes for the current tier. When a guide lists the actual
  * tier piece name (rather than annotating the row "Tier"), an item whose name starts
- * with one of these is promoted to <Tier> / <Catalyst> by slot.
+ * with one of these is flagged as a token-granted tokenPiece by slot.
  *
  * This is season-specific. Callers should pass the current list (e.g. from
  * global_config.bis_tier_set_prefixes) so it can be updated deploy-free; this
@@ -194,12 +194,11 @@ function normaliseSlot(rawCellHtml) {
 // ── Core table scanner ──────────────────────────────────────────────────────────
 
 /**
- * Detect Tier / Catalyst / Crafted annotations for a row WITHOUT scanning long
- * prose columns. Tier/Catalyst are read only from the slot cell's parenthetical
- * (e.g. "Head (Tier)") and SHORT dedicated columns (≤24 chars, the annotation/source
- * column). Crafted additionally checks the item cell (which carries the BBCode
- * [skill=]→"Crafted" marker). This stops words like "tier"/"catalyst"/"craft" in a
- * notes/rationale column from false-triggering a sentinel.
+ * Detect Tier / Crafted annotations for a row WITHOUT scanning long prose columns.
+ * Tier is read only from the slot cell's parenthetical (e.g. "Head (Tier)") and SHORT
+ * dedicated columns (≤24 chars, the annotation/source column). Crafted additionally
+ * checks the item cell (which carries the BBCode [skill=]→"Crafted" marker). This stops
+ * words like "tier"/"craft" in a notes/rationale column from false-triggering a sentinel.
  */
 function detectSentinelFlags(cells, hasPairedItems) {
   // Annotation/source cells: the slot parenthetical and every column after the item.
@@ -223,10 +222,8 @@ function detectSentinelFlags(cells, hasPairedItems) {
   //     set off via boundary/paren, which is what keeps prose out.)
   const ANNOTATION_MAX = 40;
   const BTIER  = /(?:^|[(|/])\s*tier\b/i;
-  const BCATA  = /(?:^|[(|/])\s*cataly[sz]/i;
   const BCRAFT = new RegExp(`(?:^|[(|/])\\s*(?:craft(?:ed|ing)?|${CRAFTING_PROFESSIONS.join('|')})\\b`, 'i');
   const WTIER  = /\btier\b/i;
-  const WCATA  = /\bcataly[sz]/i;
   const WCRAFT = new RegExp(`\\b(?:craft(?:ed|ing)?|${CRAFTING_PROFESSIONS.join('|')})\\b`, 'i');
 
   const parensOf = (t) => [...t.matchAll(/\(([^)]*)\)/g)].map(m => m[1]);
@@ -237,10 +234,11 @@ function detectSentinelFlags(cells, hasPairedItems) {
       (t.length <= ANNOTATION_MAX && wordRe.test(t))
     );
 
-  const isTier     = hit(annoCells, BTIER, WTIER);
-  const isCatalyst = !isTier && hit(annoCells, BCATA, WCATA);
-  const isCrafted  = !isTier && !isCatalyst && !hasPairedItems && hit(craftedCells, BCRAFT, WCRAFT);
-  return { isTier, isCatalyst, isCrafted };
+  // "Tier" flags the row as the token-granted tier piece (resolved to the real item
+  // downstream). Catalyst is gone — catalyzing no longer produces a distinct item.
+  const isTier    = hit(annoCells, BTIER, WTIER);
+  const isCrafted = !isTier && !hasPairedItems && hit(craftedCells, BCRAFT, WCRAFT);
+  return { isTier, isCrafted };
 }
 
 /**
@@ -301,15 +299,19 @@ function scanBisTables(html, filterFn, meta = {}) {
 
       const itemCell       = cells[1];
       const hasPairedItems = /\s+&\s+/.test(decodeEntities(stripTags(itemCell)));
-      const { isTier, isCatalyst, isCrafted } = detectSentinelFlags(cells, hasPairedItems);
-      // Tier slots can only ever be <Tier>; a guide that says <Catalyst> there is wrong.
-      const effectivelyTier = isTier || (isCatalyst && TIER_SLOTS.has(slot));
+      const { isTier, isCrafted } = detectSentinelFlags(cells, hasPairedItems);
 
+      // A named item always wins now: a "Tier" annotation just tells us the item is the
+      // token-granted tier piece (resolveBisItems flags that as a token piece). Only an
+      // annotation-ONLY tier row (no item) falls back to the <Tier> placeholder, which is
+      // resolved to the class's actual piece downstream. Crafted stays a sentinel.
       let itemName, itemId;
-      if (effectivelyTier)  { itemName = '<Tier>';     itemId = null; }
-      else if (isCatalyst)  { itemName = '<Catalyst>'; itemId = null; }
-      else if (isCrafted)   { itemName = '<Crafted>';  itemId = null; }
-      else                  { itemName = extractItemName(itemCell); itemId = extractItemId(itemCell); }
+      if (isCrafted) { itemName = '<Crafted>'; itemId = null; }
+      else {
+        itemName = extractItemName(itemCell);
+        itemId   = extractItemId(itemCell);
+        if (!itemName && isTier) { itemName = '<Tier>'; itemId = null; }
+      }
 
       if (!itemName) continue;
 
@@ -471,7 +473,7 @@ export function parseBisHtml(html, source) {
  * where trueBisItemId / raidBisItemId are Blizzard item IDs (strings) or '' / a sentinel,
  * and status ∈ 'ok' | 'sentinel' | 'unmatched' | 'not_found':
  *   ok        — resolved to an Item DB entry (officer can accept as-is)
- *   sentinel  — <Tier> / <Catalyst> / <Crafted>
+ *   sentinel  — <Tier> (transitional placeholder) / <Crafted>
  *   unmatched — a real item name/ID, but not present in this season's Item DB (officer should verify)
  *   not_found — a numeric placeholder that resolved to nothing (guide ID unknown)
  *
@@ -479,11 +481,13 @@ export function parseBisHtml(html, source) {
  * @param {Array} itemDb                   D1 item_db rows (snake_case fields)
  * @param {object} [opts]
  * @param {Iterable<string>} [opts.tierItemIds]  Blizzard IDs of this class's tier-set pieces
- *        (from the tier_items table) → exact-ID promotion to <Tier>/<Catalyst>. Most reliable.
+ *        (from the tier_items table) → flags the item as a token-granted tokenPiece. Most reliable.
+ * @param {Object<string,{name:string,itemId:string}>} [opts.tierPieceBySlot]  slot → this
+ *        class's equippable tier piece, used to resolve an annotation-only <Tier> row.
  * @param {string[]} [opts.tierSetPrefixes]  current-tier name prefixes → promote to sentinels.
  *        Name-based fallback for sources without item IDs (e.g. Maxroll).
  */
-export function resolveBisItems(parsed, itemDb, { tierSetPrefixes = DEFAULT_TIER_SET_PREFIXES, tierItemIds } = {}) {
+export function resolveBisItems(parsed, itemDb, { tierSetPrefixes = DEFAULT_TIER_SET_PREFIXES, tierItemIds, tierPieceBySlot = null } = {}) {
   const byId   = new Map(itemDb.map(i => [String(i.item_id), i]));
   const byName = new Map(itemDb.map(i => [normalizeName(i.name), i]));
   const prefixesLower = tierSetPrefixes.map(p => normalizeName(p));
@@ -523,28 +527,33 @@ export function resolveBisItems(parsed, itemDb, { tierSetPrefixes = DEFAULT_TIER
       else status = 'unmatched';
     }
 
-    // Pass 3: promote known tier-set pieces to a sentinel by slot.
-    //   3a — exact item-ID match against the season's tier_items (most reliable).
-    //   3b — name-prefix fallback, for sources without item IDs (e.g. Maxroll).
-    if (!SENTINELS.has(trueBis) && trueBis && trueBis !== 'NOT FOUND') {
+    // Pass 3: token-granted tier pieces stay the REAL item (their stat distribution is
+    // what makes them BIS) and are flagged tokenPiece → the review UI badges them <Token>
+    // and a token drop matches them downstream. No <Tier>/<Catalyst> sentinel promotion.
+    let tokenPiece = false;
+    if (trueBis === '<Tier>') {
+      // Annotation-only tier row → resolve to this class's actual piece for the slot.
+      const piece = tierPieceBySlot?.[p.slot.replace(/ [12]$/, '')];
+      if (piece) {
+        trueBis = piece.name; trueBisItemId = String(piece.itemId);
+        tokenPiece = true; status = 'ok'; dbItem = byId.get(String(piece.itemId)) ?? null;
+      } // else: leave <Tier> unresolved — officer names the piece in review
+    } else if (trueBis && trueBis !== 'NOT FOUND' && !SENTINELS.has(trueBis)) {
       const idMatch   = trueBisItemId && tierIds.has(String(trueBisItemId));
       const nameMatch = prefixesLower.some(pre => normalizeName(trueBis).startsWith(pre));
-      if (idMatch || nameMatch) {
-        if (TIER_SLOTS.has(p.slot))          { trueBis = '<Tier>';     trueBisItemId = ''; status = 'sentinel'; dbItem = null; }
-        else if (CATALYST_SLOTS.has(p.slot)) { trueBis = '<Catalyst>'; trueBisItemId = ''; status = 'sentinel'; dbItem = null; }
-      }
+      tokenPiece = !!(idMatch || nameMatch);
     }
 
-    // Raid BIS inference. <Tier>/<Catalyst> are themselves valid Raid BIS; <Crafted> is not.
-    // A resolved raid-sourced item seeds Raid BIS = Overall BIS.
+    // Raid BIS inference: a token piece or a raid-sourced item seeds Raid BIS = Overall.
+    // An unresolved <Tier> placeholder carries through as its own Raid BIS.
     let raidBis = '', raidBisItemId = '';
-    if (trueBis === '<Tier>' || trueBis === '<Catalyst>') {
-      raidBis = trueBis;
-    } else if (dbItem?.source_type === 'Raid') {
+    if (trueBis === '<Tier>') {
+      raidBis = '<Tier>';
+    } else if (tokenPiece || dbItem?.source_type === 'Raid') {
       raidBis = trueBis;
       raidBisItemId = trueBisItemId;
     }
 
-    return { slot: p.slot, trueBis, trueBisItemId, raidBis, raidBisItemId, status };
+    return { slot: p.slot, trueBis, trueBisItemId, raidBis, raidBisItemId, status, tokenPiece };
   });
 }

@@ -162,13 +162,9 @@ function extractWornBis(combatantEvents, actors, rosterLookup, bisLookup, itemDb
         const charBis = charBisMap?.get(bisSlot);
         if (!charBis) continue;
 
-        // <Catalyst>: any item worn in this slot qualifies — characters can only
-        // equip their own armor type, so the armor-type check is already implicit.
         const matchesOverall = (isCrafted && charBis.trueBis === '<Crafted>') ||
-          charBis.trueBis === '<Catalyst>' ||
           matchesBis(charBis.trueBis, charBis.trueBisItemId, itemShape, armorType, bisSlot);
         const matchesRaid    = (isCrafted && charBis.raidBis === '<Crafted>') ||
-          charBis.raidBis === '<Catalyst>' ||
           matchesBis(charBis.raidBis, charBis.raidBisItemId, itemShape, armorType, bisSlot);
 
         if (!matchesOverall && !matchesRaid) continue;

@@ -1971,7 +1971,7 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 }
 .ptag-overall-bis     { background: #CC1010; color: #fff; }
 .ptag-raid-bis        { background: #b45309; color: #fff; }
-.ptag-catalyst        { background: #0369a1; color: #fff; }
+.ptag-token           { background: #0369a1; color: #fff; }
 .ptag-crafted-bis     { background: #374151; color: #9ca3af; }
 .ptag-has-0-tier, .ptag-has-1-tier, .ptag-has-2-tier,
 .ptag-has-3-tier, .ptag-has-4-tier, .ptag-has-5-tier { background: #374151; color: #9ca3af; }
@@ -1996,7 +1996,6 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 
 .council-bis-yes      { color: var(--bis); font-weight: 700; font-size: 15px; }
 .council-bis-crafted  { color: var(--text-muted); font-size: 11px; font-style: italic; }
-.council-bis-catalyst { color: #7ab8f5; font-size: 11px; font-style: italic; }
 .council-bis-no       { color: var(--border); }
 
 /* Secondary spec rows */

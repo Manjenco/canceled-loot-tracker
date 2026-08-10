@@ -9,7 +9,7 @@ const ALL_SLOTS = [
   'Ring 1', 'Ring 2', 'Trinket 1', 'Trinket 2', 'Weapon', 'Off-Hand',
 ];
 
-const SENTINELS        = new Set(['<Tier>', '<Catalyst>', '<Crafted>']);
+const SENTINELS        = new Set(['<Tier>', '<Crafted>']);
 const DIFFICULTY_ORDER = ['Mythic', 'Heroic', 'Normal'];
 
 const TRACK_CLASS = {

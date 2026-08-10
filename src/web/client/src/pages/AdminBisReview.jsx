@@ -14,7 +14,7 @@
 import { apiPath } from '../lib/api.js';
 import { useState, useEffect, useCallback } from 'react';
 
-const SENTINELS = new Set(['<Tier>', '<Catalyst>', '<Crafted>']);
+const SENTINELS = new Set(['<Tier>', '<Crafted>']);
 
 // ── Source badge ──────────────────────────────────────────────────────────────
 

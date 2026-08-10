@@ -119,7 +119,7 @@ export default function ItemSelect({
             {placeholder}
           </div>
 
-          {/* Sentinel options (<Tier>, <Catalyst>, <Crafted>) */}
+          {/* Sentinel options (<Tier>, <Crafted>) */}
           {sentinels.length > 0 && (
             <div className="item-select-group">
               <div className="item-select-group-label">Special</div>

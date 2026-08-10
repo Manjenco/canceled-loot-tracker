@@ -29,7 +29,7 @@ import { MIGRATIONS } from '../../../lib/migrations.js';
 import { fetchWagoTable, detectVeteranStarts, detectCraftedBonusIds } from '../../../lib/wago.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { parseBisDocument, resolveBisItems, bisGuideUrl, splitSpecClass, ALL_SLOTS as BIS_SLOTS, VALID_SOURCES as BIS_SOURCES } from '../../../lib/bis-parser.js';
-import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
+import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs, getClassForSpec } from '../../../lib/specs.js';
 import { runWclSyncForTeam, runWclSyncWornBisOnly, runAttendanceBackfill } from '../../../lib/wcl-sync.js';
 import {
   getTeamRegistry      as sheetsGetTeamRegistry,
@@ -58,17 +58,18 @@ async function batchInsert(db, stmts, chunkSize = 80) {
 }
 
 const TIER_SLOTS     = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
-const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 const DIFF_ORDER     = { Mythic: 0, Heroic: 1, Normal: 2 };
 
-function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '', raidOnly = true) {
+function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '', raidOnly = true, tierPieceIds = null) {
   let dbSlot = slot.replace(/ [12]$/, '');
   if (dbSlot === 'Off-Hand' && canonSpec && canDualWield(canonSpec)) dbSlot = 'Weapon';
   return itemDb
     .filter(item => {
       if (raidOnly && item.source_type !== 'Raid') return false;
       if (item.slot !== dbSlot)     return false;
-      if (item.is_tier_token)       return false;
+      // Equippable tier pieces (this class's tier_items members) are BIS-able; NON_EQUIP
+      // tier tokens are is_tier_token but not in tier_items, so they stay excluded.
+      if (item.is_tier_token && !(tierPieceIds && tierPieceIds.has(String(item.item_id)))) return false;
       if (item.armor_type === 'Accessory') {
         if (item.weapon_type && canonSpec) return canUseWeapon(canonSpec, item.weapon_type);
         return true;
@@ -143,11 +144,15 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
 
   try {
     const seasonId = await viewSeasonId(c, db);
-    const [allRows, overrideRows, itemDb, specConfig] = await Promise.all([
+    const [allRows, overrideRows, itemDb, specConfig, tierItems] = await Promise.all([
       getDefaultBis(db, seasonId), getDefaultBisOverrides(db, seasonId), getItemDb(db, seasonId), getSpecBisConfig(db, seasonId),
+      getTierItems(db, seasonId),
     ]);
 
     const canonicalSpec    = toCanonical(spec);
+    const tierPieceIds     = new Set(
+      tierItems.filter(t => t.class === getClassForSpec(canonicalSpec)).map(t => String(t.item_id))
+    );
     const specRows         = allRows.filter(r => r.spec === canonicalSpec);
     const availableSources = [...new Set(specRows.map(r => r.source).filter(Boolean))];
     const preferredSource  = specConfig.get(canonicalSpec) ?? availableSources[0] ?? '';
@@ -178,10 +183,9 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
         ...row,
         trueBisSeed:    seed?.true_bis  ?? '',
         raidBisSeed:    seed?.raid_bis  ?? '',
-        options:        itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, true),
-        overallOptions: itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, false),
+        options:        itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, true, tierPieceIds),
+        overallOptions: itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, false, tierPieceIds),
         hasTier:        TIER_SLOTS.has(row.slot),
-        hasCatalyst:    CATALYST_SLOTS.has(row.slot),
       };
     });
 
@@ -191,9 +195,9 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
         true_bis: '', true_bis_item_id: '', raid_bis: '', raid_bis_item_id: '',
         trueBisSeed: '', raidBisSeed: '',
         raidBisAuto: false,
-        options:        itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, true),
-        overallOptions: itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, false),
-        hasTier: false, hasCatalyst: false,
+        options:        itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, true, tierPieceIds),
+        overallOptions: itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, false, tierPieceIds),
+        hasTier: false,
       });
     }
 
@@ -302,7 +306,15 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
     const tierItemIds = new Set(
       tierItems.filter(t => t.class === cls).map(t => String(t.item_id)),
     );
-    const opts = { tierItemIds, ...(tierSetPrefixes.length ? { tierSetPrefixes } : {}) };
+    // slot → this class's equippable tier piece, so an annotation-only <Tier> row can
+    // resolve to the real item (name + ID) instead of carrying the placeholder through.
+    const tierPieceBySlot = {};
+    for (const t of tierItems) {
+      if (t.class !== cls) continue;
+      const di = itemDb.find(i => String(i.item_id) === String(t.item_id));
+      if (di) tierPieceBySlot[t.slot] = { name: di.name, itemId: String(t.item_id) };
+    }
+    const opts = { tierItemIds, tierPieceBySlot, ...(tierSetPrefixes.length ? { tierSetPrefixes } : {}) };
 
     const suggestedUrl = url?.trim() || bisGuideUrl(canonicalSpec, source);
 
@@ -343,10 +355,9 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
         ?? { slot, trueBis: '', trueBisItemId: '', raidBis: '', raidBisItemId: '', status: 'empty' };
       return {
         ...r,
-        options:        itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, true),
-        overallOptions: itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, false),
+        options:        itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, true, tierItemIds),
+        overallOptions: itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, false, tierItemIds),
         hasTier:        TIER_SLOTS.has(slot),
-        hasCatalyst:    CATALYST_SLOTS.has(slot),
       };
     });
 

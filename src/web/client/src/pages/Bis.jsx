@@ -13,9 +13,8 @@
  *   ●  (amber)  — field has unsaved changes (dirty)
  *
  * Sentinel availability:
- *   Tier slots   (Head, Shoulders, Chest, Hands, Legs): <Tier>
- *   Non-tier arm (Neck, Back, Wrists, Waist, Feet):     <Catalyst>
- *   Accessory    (Ring, Trinket, Weapon, Off-Hand):      neither
+ *   Tier slots (Head, Shoulders, Chest, Hands, Legs): <Tier> (transitional placeholder)
+ *   All other slots: no <Tier>.
  *   <Crafted> only applies to Overall BIS.
  */
 
@@ -24,7 +23,7 @@ import { useMe } from '../hooks/useMe.js';
 import ItemSelect from '../components/ItemSelect.jsx';
 import { apiPath } from '../lib/api.js';
 
-const SENTINELS = new Set(['<Tier>', '<Catalyst>', '<Crafted>']);
+const SENTINELS = new Set(['<Tier>', '<Crafted>']);
 
 const STATUS_BADGE = {
   Pending:  { label: 'Pending',  cls: 'badge-pending'  },
@@ -39,18 +38,16 @@ const SLOT_GROUPS = [
   { label: 'Weapons', slots: ['Weapon', 'Off-Hand'] },
 ];
 
-function overallSentinels({ tier, catalyst, crafted }) {
+function overallSentinels({ tier, crafted }) {
   return [
     ...(tier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
-    ...(catalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
     ...(crafted  ? [{ value: '<Crafted>',  label: '<Crafted>'  }] : []),
   ];
 }
 
-function raidSentinels({ tier, catalyst }) {
+function raidSentinels({ tier }) {
   return [
     ...(tier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
-    ...(catalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
   ];
 }
 

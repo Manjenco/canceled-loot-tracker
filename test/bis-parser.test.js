@@ -63,9 +63,9 @@ test('Wowhead BBCode parse', async (t) => {
     assert.equal(bySlot.Neck.itemId, '258046');            // Overall id, not 999002
     assert.ok(!parsed.some(p => p.itemId === '999002'));    // no Preseason leakage
   });
-  await t.test('tier annotation on a tier slot → <Tier> (id cleared)', () => {
-    assert.equal(bySlot.Head.itemName, '<Tier>');
-    assert.equal(bySlot.Head.itemId, null);
+  await t.test('tier annotation on a NAMED item keeps the item (no <Tier> promotion)', () => {
+    assert.equal(bySlot.Head.itemName, 'Skyforged Helm');
+    assert.equal(bySlot.Head.itemId, '258574');
   });
   await t.test('embedded name JSON resolves link text', () => {
     assert.equal(bySlot.Neck.itemName, 'Choker of Doom');
@@ -183,30 +183,40 @@ test('resolveBisItems', async (t) => {
     assert.equal(r.raidBis, '');
   });
 
-  await t.test('known tier-set item ID → <Tier> even when not in the Item DB', () => {
-    // "Voidbreaker's Robe" (tier chest) isn't a journal drop, so it's absent from item_db,
-    // but its ID is in the season's tier_items → promote to <Tier> by slot.
+  await t.test('known tier-set item ID → kept as the real item + flagged tokenPiece', () => {
+    // The token-granted piece stays the item (its stats are the BIS driver); tokenPiece
+    // marks it so a token drop matches it and the UI badges it <Token>. No <Tier> sentinel.
     const [r] = resolveBisItems(
       [{ slot: 'Chest', itemName: "Voidbreaker's Robe", itemId: '300100' }],
       ITEM_DB,
       { tierItemIds: ['300100', '300200'] },
     );
-    assert.equal(r.trueBis, '<Tier>');
-    assert.equal(r.trueBisItemId, '');
-    assert.equal(r.status, 'sentinel');
-    assert.equal(r.raidBis, '<Tier>');
+    assert.equal(r.trueBis, "Voidbreaker's Robe");
+    assert.equal(r.trueBisItemId, '300100');
+    assert.equal(r.tokenPiece, true);
+    assert.equal(r.raidBis, "Voidbreaker's Robe"); // a token piece seeds its own Raid BIS
   });
 
-  await t.test('tier-set name prefix on a tier slot → <Tier>, and is its own Raid BIS', () => {
+  await t.test('tier-set name prefix → kept as the item + tokenPiece + its own Raid BIS', () => {
     const [r] = resolveBisItems(
       [{ slot: 'Head', itemName: "Relentless Rider's Helm", itemId: '259000' }],
       ITEM_DB,
       { tierSetPrefixes: ["Relentless Rider's"] },
     );
-    assert.equal(r.trueBis, '<Tier>');
-    assert.equal(r.trueBisItemId, '');
-    assert.equal(r.status, 'sentinel');
-    assert.equal(r.raidBis, '<Tier>');
+    assert.equal(r.tokenPiece, true);
+    assert.equal(r.trueBisItemId, '259000');
+    assert.equal(r.raidBis, "Relentless Rider's Helm");
+  });
+
+  await t.test('<Tier> placeholder resolves to the class piece via tierPieceBySlot', () => {
+    const [r] = resolveBisItems(
+      [{ slot: 'Chest', itemName: '<Tier>', itemId: null }],
+      ITEM_DB,
+      { tierPieceBySlot: { Chest: { itemId: '300100', name: "Voidbreaker's Robe" } } },
+    );
+    assert.equal(r.trueBis, "Voidbreaker's Robe");
+    assert.equal(r.trueBisItemId, '300100');
+    assert.equal(r.tokenPiece, true);
   });
 
   await t.test('curly apostrophe in the guide name still matches an ASCII-apostrophe DB name (#1)', () => {
@@ -239,7 +249,7 @@ test('resolveBisItems', async (t) => {
     assert.equal(neck.trueBis, 'Choker of Doom');
     assert.equal(neck.raidBis, 'Choker of Doom');  // raid-sourced → inferred
     const head = rows.find(r => r.slot === 'Head');
-    assert.equal(head.trueBis, '<Tier>');
+    assert.equal(head.trueBis, 'Skyforged Helm'); // named item wins; no <Tier> promotion
   });
 });
 
@@ -253,10 +263,10 @@ const NOTES_TABLE = `
 <tr><td>Wrists</td><td>Bands of Fury</td><td></td></tr>
 </table>`;
 
-test('sentinel detection ignores long prose columns (#2)', () => {
+test('a named item passes through regardless of tier annotation or prose (#2)', () => {
   const bySlot = Object.fromEntries(parseBisHtml(NOTES_TABLE, 'Maxroll').map(p => [p.slot, p]));
-  assert.equal(bySlot.Head.itemName, '<Tier>');          // slot parenthetical → still detected
-  assert.equal(bySlot.Neck.itemName, 'Choker of Doom');  // "tier"/"catalyst" in a long note → NOT a sentinel
+  assert.equal(bySlot.Head.itemName, 'Whatever Helm');   // "(Tier)" annotation no longer overrides the item
+  assert.equal(bySlot.Neck.itemName, 'Choker of Doom');  // "tier" in a long note → still just the item
 });
 
 // Leading-keyword rule: long-but-genuine annotations match; mid-sentence prose doesn't.
@@ -269,68 +279,13 @@ const ANNOTATION_TABLE = `
 <tr><td>Wrists</td><td>Bands</td><td>Manaforge Omega</td></tr>
 </table>`;
 
-test('leading/parenthetical keyword beats the length cap and prose (#2 refined)', () => {
+test('named items pass through regardless of tier/catalyst/prose annotations', () => {
   const bySlot = Object.fromEntries(parseBisHtml(ANNOTATION_TABLE, 'Maxroll').map(p => [p.slot, p]));
-  assert.equal(bySlot.Legs.itemName, '<Tier>');       // 41-char source, leads with "Tier"
-  assert.equal(bySlot.Head.itemName, '<Tier>');       // "Tier Set"
-  assert.equal(bySlot.Neck.itemName, 'Choker');       // "tier" mid-sentence prose → not a sentinel
-  assert.equal(bySlot.Back.itemName, '<Catalyst>');   // parenthetical "(Catalyze it!)" on a catalyst slot
-  assert.equal(bySlot.Wrists.itemName, 'Bands');      // plain boss source
-});
-
-// Pipe-separated acquisition lists: "Raid | Catalyst | Vault". Catalyst as a mid-list
-// chip must be detected, and on a tier slot it folds to <Tier>.
-const PIPE_SOURCE_TABLE = `
-<table><tr><th>Slot</th><th>Item</th><th>Source</th></tr>
-<tr><td>Shoulders</td><td>Beacons of the Black Talon</td><td>Raid | Catalyst | Vault</td></tr>
-<tr><td>Chest</td><td>Frenzyward of the Black Talon</td><td>Raid | Catalyst | Vault</td></tr>
-<tr><td>Neck</td><td>Choker</td><td>Raid | Catalyst | Vault</td></tr>
-<tr><td>Back</td><td>Fluxweave Cloak</td><td>Nexus Point Xenas</td></tr>
-<tr><td>Wrists</td><td>Bands</td><td>Manaforge Omega</td></tr>
-</table>`;
-
-test('"Raid | Catalyst | Vault" → catalyst chip detected; tier slot folds to <Tier>', () => {
-  const bySlot = Object.fromEntries(parseBisHtml(PIPE_SOURCE_TABLE, 'Maxroll').map(p => [p.slot, p]));
-  assert.equal(bySlot.Shoulders.itemName, '<Tier>');     // catalyst on a tier slot → <Tier>
-  assert.equal(bySlot.Chest.itemName, '<Tier>');
-  assert.equal(bySlot.Neck.itemName, '<Catalyst>');      // catalyst on a non-tier armor slot
-  assert.equal(bySlot.Back.itemName, 'Fluxweave Cloak'); // no keyword in the source
+  assert.equal(bySlot.Legs.itemName, 'Some Legguards'); // "Tier Set (…)" no longer overrides the item
+  assert.equal(bySlot.Head.itemName, 'Some Helm');
+  assert.equal(bySlot.Neck.itemName, 'Choker');
+  assert.equal(bySlot.Back.itemName, 'Cloak');          // catalyst annotation is now inert
   assert.equal(bySlot.Wrists.itemName, 'Bands');
-});
-
-// Keyword inside a parenthetical but not right after "(" — "Rotmire (The Catalyst)".
-const PAREN_SOURCE_TABLE = `
-<table><tr><th>Slot</th><th>Item</th><th>Source</th></tr>
-<tr><td>Legs</td><td>Greaves of the Black Talon</td><td>Rotmire (The Catalyst)</td></tr>
-<tr><td>Feet</td><td>Spelltreads of the Black Talon</td><td>Rotmire (The Catalyst)</td></tr>
-<tr><td>Neck</td><td>Choker</td><td>Rotmire (The Catalyst)</td></tr>
-<tr><td>Back</td><td>Cloak</td><td>Nexus Point Xenas</td></tr>
-<tr><td>Wrists</td><td>Bands</td><td>Manaforge Omega</td></tr>
-</table>`;
-
-test('"Boss (The Catalyst)" — keyword inside a paren is detected; tier slot → <Tier>', () => {
-  const bySlot = Object.fromEntries(parseBisHtml(PAREN_SOURCE_TABLE, 'Maxroll').map(p => [p.slot, p]));
-  assert.equal(bySlot.Legs.itemName, '<Tier>');       // catalyst on a tier slot → <Tier>
-  assert.equal(bySlot.Feet.itemName, '<Catalyst>');   // catalyst on a non-tier armor slot
-  assert.equal(bySlot.Neck.itemName, '<Catalyst>');
-  assert.equal(bySlot.Back.itemName, 'Cloak');        // no keyword
-});
-
-// Maxroll: space-separated trailing keyword in a short cell — "Rotmire Catalyst".
-const SHORT_SPACE_TABLE = `
-<table><tr><th>Slot</th><th>Item</th><th>Source</th></tr>
-<tr><td>Chest</td><td>Abyssal Immolator's Dreadrobe</td><td>Rotmire Catalyst</td></tr>
-<tr><td>Feet</td><td>Some Boots</td><td>Rotmire Catalyst</td></tr>
-<tr><td>Neck</td><td>Choker</td><td>Manaforge Omega</td></tr>
-<tr><td>Back</td><td>Cloak</td><td>Nexus Point Xenas</td></tr>
-<tr><td>Wrists</td><td>Bands</td><td>Ailindra</td></tr>
-</table>`;
-
-test('Maxroll "Rotmire Catalyst" (short, trailing keyword) detected; tier slot → <Tier>', () => {
-  const bySlot = Object.fromEntries(parseBisHtml(SHORT_SPACE_TABLE, 'Maxroll').map(p => [p.slot, p]));
-  assert.equal(bySlot.Chest.itemName, '<Tier>');      // catalyst on a tier slot → <Tier>
-  assert.equal(bySlot.Feet.itemName, '<Catalyst>');   // non-tier armor slot
-  assert.equal(bySlot.Neck.itemName, 'Choker');       // plain boss source, no keyword
 });
 
 // ── Crafted source encoded as [url guide=…]Crafting[/url] (real Wowhead shape) ────
@@ -367,10 +322,10 @@ const WOWHEAD_ICON_CATALYST =
   + `[tr][td]Weapon[\\/td][td][item=258400][\\/td][td]Manaforge Omega[\\/td][\\/tr]`
   + `[\\/table]`;
 
-test('Wowhead [icon …] before [url]Catalyst → <Catalyst> (tag does not hide it)', () => {
+test('Wowhead [icon …] source annotation does not break item parsing (item wins)', () => {
   const bySlot = Object.fromEntries(parseBisHtml(WOWHEAD_ICON_CATALYST, 'Wowhead').map(p => [p.slot, p]));
-  assert.equal(bySlot.Wrists.itemName, '<Catalyst>');
-  assert.equal(bySlot.Neck.itemName, 'Choker of Doom');   // unaffected
+  assert.equal(bySlot.Wrists.itemName, "Strikeguards of Ra-den's Chosen"); // named item wins; catalyst inert
+  assert.equal(bySlot.Neck.itemName, 'Choker of Doom');
 });
 
 // A decorative icon-only enchant column between Slot and Item must not shift parsing.

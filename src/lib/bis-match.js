@@ -26,17 +26,18 @@ export const PAIRED_BIS_SLOTS = {
  * @param {string} charArmorType — e.g. 'Cloth', 'Leather', 'Mail', 'Plate'
  * @param {string} slot         — BIS submission slot (e.g. 'Ring 1', 'Head')
  */
-export function matchesBis(bisValue, bisItemId, item, charArmorType, slot) {
+export function matchesBis(bisValue, bisItemId, item, charArmorType, slot, tokenPieceIds = null) {
   if (!bisValue) return false;
   if (bisValue === '<Crafted>') return false;
-  if (bisValue === '<Tier>')    return item.isTierToken === true;
-  if (bisValue === '<Catalyst>') {
-    const normalizedSlot = slot.replace(/ [12]$/, '');
-    return item.slot === normalizedSlot &&
-      (item.armorType === charArmorType || item.armorType === 'Accessory');
-  }
+  if (bisValue === '<Tier>')    return item.isTierToken === true; // legacy/transitional placeholder
   if (bisItemId && String(bisItemId) === String(item.itemId)) return true;
-  return item.name.toLowerCase() === bisValue.toLowerCase();
+  if (item.name.toLowerCase() === bisValue.toLowerCase()) return true;
+  // Token match: a tier TOKEN drop satisfies a BIS'd token piece (a tier_items member)
+  // of matching slot + armor — the token grants that class's piece for the slot.
+  if (item.isTierToken && tokenPieceIds && bisItemId && tokenPieceIds.has(String(bisItemId))) {
+    return item.slot === slot.replace(/ [12]$/, '') && item.armorType === charArmorType;
+  }
+  return false;
 }
 
 /**
@@ -57,7 +58,7 @@ export function inferRaidBis(row, itemDbByName = null) {
 
   if (raidBis) return null;
 
-  if (trueBis === '<Tier>' || trueBis === '<Catalyst>') {
+  if (trueBis === '<Tier>') {
     return { raidBis: trueBis, raidBisItemId: trueBis, auto: true };
   }
 

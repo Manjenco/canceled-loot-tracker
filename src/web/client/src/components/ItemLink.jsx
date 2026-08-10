@@ -1,11 +1,11 @@
 /**
  * ItemLink — renders a Wowhead tooltip link for a given item name + ID.
- * Sentinels (<Tier>, <Catalyst>, <Crafted>) and items without a numeric ID
+ * Sentinels (<Tier>, <Crafted>) and items without a numeric ID
  * render as plain text. Wowhead's power.js picks up the links automatically;
  * call window.$WowheadPower?.refreshLinks() after dynamic renders.
  */
 
-const SENTINELS = new Set(['<Tier>', '<Catalyst>', '<Crafted>']);
+const SENTINELS = new Set(['<Tier>', '<Crafted>']);
 
 export default function ItemLink({ name, itemId, className }) {
   if (!name || SENTINELS.has(name)) {
