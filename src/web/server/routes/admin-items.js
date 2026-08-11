@@ -181,7 +181,7 @@ async function applyTokenSlotOverrides(db, seasonId) {
 async function fetchManifestDesired(db, env, seasonId) {
   const sources = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
   // Item seeding is now entirely DB2-sourced — no Blizzard creds required.
-  await applyTokenSlotOverrides(db, seasonId);
+  const currentTokenSlotWords = await applyTokenSlotOverrides(db, seasonId);
   const unknownTokens = [];
   const build = await buildForSeason(db, seasonId);
   const perSource = [];
@@ -198,7 +198,7 @@ async function fetchManifestDesired(db, env, seasonId) {
   }
   const seen    = new Set();
   const desired = items.filter(i => (seen.has(i.itemId) ? false : (seen.add(i.itemId), true)));
-  return { sources, desired, perSource, errors, unknownTokens };
+  return { sources, desired, perSource, errors, unknownTokens, currentTokenSlotWords };
 }
 
 const DIFF_FIELDS = [
@@ -590,7 +590,7 @@ router.post('/diff', async (c) => {
     const currentSeasonId = await getCurrentSeasonId(db);
     const isCurrent       = seasonId === currentSeasonId;
 
-    const { perSource, desired, errors } = await fetchManifestDesired(db, c.env, seasonId);
+    const { perSource, desired, errors, unknownTokens, currentTokenSlotWords } = await fetchManifestDesired(db, c.env, seasonId);
     if (!perSource.length && !errors.length) {
       return c.json({ error: 'No enabled sources in this season’s manifest.' }, 400);
     }
@@ -610,6 +610,7 @@ router.post('/diff', async (c) => {
       sourceErrors: errors, perSource,
       added, changed, removed: removedA,
       counts: { added: added.length, changed: changed.length, removed: removed.length },
+      unknownTokens: tokenSlotWordCandidates(unknownTokens), currentTokenSlotWords,
     });
   } catch (err) {
     console.error('[admin-items] diff error:', err);

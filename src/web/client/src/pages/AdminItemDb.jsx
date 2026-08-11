@@ -32,6 +32,82 @@ function parseTokenPairs(str) {
   return out;
 }
 
+/**
+ * In-context mapper for tier tokens whose flavor word isn't slotted for this tier. Shown after
+ * a seed/diff surfaces `unknownTokens`. The officer picks a slot per word; save writes the
+ * season's token_slot_words (merged over what's there) and calls onSaved() to re-run the action.
+ */
+function TokenSlotMapper({ seasonId, unknownTokens, currentTokenSlotWords, onSaved }) {
+  const [pick,   setPick]   = useState({});
+  const [saving, setSaving] = useState(false);
+  const [err,    setErr]    = useState(null);
+  useEffect(() => { setPick({}); setErr(null); }, [unknownTokens]);
+  if (!unknownTokens?.length) return null;
+
+  const allPicked = unknownTokens.every(w => pick[w.word]);
+
+  async function save() {
+    const merged = { ...parseTokenPairs(currentTokenSlotWords) };
+    for (const [w, s] of Object.entries(pick)) if (s) merged[w] = s;
+    const str = Object.entries(merged).map(([w, s]) => `${w}:${s}`).join('|');
+    setSaving(true); setErr(null);
+    try {
+      const r = await fetch(apiPath(`/api/admin/seasons/${seasonId}`), {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tokenSlotWords: str }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error ?? 'Failed to save mapping');
+      await onSaved?.();
+    } catch (e) { setErr(e.message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ border: '1px solid #b45309', borderRadius: 6, padding: 14, margin: '14px 0', background: 'rgba(180,83,9,0.08)' }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        ⚠ {unknownTokens.length} tier-token {unknownTokens.length === 1 ? 'word' : 'words'} couldn’t be assigned a slot
+      </div>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+        These were recognised as tier tokens but their flavor word is new this tier, so they were
+        <strong> skipped</strong> (not written). Map each word to its slot, then save — it’s stored on
+        this season and the action re-runs so they’re included. The slot is on each token’s Wowhead
+        tooltip (“Create a soulbound set <em>&lt;slot&gt;</em> item…”).
+      </p>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <tbody>
+          {unknownTokens.map(w => (
+            <tr key={w.word} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+              <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{w.word}</td>
+              <td style={{ padding: '6px 8px', color: 'var(--text-muted)' }}>
+                e.g. <ItemLink name={w.example} itemId={w.itemId} />
+                {w.armorTypes?.length ? <span style={{ marginLeft: 6, fontSize: 11 }}>({w.armorTypes.join(', ')})</span> : null}
+              </td>
+              <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                <select
+                  className="config-input config-input-narrow"
+                  value={pick[w.word] ?? ''}
+                  onChange={e => setPick(m => ({ ...m, [w.word]: e.target.value }))}
+                >
+                  <option value="">— slot —</option>
+                  {TIER_SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn-primary" onClick={save} disabled={!allPicked || saving} title={allPicked ? '' : 'Pick a slot for every word first'}>
+          {saving ? 'Saving & re-running…' : 'Save mapping & re-run'}
+        </button>
+        {err && <span style={{ marginLeft: 10, fontSize: 13, color: 'var(--danger, #e05)' }}>{err}</span>}
+      </div>
+    </div>
+  );
+}
+
 // ── Item DB card ──────────────────────────────────────────────────────────────
 
 function ItemDbCard({ seasonId, onStatsChange }) {
@@ -41,8 +117,6 @@ function ItemDbCard({ seasonId, onStatsChange }) {
   const [syncing,      setSyncing]      = useState(false);
   const [clearing,     setClearing]     = useState(false);
   const [result,       setResult]       = useState(null);
-  const [tokenMap,     setTokenMap]     = useState({});   // { [flavorWord]: slot } for unmapped tokens
-  const [mapSaving,    setMapSaving]    = useState(false);
 
   // Instance search
   const [instances,    setInstances]    = useState(null);  // null = not loaded
@@ -77,39 +151,12 @@ function ItemDbCard({ seasonId, onStatsChange }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? r.status);
       setResult({ ok: true, data: d });
-      setTokenMap({});   // clear any prior selections; the fresh unknownTokens drive the form
       onStatsChange?.();
     } catch (err) {
       setResult({ error: err.message });
     } finally {
       setSyncing(false);
     }
-  }
-
-  // Save the officer's word→slot picks into the season's token_slot_words (merged over what's
-  // already there), then re-sync so the now-recognised tokens land in the Item DB.
-  async function saveTokenMappingAndResync() {
-    const data = result?.ok ? result.data : null;
-    if (!data) return;
-    const merged = { ...parseTokenPairs(data.currentTokenSlotWords) };
-    for (const [word, slot] of Object.entries(tokenMap)) if (slot) merged[word] = slot;
-    const str = Object.entries(merged).map(([w, s]) => `${w}:${s}`).join('|');
-    setMapSaving(true);
-    try {
-      const r = await fetch(apiPath(`/api/admin/seasons/${seasonId}`), {
-        method: 'PUT', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokenSlotWords: str }),
-      });
-      const d = await r.json();
-      if (!r.ok || d.error) throw new Error(d.error ?? 'Failed to save mapping');
-    } catch (err) {
-      setResult({ error: err.message });
-      setMapSaving(false);
-      return;
-    }
-    setMapSaving(false);
-    await handleSync();   // re-run: mapped tokens now resolve a slot and get written
   }
 
   async function handleClear() {
@@ -217,57 +264,14 @@ function ItemDbCard({ seasonId, onStatsChange }) {
         </p>
       )}
 
-      {result?.ok && result.data.unknownTokens?.length > 0 && (() => {
-        const words = result.data.unknownTokens;
-        const allPicked = words.every(w => tokenMap[w.word]);
-        return (
-          <div style={{ border: '1px solid #b45309', borderRadius: 6, padding: 14, marginBottom: 14, background: 'rgba(180,83,9,0.08)' }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              ⚠ {words.length} tier-token {words.length === 1 ? 'word' : 'words'} couldn’t be assigned a slot
-            </div>
-            <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
-              These tokens were recognised as tier pieces but their flavor word is new this tier, so
-              they were <strong>skipped</strong> (not written to the Item DB). Map each word to its slot,
-              then save &amp; re-sync. The slot is on each token’s Wowhead tooltip (“Create a soulbound
-              set <em>&lt;slot&gt;</em> item…”).
-            </p>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <tbody>
-                {words.map(w => (
-                  <tr key={w.word} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                    <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{w.word}</td>
-                    <td style={{ padding: '6px 8px', color: 'var(--text-muted)' }}>
-                      e.g.{' '}
-                      <ItemLink name={w.example} itemId={w.itemId} />
-                      {w.armorTypes?.length ? <span style={{ marginLeft: 6, fontSize: 11 }}>({w.armorTypes.join(', ')})</span> : null}
-                    </td>
-                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>
-                      <select
-                        className="config-input config-input-narrow"
-                        value={tokenMap[w.word] ?? ''}
-                        onChange={e => setTokenMap(m => ({ ...m, [w.word]: e.target.value }))}
-                      >
-                        <option value="">— slot —</option>
-                        {TIER_SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ marginTop: 12 }}>
-              <button
-                className="btn-primary"
-                onClick={saveTokenMappingAndResync}
-                disabled={!allPicked || mapSaving || syncing}
-                title={allPicked ? '' : 'Pick a slot for every word first'}
-              >
-                {mapSaving || syncing ? 'Saving & re-syncing…' : 'Save mapping & re-sync'}
-              </button>
-            </div>
-          </div>
-        );
-      })()}
+      {result?.ok && (
+        <TokenSlotMapper
+          seasonId={seasonId}
+          unknownTokens={result.data.unknownTokens}
+          currentTokenSlotWords={result.data.currentTokenSlotWords}
+          onSaved={handleSync}
+        />
+      )}
 
       {/* Instance browser */}
       <div style={{ borderTop: '1px solid var(--border, #333)', paddingTop: 12, marginTop: 4 }}>
@@ -802,6 +806,15 @@ function ManifestUpdateCard({ seasonId, onItemsChanged }) {
         <p style={{ marginTop: 12, fontSize: 13, color: applyMsg.ok ? 'var(--bis)' : 'var(--danger, #e05)' }}>
           {applyMsg.ok ? applyMsg.text : `Error: ${applyMsg.error}`}
         </p>
+      )}
+
+      {diff?.unknownTokens?.length > 0 && (
+        <TokenSlotMapper
+          seasonId={seasonId}
+          unknownTokens={diff.unknownTokens}
+          currentTokenSlotWords={diff.currentTokenSlotWords}
+          onSaved={preview}
+        />
       )}
 
       {diff && (
