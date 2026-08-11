@@ -342,4 +342,19 @@ ALTER TABLE seasons ADD COLUMN zone_ids TEXT NOT NULL DEFAULT '';
 UPDATE seasons SET zone_ids = COALESCE((SELECT value FROM global_config WHERE key = 'wcl_zone_ids'), '');
 `.trim(),
   },
+
+  {
+    name: '0011_season_token_slot_words',
+    description: "Add token_slot_words to seasons — the tier token flavor-word → slot map (e.g. 'Idol:Hands|Icon:Chest'). Per-tier and officer-editable from the Item DB sync UI, so a new season's tokens no longer need a code change. Backfills from the legacy global token_slot_overrides.",
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM pragma_table_info('seasons') WHERE name = 'token_slot_words'"
+      ).first();
+      return !!row;
+    },
+    sql: `
+ALTER TABLE seasons ADD COLUMN token_slot_words TEXT NOT NULL DEFAULT '';
+UPDATE seasons SET token_slot_words = COALESCE((SELECT value FROM global_config WHERE key = 'token_slot_overrides'), '');
+`.trim(),
+  },
 ];

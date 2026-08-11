@@ -102,11 +102,10 @@ function playableClasses(details) {
   return ds.replace(/^Classes?:\s*/i, '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
-// The one per-tier touch: the token flavor word → slot. Matched as whole words.
-// (Verified from each token's tooltip: "Create a soulbound set <slot> item…".)
+// Legacy built-in word→slot map (fallback only). New tiers are mapped per-season from the
+// Item DB sync UI (seasons.token_slot_words) — no code change needed — so this no longer grows.
 const TOKEN_SLOT_WORDS = {
   Riftbloom: 'Chest', Fanatical: 'Head', Unraveled: 'Shoulders', Hungering: 'Hands', Corrupted: 'Legs', // Midnight S1
-  Effigy: 'Head', Remnant: 'Shoulders', Icon: 'Chest', Idol: 'Hands', Relic: 'Legs',                    // Midnight S2 — The Venomous Abyss
 };
 // Descriptive fallback for expansions that name tokens after gear types (stable).
 const LEGACY_SLOT_KEYWORDS = [
@@ -147,16 +146,42 @@ function tierTokenSlot(name) {
  * Armor type is derived from the restricted class-group (robust); slot from the word
  * map above. A recognised token with an unknown slot is logged and returns null.
  */
-export function tierTokenInfo(details) {
+export function tierTokenInfo(details, unknownTokens = null) {
   if (details?.inventory_type?.type !== 'NON_EQUIP') return null;
   const armorType = tierArmorFromClasses(playableClasses(details));
   if (!armorType) return null; // not a tier token
   const slot = tierTokenSlot(details.name ?? '');
   if (!slot) {
-    console.warn(`[item-seeder] Tier token "${details.name}" (#${details.id}) recognised (${armorType}) but slot unknown — add its word to TOKEN_SLOT_WORDS`);
+    // Recognised as a tier token but its flavor word isn't mapped for this tier. Surface it
+    // (collector → sync UI) so an officer can map word→slot without a code change.
+    if (unknownTokens) unknownTokens.push({ itemId: String(details.id), name: details.name ?? '', armorType });
+    else console.warn(`[item-seeder] Tier token "${details.name}" (#${details.id}) recognised (${armorType}) but slot unknown — map it in Admin → Item DB`);
     return null;
   }
   return { slot, armorType };
+}
+
+/**
+ * From a list of unmapped tier tokens (from tierTokenInfo/mapDb2Item collectors), derive the
+ * distinct SLOT flavor words to map. A slot word recurs across multiple armor types (e.g.
+ * "Idol" appears on the Plate/Mail/Leather/Cloth tokens), whereas an armor-prefix word sticks
+ * to one armor type — so words seen with ≥2 armor types are the ones the officer must map.
+ * Falls back to all distinct words if the heuristic finds none (e.g. a partial re-sync).
+ *
+ * @param {Array<{itemId,name,armorType}>} unknownTokens
+ * @returns {Array<{word, example, itemId, armorTypes: string[]}>}
+ */
+export function tokenSlotWordCandidates(unknownTokens) {
+  const byWord = new Map(); // word -> { armors:Set, example, itemId }
+  for (const t of unknownTokens ?? []) {
+    for (const w of String(t.name ?? '').split(/\s+/).map(x => x.replace(/[''’]s$/i, '')).filter(Boolean)) {
+      if (!byWord.has(w)) byWord.set(w, { armors: new Set(), example: t.name, itemId: t.itemId });
+      byWord.get(w).armors.add(t.armorType);
+    }
+  }
+  const all = [...byWord.entries()].map(([word, v]) => ({ word, example: v.example, itemId: v.itemId, armorTypes: [...v.armors] }));
+  const multi = all.filter(c => c.armorTypes.length >= 2);
+  return (multi.length ? multi : all).sort((a, b) => a.word.localeCompare(b.word));
 }
 
 /**
@@ -166,13 +191,13 @@ export function tierTokenInfo(details) {
  * @param {{ details, encounterName, instanceName, difficulty }} raw
  * @returns {object|null}
  */
-export function mapItem({ details, encounterName, instanceName, difficulty }) {
+export function mapItem({ details, encounterName, instanceName, difficulty, unknownTokens = null }) {
   const invTypeId = details.inventory_type?.type;
   let slot        = INVENTORY_SLOT[invTypeId];
 
   // NON_EQUIP: only keep recognised tier tokens (class-group identifies; word gives slot)
   if (!slot && invTypeId === 'NON_EQUIP') {
-    const token = tierTokenInfo(details);
+    const token = tierTokenInfo(details, unknownTokens);
     if (!token) return null;
     return {
       itemId:      String(details.id),
@@ -261,7 +286,7 @@ const ARMOR_BY_ALLOWABLE_CLASS = new Map(
  *
  * @param {{ sparse: object, item: object, encounterName: string, instanceName: string, difficulty: string }} args
  */
-export function mapDb2Item({ sparse, item, encounterName, instanceName, difficulty }) {
+export function mapDb2Item({ sparse, item, encounterName, instanceName, difficulty, unknownTokens = null }) {
   if (!sparse) return null;
   const invNum  = Number(sparse.InventoryType);
   const classId = Number(item?.ClassID);
@@ -283,7 +308,9 @@ export function mapDb2Item({ sparse, item, encounterName, instanceName, difficul
     if (!armorType) return null; // not a tier token
     const slot = tierTokenSlot(name);
     if (!slot) {
-      console.warn(`[item-seeder] DB2 tier token "${name}" (#${sparse.ID}) recognised (${armorType}) but slot unknown — map its word via token_slot_overrides`);
+      // Recognised token, unmapped flavor word — surface for in-UI mapping (see tierTokenInfo).
+      if (unknownTokens) unknownTokens.push({ itemId: String(sparse.ID), name, armorType });
+      else console.warn(`[item-seeder] DB2 tier token "${name}" (#${sparse.ID}) recognised (${armorType}) but slot unknown — map it in Admin → Item DB`);
       return null;
     }
     return { ...base, slot, armorType, isTierToken: true, weaponType: '' };

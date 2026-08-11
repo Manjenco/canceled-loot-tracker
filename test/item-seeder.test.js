@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tierTokenInfo, mapItem, mapDb2Item, setTokenSlotOverrides, parseTokenSlotOverrides } from '../src/lib/item-seeder.js';
+import { tierTokenInfo, mapItem, mapDb2Item, setTokenSlotOverrides, parseTokenSlotOverrides, tokenSlotWordCandidates } from '../src/lib/item-seeder.js';
 
 const tok = (name, classes, invType = 'NON_EQUIP') => ({
   id: 1,
@@ -29,13 +29,14 @@ test('tierTokenInfo', async (t) => {
     assert.deepEqual(tierTokenInfo(tok('Aetherweave Unraveled Nullcore', CLOTH)), { slot: 'Shoulders', armorType: 'Cloth'   });
   });
 
-  await t.test('Midnight S2 (Venomous Abyss) token words resolve to the right slot', () => {
-    // Verified from each token's tooltip ("Create a soulbound set <slot> item…").
-    assert.deepEqual(tierTokenInfo(tok('Venomforged Effigy',  PLATE)),   { slot: 'Head',      armorType: 'Plate'   });
-    assert.deepEqual(tierTokenInfo(tok('Venomcured Remnant',  LEATHER)), { slot: 'Shoulders', armorType: 'Leather' });
-    assert.deepEqual(tierTokenInfo(tok('Venomcast Icon',      MAIL)),    { slot: 'Chest',     armorType: 'Mail'    });
-    assert.deepEqual(tierTokenInfo(tok('Venomwoven Idol',     CLOTH)),   { slot: 'Hands',     armorType: 'Cloth'   });
-    assert.deepEqual(tierTokenInfo(tok('Venomforged Relic',   PLATE)),   { slot: 'Legs',      armorType: 'Plate'   });
+  await t.test('a new tier’s token words resolve via per-season overrides (the go-forward path)', () => {
+    // No longer hardcoded — the officer maps these from the sync UI into the season's
+    // token_slot_words, applied here as overrides. (Venomous Abyss: verified from tooltips.)
+    setTokenSlotOverrides(parseTokenSlotOverrides('Effigy:Head|Remnant:Shoulders|Icon:Chest|Idol:Hands|Relic:Legs'));
+    assert.deepEqual(tierTokenInfo(tok('Venomforged Effigy', PLATE)), { slot: 'Head',  armorType: 'Plate' });
+    assert.deepEqual(tierTokenInfo(tok('Venomwoven Idol',    CLOTH)), { slot: 'Hands', armorType: 'Cloth' });
+    assert.equal(tierTokenInfo(tok('Venomcast Icon', MAIL)).slot, 'Chest');
+    setTokenSlotOverrides({}); // reset module state for other tests
   });
 
   await t.test('legacy descriptive token names still resolve a slot', () => {
@@ -44,6 +45,30 @@ test('tierTokenInfo', async (t) => {
 
   await t.test('recognised token with unknown slot word → null (logged, not guessed)', () => {
     assert.equal(tierTokenInfo(tok('Mysterious Whatsit', CLOTH)), null);
+  });
+
+  await t.test('unknown-slot token pushes to the collector (surfaced for in-UI mapping)', () => {
+    const unknown = [];
+    const r = tierTokenInfo({ ...tok('Zephyr Gleamite', CLOTH), id: 555 }, unknown);
+    assert.equal(r, null);
+    assert.deepEqual(unknown, [{ itemId: '555', name: 'Zephyr Gleamite', armorType: 'Cloth' }]);
+  });
+
+  await t.test('tokenSlotWordCandidates picks the words shared across armor types', () => {
+    // Two slot words (Zephyrite, Gleam) each on 2 armor types; the armor prefixes stick to one.
+    const unknown = [
+      { itemId: '1', name: 'Aforged Zephyrite', armorType: 'Plate' },
+      { itemId: '2', name: 'Bcast Zephyrite',   armorType: 'Mail'  },
+      { itemId: '3', name: 'Aforged Gleam',     armorType: 'Plate' },
+      { itemId: '4', name: 'Bcast Gleam',       armorType: 'Mail'  },
+    ];
+    const cands = tokenSlotWordCandidates(unknown).map(c => c.word);
+    assert.deepEqual(cands, ['Gleam', 'Zephyrite']);   // sorted; armor prefixes (Aforged/Bcast) excluded
+  });
+
+  await t.test('tokenSlotWordCandidates falls back to all words when none recur across armors', () => {
+    const cands = tokenSlotWordCandidates([{ itemId: '1', name: 'Lone Relicward', armorType: 'Plate' }]).map(c => c.word);
+    assert.deepEqual(cands, ['Lone', 'Relicward']);
   });
 
   await t.test('not a full armor class-group → not a token', () => {

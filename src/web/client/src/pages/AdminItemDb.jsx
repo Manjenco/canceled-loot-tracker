@@ -20,6 +20,18 @@ const DIFFICULTIES = [
   { value: 'MYTHIC_KEYSTONE',  label: 'Mythic+' },
 ];
 
+const TIER_SLOT_OPTIONS = ['Head', 'Shoulders', 'Chest', 'Hands', 'Legs'];
+
+/** Parse a "Word:Slot|Word:Slot" map string into { [word]: slot }. */
+function parseTokenPairs(str) {
+  const out = {};
+  for (const pair of String(str ?? '').split('|')) {
+    const [w, s] = pair.split(':').map(x => x.trim());
+    if (w && s) out[w] = s;
+  }
+  return out;
+}
+
 // ── Item DB card ──────────────────────────────────────────────────────────────
 
 function ItemDbCard({ seasonId, onStatsChange }) {
@@ -29,6 +41,8 @@ function ItemDbCard({ seasonId, onStatsChange }) {
   const [syncing,      setSyncing]      = useState(false);
   const [clearing,     setClearing]     = useState(false);
   const [result,       setResult]       = useState(null);
+  const [tokenMap,     setTokenMap]     = useState({});   // { [flavorWord]: slot } for unmapped tokens
+  const [mapSaving,    setMapSaving]    = useState(false);
 
   // Instance search
   const [instances,    setInstances]    = useState(null);  // null = not loaded
@@ -63,12 +77,39 @@ function ItemDbCard({ seasonId, onStatsChange }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? r.status);
       setResult({ ok: true, data: d });
+      setTokenMap({});   // clear any prior selections; the fresh unknownTokens drive the form
       onStatsChange?.();
     } catch (err) {
       setResult({ error: err.message });
     } finally {
       setSyncing(false);
     }
+  }
+
+  // Save the officer's word→slot picks into the season's token_slot_words (merged over what's
+  // already there), then re-sync so the now-recognised tokens land in the Item DB.
+  async function saveTokenMappingAndResync() {
+    const data = result?.ok ? result.data : null;
+    if (!data) return;
+    const merged = { ...parseTokenPairs(data.currentTokenSlotWords) };
+    for (const [word, slot] of Object.entries(tokenMap)) if (slot) merged[word] = slot;
+    const str = Object.entries(merged).map(([w, s]) => `${w}:${s}`).join('|');
+    setMapSaving(true);
+    try {
+      const r = await fetch(apiPath(`/api/admin/seasons/${seasonId}`), {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tokenSlotWords: str }),
+      });
+      const d = await r.json();
+      if (!r.ok || d.error) throw new Error(d.error ?? 'Failed to save mapping');
+    } catch (err) {
+      setResult({ error: err.message });
+      setMapSaving(false);
+      return;
+    }
+    setMapSaving(false);
+    await handleSync();   // re-run: mapped tokens now resolve a slot and get written
   }
 
   async function handleClear() {
@@ -175,6 +216,58 @@ function ItemDbCard({ seasonId, onStatsChange }) {
           }
         </p>
       )}
+
+      {result?.ok && result.data.unknownTokens?.length > 0 && (() => {
+        const words = result.data.unknownTokens;
+        const allPicked = words.every(w => tokenMap[w.word]);
+        return (
+          <div style={{ border: '1px solid #b45309', borderRadius: 6, padding: 14, marginBottom: 14, background: 'rgba(180,83,9,0.08)' }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+              ⚠ {words.length} tier-token {words.length === 1 ? 'word' : 'words'} couldn’t be assigned a slot
+            </div>
+            <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+              These tokens were recognised as tier pieces but their flavor word is new this tier, so
+              they were <strong>skipped</strong> (not written to the Item DB). Map each word to its slot,
+              then save &amp; re-sync. The slot is on each token’s Wowhead tooltip (“Create a soulbound
+              set <em>&lt;slot&gt;</em> item…”).
+            </p>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <tbody>
+                {words.map(w => (
+                  <tr key={w.word} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    <td style={{ padding: '6px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>{w.word}</td>
+                    <td style={{ padding: '6px 8px', color: 'var(--text-muted)' }}>
+                      e.g.{' '}
+                      <ItemLink name={w.example} itemId={w.itemId} />
+                      {w.armorTypes?.length ? <span style={{ marginLeft: 6, fontSize: 11 }}>({w.armorTypes.join(', ')})</span> : null}
+                    </td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                      <select
+                        className="config-input config-input-narrow"
+                        value={tokenMap[w.word] ?? ''}
+                        onChange={e => setTokenMap(m => ({ ...m, [w.word]: e.target.value }))}
+                      >
+                        <option value="">— slot —</option>
+                        {TIER_SLOT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 12 }}>
+              <button
+                className="btn-primary"
+                onClick={saveTokenMappingAndResync}
+                disabled={!allPicked || mapSaving || syncing}
+                title={allPicked ? '' : 'Pick a slot for every word first'}
+              >
+                {mapSaving || syncing ? 'Saving & re-syncing…' : 'Save mapping & re-sync'}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Instance browser */}
       <div style={{ borderTop: '1px solid var(--border, #333)', paddingTop: 12, marginTop: 4 }}>

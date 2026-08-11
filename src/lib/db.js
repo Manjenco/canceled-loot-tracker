@@ -157,16 +157,17 @@ export async function createSeason(db, { name, startDate, isCurrent = false }) {
   return result.meta?.last_row_id;
 }
 
-export async function updateSeason(db, seasonId, { name, startDate, mplusWse, preRelease, zoneIds }) {
+export async function updateSeason(db, seasonId, { name, startDate, mplusWse, preRelease, zoneIds, tokenSlotWords }) {
   await run(db,
     `UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date),
        mplus_wse = COALESCE(?, mplus_wse), pre_release = COALESCE(?, pre_release),
-       zone_ids = COALESCE(?, zone_ids) WHERE id = ?`,
+       zone_ids = COALESCE(?, zone_ids), token_slot_words = COALESCE(?, token_slot_words) WHERE id = ?`,
     name ?? null, startDate ?? null,
     (mplusWse === undefined || mplusWse === null || mplusWse === '') ? null : Number(mplusWse),
     (preRelease === undefined || preRelease === null) ? null : (preRelease ? 1 : 0),
     // zoneIds is authoritative when provided — '' deliberately clears (pauses sync); undefined leaves it.
     (zoneIds === undefined || zoneIds === null) ? null : String(zoneIds),
+    (tokenSlotWords === undefined || tokenSlotWords === null) ? null : String(tokenSlotWords),
     seasonId
   );
   cacheInvalidate('current_season');
