@@ -14,6 +14,7 @@ const encounters = [
   { ID: '965',  JournalInstanceID: '476',  Name_lang: 'Ranjit' },
   { ID: '2509', JournalInstanceID: '1201', Name_lang: 'Vexamus' },
   { ID: '2675', JournalInstanceID: '1303', Name_lang: 'Azhiccar' },
+  { ID: '2172', JournalInstanceID: '1041', Name_lang: 'Dazar' },   // King's Rest — DifficultyMask=2 base table
 ];
 
 const ei = (JournalEncounterID, ItemID, DifficultyMask, WorldStateExpressionID) =>
@@ -28,6 +29,8 @@ const encounterItems = [
   ei('2509', '193710', '-1', '0'),     // Algeth'ar WSE-0 reuse → keep
   ei('2509', '258529', '-1', '50188'), // Algeth'ar gated current → keep
   ei('2675', '242468', '-1', '0'),     // native → keep
+  ei('2172', '160213', '2',  '0'),     // King's Rest base loot (DifficultyMask=2) → keep
+  ei('2172', '159369', '3',  '0'),     // King's Rest retired base (DifficultyMask=3) → drop
 ];
 
 const ids = (picks) => picks.map(p => p.itemId).sort();
@@ -47,6 +50,13 @@ test('wago M+ rule', async (t) => {
 
   await t.test('native dungeon: keeps WSE-0 set', () => {
     assert.deepEqual(ids(computeMplusItemPicks(encounters, encounterItems, 1303, 50188)), ['242468']);
+  });
+
+  await t.test("reused dungeon (King's Rest): keeps DifficultyMask=2 base loot, still drops 3", () => {
+    // King's Rest itemizes its whole base table as DifficultyMask=2 (not -1); excluding it
+    // dropped all four bosses. Retired base loot (3) is still dropped.
+    const picks = computeMplusItemPicks(encounters, encounterItems, 1041, 50188);
+    assert.deepEqual(ids(picks), ['160213']);
   });
 
   await t.test('wrong season WSE flips which gated rows survive', () => {
