@@ -244,6 +244,7 @@ export default function ImportBisCard({ spec, onImported }) {
                         <td className="import-bis-status">
                           {badge && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
                           {row.tokenPiece && <span className="badge ptag-token" title="Token-granted tier piece">&lt;Token&gt;</span>}
+                          {row.outdated && <span className="badge ptag-outdated" title="Maxroll hasn't adopted the 12.1 catalyst changes — verify this tier pick against Wowhead">outdated</span>}
                         </td>
                       </tr>
                     );

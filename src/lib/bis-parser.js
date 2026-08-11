@@ -449,8 +449,47 @@ export function parseBisDocument(html, source) {
   const parser = SOURCE_PARSERS[source];
   if (!parser) throw new Error(`Unknown BIS source: ${source}`);
   const meta = { source, tablesSeen: 0, rejects: [] };
-  const rows = parser(String(html ?? ''), meta);
-  return { rows, meta };
+  const htmlStr = String(html ?? '');
+  const rows = parser(htmlStr, meta);
+  // Wowhead now lists tier pieces two ways: the main table shows the native token piece,
+  // while a separate "Best Gear to Catalyze" card block shows the item you actually catalyze
+  // for the slot (the real per-slot BIS post-12.1). Only Wowhead carries this block.
+  const catalyze = source === 'Wowhead' ? parseCatalyzeSection(htmlStr) : [];
+  return { rows, meta, catalyze };
+}
+
+/**
+ * Parse Wowhead's "Best Gear to Catalyze" card block into per-tier-slot catalyze targets.
+ * Each card is a <p> with the slot in a class-coloured span, the item in an
+ * `a.icon-badge-content` (href carries item=ID), and the source in a trailing <b>.
+ * @returns {Array<{ slot, itemName, itemId, source }>}  empty if the block is absent.
+ */
+export function parseCatalyzeSection(html) {
+  const str = String(html ?? '');
+  // Anchor on the actual heading element, not any raw text — the page's table of contents
+  // repeats the phrase in an <a>, which would otherwise point the scan at the wrong region.
+  const head = /<h[1-4][^>]*>[\s\S]*?Best Gear to Catalyze[\s\S]*?<\/h[1-4]>/i.exec(str);
+  if (!head) return [];
+  const start   = head.index + head[0].length; // scan starts after the heading
+  const after   = str.slice(start);
+  const nextH   = after.search(/<h[1-4][\s/>]/i);
+  const section = nextH < 0 ? after : after.slice(0, nextH);
+
+  // Anchor each card at its slot's class-coloured span, then pull item id/name + source.
+  const cardRe = /<span class="c\d+">([^<]+)<\/span>[\s\S]*?<a class="icon-badge-content"[^>]*\bitem=(\d+)[^>]*>\s*<span class="icon-badge-content-text[^"]*">([^<]+)<\/span>[\s\S]*?<b>([^<]+)<\/b>/gi;
+  const out = [];
+  let m;
+  while ((m = cardRe.exec(section))) {
+    const slot = normaliseSlot(m[1]);
+    if (!slot || !TIER_SLOTS.has(slot)) continue;
+    out.push({
+      slot,
+      itemName: decodeEntities(m[3].trim()),
+      itemId:   m[2],
+      source:   decodeEntities(m[4].trim()),
+    });
+  }
+  return out;
 }
 
 /**
@@ -484,10 +523,13 @@ export function parseBisHtml(html, source) {
  *        (from the tier_items table) → flags the item as a token-granted tokenPiece. Most reliable.
  * @param {Object<string,{name:string,itemId:string}>} [opts.tierPieceBySlot]  slot → this
  *        class's equippable tier piece, used to resolve an annotation-only <Tier> row.
+ * @param {Object<string,{itemName:string,itemId:string,source:string}>} [opts.catalyzeBySlot]
+ *        tier slot → the item to catalyze (Wowhead's "Best Gear to Catalyze"). Becomes the
+ *        slot's Overall BIS; Raid BIS is it when raid-sourced, else the native token piece.
  * @param {string[]} [opts.tierSetPrefixes]  current-tier name prefixes → promote to sentinels.
  *        Name-based fallback for sources without item IDs (e.g. Maxroll).
  */
-export function resolveBisItems(parsed, itemDb, { tierSetPrefixes = DEFAULT_TIER_SET_PREFIXES, tierItemIds, tierPieceBySlot = null } = {}) {
+export function resolveBisItems(parsed, itemDb, { tierSetPrefixes = DEFAULT_TIER_SET_PREFIXES, tierItemIds, tierPieceBySlot = null, catalyzeBySlot = null } = {}) {
   const byId   = new Map(itemDb.map(i => [String(i.item_id), i]));
   const byName = new Map(itemDb.map(i => [normalizeName(i.name), i]));
   const prefixesLower = tierSetPrefixes.map(p => normalizeName(p));
@@ -552,6 +594,25 @@ export function resolveBisItems(parsed, itemDb, { tierSetPrefixes = DEFAULT_TIER
     } else if (tokenPiece || dbItem?.source_type === 'Raid') {
       raidBis = trueBis;
       raidBisItemId = trueBisItemId;
+    }
+
+    // Catalyst rework (12.1): for a tier slot, the catalyze target is the real per-slot BIS.
+    // Overall = that item; Raid = it when raid-sourced, else the native token piece the main
+    // table listed (a token drop still fills the slot). See parseCatalyzeSection.
+    const slotBase = p.slot.replace(/ [12]$/, '');
+    const catInfo  = catalyzeBySlot?.[slotBase];
+    if (catInfo && TIER_SLOTS.has(slotBase)) {
+      const nativeName = trueBis, nativeId = trueBisItemId; // main table's native tier piece
+      const catDb   = byId.get(String(catInfo.itemId)) ?? byName.get(normalizeName(catInfo.itemName)) ?? null;
+      const catName = catDb?.name ?? catInfo.itemName;
+      const catId   = catDb ? String(catDb.item_id) : (catInfo.itemId ? String(catInfo.itemId) : '');
+      trueBis = catName; trueBisItemId = catId;
+      status  = catDb ? 'ok' : 'unmatched';
+      if (catDb?.source_type === 'Raid') {
+        raidBis = catName; raidBisItemId = catId; tokenPiece = false;
+      } else {
+        raidBis = nativeName; raidBisItemId = nativeId; tokenPiece = true; // raid-fill is the token piece
+      }
     }
 
     return { slot: p.slot, trueBis, trueBisItemId, raidBis, raidBisItemId, status, tokenPiece };

@@ -1972,6 +1972,7 @@ a.wh-link.bis-sentinel { color: var(--text-muted); font-style: italic; }
 .ptag-overall-bis     { background: #CC1010; color: #fff; }
 .ptag-raid-bis        { background: #b45309; color: #fff; }
 .ptag-token           { background: #0369a1; color: #fff; }
+.ptag-outdated        { background: #7c2d12; color: #fecaca; }
 .ptag-crafted-bis     { background: #374151; color: #9ca3af; }
 .ptag-has-0-tier, .ptag-has-1-tier, .ptag-has-2-tier,
 .ptag-has-3-tier, .ptag-has-4-tier, .ptag-has-5-tier { background: #374151; color: #9ca3af; }

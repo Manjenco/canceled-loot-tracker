@@ -332,7 +332,7 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
       }
     }
 
-    const { rows: parsed, meta } = parseBisDocument(pageHtml, source);
+    const { rows: parsed, meta, catalyze } = parseBisDocument(pageHtml, source);
     if (!parsed.length) {
       // #4 — explain WHY no table matched rather than failing silently.
       const reasons = [...new Set(meta.rejects ?? [])];
@@ -344,9 +344,16 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
       return c.json({ error: `No BIS table found. ${detail}`, needsPaste: true, suggestedUrl }, 422);
     }
 
-    const resolved  = resolveBisItems(parsed, itemDb, opts);
+    const catalyzeBySlot = {};
+    for (const cat of (catalyze ?? [])) catalyzeBySlot[cat.slot] = cat;
+
+    const resolved  = resolveBisItems(parsed, itemDb, { ...opts, catalyzeBySlot });
     const armorType = getArmorType(canonicalSpec);
     const bySlot    = new Map(resolved.map(r => [r.slot, r]));
+
+    // Maxroll hasn't adopted the 12.1 catalyst model, so its tier-slot picks (native pieces,
+    // no catalyze target) are suspect — flag them for manual verification, don't drop them.
+    const flagOutdated = source === 'Maxroll';
 
     // Return a row for every slot (parsed values or blank) enriched with per-slot
     // Item DB options, so the review table can reuse the editor's ItemSelect.
@@ -358,6 +365,7 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
         options:        itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, true, tierItemIds),
         overallOptions: itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, false, tierItemIds),
         hasTier:        TIER_SLOTS.has(slot),
+        outdated:       flagOutdated && TIER_SLOTS.has(slot) && !!r.trueBis,
       };
     });
 
@@ -387,6 +395,12 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
     }
     if (missingSlots.length) {
       warnings.push(`No item was parsed for: ${missingSlots.join(', ')}. The guide may omit ${missingSlots.length === 1 ? 'this slot' : 'these slots'}, or the format differs — fill in manually if needed.`);
+    }
+    if (flagOutdated && rows.some(r => r.outdated)) {
+      warnings.push(`Maxroll hasn't adopted the 12.1 catalyst changes, so its tier-slot picks are likely wrong (they list the native tier piece, not the item to catalyze). Each tier slot is flagged "outdated" — verify against Wowhead before importing.`);
+    }
+    if (source === 'Wowhead' && (catalyze ?? []).length === 0) {
+      warnings.push(`No "Best Gear to Catalyze" section was found on this Wowhead page — tier slots fall back to the native tier piece. If the guide has a catalyze section, make sure you pasted the fully rendered page (DevTools → copy <html> outerHTML).`);
     }
 
     const parsedCount = resolved.length;

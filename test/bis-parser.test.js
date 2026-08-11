@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseBisHtml, parseBisDocument, resolveBisItems, bisGuideUrl, splitSpecClass, normalizeName,
+  parseBisHtml, parseBisDocument, parseCatalyzeSection, resolveBisItems, bisGuideUrl, splitSpecClass, normalizeName,
 } from '../src/lib/bis-parser.js';
 
 // ── URL builders ─────────────────────────────────────────────────────────────
@@ -400,5 +400,107 @@ test('parseBisDocument exposes diagnostics', async (t) => {
     const { rows, meta } = parseBisDocument('<table><tr><td>nope</td></tr></table>', 'Maxroll');
     assert.equal(rows.length, 0);
     assert.ok(meta.rejects.length >= 1);
+  });
+});
+
+// ── Wowhead "Best Gear to Catalyze" (12.1 catalyst rework) ──────────────────────
+// Card shape mirrors the live page: slot in a class-coloured span, item in
+// a.icon-badge-content (href carries item=ID), source in a trailing <b>.
+const CATALYZE_CARD = (slot, id, name, source) =>
+  `<p><span class="large-text"><b><span class="c7">${slot}</span></b></span><br>`
+  + `<div class="wh-center"><div class="icon-badge exclude-units"><div class="icon-badge-icon">`
+  + `<div class="iconlarge"><a href="https://www.wowhead.com/item=${id}/x"></a></div></div>`
+  + `<a class="icon-badge-content" href="https://www.wowhead.com/item=${id}/x">`
+  + `<span class="icon-badge-content-text meta-text">${name}</span></a></div>`
+  + `<a href="/zone=1"><span class="large-text"><b>${source}</b></span></a></div></p>`;
+
+const WOWHEAD_CATALYZE = `<h2>Best in Slot</h2>`
+  + `<h3>Best Gear to Catalyze for Elemental Shaman</h3>`
+  + CATALYZE_CARD('Head', '251220', 'Voidscarred Crown', 'Voidscar Arena')
+  + CATALYZE_CARD('Shoulder', '268231', 'Soulslither Spaulders', 'The Coiled Altar')
+  + CATALYZE_CARD('Chest', '271876', 'Awoken Dreadfang Cuirass', "Ula'tek")
+  + CATALYZE_CARD('Gloves', '160213', "Sepulchral Construct's Gloves", "King's Rest")
+  + CATALYZE_CARD('Legs', '268237', 'Cuisses of the Uncoiled Union', 'The Coiled Altar')
+  + `<h3>Next Section</h3><p>unrelated <span class="c7">Nonsense</span></p>`;
+
+test('parseCatalyzeSection (Wowhead)', async (t) => {
+  const cards  = parseCatalyzeSection(WOWHEAD_CATALYZE);
+  const bySlot = Object.fromEntries(cards.map(c => [c.slot, c]));
+
+  await t.test('one target per tier slot, slot names normalised', () => {
+    assert.equal(cards.length, 5);
+    assert.equal(bySlot.Head.itemId, '251220');
+    assert.equal(bySlot.Head.itemName, 'Voidscarred Crown');
+    assert.equal(bySlot.Head.source, 'Voidscar Arena');
+    assert.equal(bySlot.Shoulders.itemName, 'Soulslither Spaulders');      // Shoulder → Shoulders
+    assert.equal(bySlot.Hands.itemName, "Sepulchral Construct's Gloves");  // Gloves → Hands
+  });
+
+  await t.test('scan is bounded — does not bleed past the next heading', () => {
+    assert.ok(!cards.some(c => c.itemName === 'Nonsense'));
+  });
+
+  await t.test('parseBisDocument surfaces catalyze for Wowhead only', () => {
+    assert.equal(parseBisDocument(WOWHEAD_CATALYZE, 'Wowhead').catalyze.length, 5);
+    assert.equal(parseBisDocument(WOWHEAD_CATALYZE, 'Maxroll').catalyze.length, 0);
+  });
+
+  await t.test('absent section → empty, not a throw', () => {
+    assert.deepEqual(parseCatalyzeSection('<h3>Something else</h3>'), []);
+  });
+
+  await t.test('a table-of-contents link with the same phrase does not misdirect the scan', () => {
+    const withToc = `<nav><a href="#catalyze">Best Gear to Catalyze for Elemental Shaman</a></nav>` + WOWHEAD_CATALYZE;
+    const c = parseCatalyzeSection(withToc);
+    assert.equal(c.length, 5);
+    assert.equal(Object.fromEntries(c.map(x => [x.slot, x.itemId])).Head, '251220');
+  });
+});
+
+const CAT_DB = [
+  { item_id: '271483', name: 'Serpent Crown of the Ophidian Oracle',  slot: 'Head',      source_type: 'Raid',    armor_type: 'Mail' },
+  { item_id: '271481', name: 'Hissing Mantle of the Ophidian Oracle', slot: 'Shoulders', source_type: 'Raid',    armor_type: 'Mail' },
+  { item_id: '251220', name: 'Voidscarred Crown',                     slot: 'Head',      source_type: 'Mythic+', armor_type: 'Mail' }, // Voidscar Arena → not raid
+  { item_id: '268231', name: 'Soulslither Spaulders',                 slot: 'Shoulders', source_type: 'Raid',    armor_type: 'Mail' }, // Coiled Altar → raid
+];
+
+test('resolveBisItems — catalyze merge (12.1)', async (t) => {
+  const catalyzeBySlot = {
+    Head:      { itemName: 'Voidscarred Crown',     itemId: '251220', source: 'Voidscar Arena' },
+    Shoulders: { itemName: 'Soulslither Spaulders', itemId: '268231', source: 'The Coiled Altar' },
+  };
+  const tierItemIds = ['271483', '271481'];
+
+  await t.test('non-raid catalyze target → Overall = target, Raid = native token piece', () => {
+    const [r] = resolveBisItems(
+      [{ slot: 'Head', itemName: 'Serpent Crown of the Ophidian Oracle', itemId: '271483' }],
+      CAT_DB, { tierItemIds, catalyzeBySlot },
+    );
+    assert.equal(r.trueBis, 'Voidscarred Crown');                     // Overall = catalyze target
+    assert.equal(r.trueBisItemId, '251220');
+    assert.equal(r.raidBis, 'Serpent Crown of the Ophidian Oracle');  // Raid = native token piece
+    assert.equal(r.raidBisItemId, '271483');
+    assert.equal(r.tokenPiece, true);
+  });
+
+  await t.test('raid-sourced catalyze target → Overall = Raid = target', () => {
+    const [r] = resolveBisItems(
+      [{ slot: 'Shoulders', itemName: 'Hissing Mantle of the Ophidian Oracle', itemId: '271481' }],
+      CAT_DB, { tierItemIds, catalyzeBySlot },
+    );
+    assert.equal(r.trueBis, 'Soulslither Spaulders');
+    assert.equal(r.raidBis, 'Soulslither Spaulders');                 // raid-sourced → also Raid BIS
+    assert.equal(r.raidBisItemId, '268231');
+    assert.equal(r.tokenPiece, false);
+  });
+
+  await t.test('non-tier slot untouched by the catalyze merge', () => {
+    const [r] = resolveBisItems(
+      [{ slot: 'Neck', itemName: 'Choker of Doom', itemId: '258046' }],
+      [{ item_id: '258046', name: 'Choker of Doom', slot: 'Neck', source_type: 'Raid', armor_type: 'Accessory' }],
+      { catalyzeBySlot },
+    );
+    assert.equal(r.trueBis, 'Choker of Doom');
+    assert.equal(r.raidBis, 'Choker of Doom');
   });
 });
