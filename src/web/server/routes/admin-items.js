@@ -706,6 +706,7 @@ tierRouter.post('/sync', async (c) => {
     const creds = await getBlizzardCreds(db, c.env);
 
     const allRows    = [];
+    const itemDbRows = [];
     const errors     = [];
     const setResults = [];
 
@@ -737,7 +738,11 @@ tierRouter.post('/sync', async (c) => {
       for (const details of detailed.filter(Boolean)) {
         const invType = details.inventory_type?.type;
         const slot    = TIER_ITEM_SLOT_MAP[invType];
-        if (slot) rows.push({ class: className, slot, itemId: String(details.id) });
+        if (slot) {
+          rows.push({ class: className, slot, itemId: String(details.id) });
+          const mapped = mapItem({ details, encounterName: 'Tier Set', instanceName: 'Tier Set', difficulty: 'MYTHIC' });
+          if (mapped) itemDbRows.push(mapped);   // the equippable piece → also a first-class Item DB row
+        }
       }
 
       allRows.push(...rows);
@@ -749,6 +754,9 @@ tierRouter.post('/sync', async (c) => {
     }
 
     await setTierItems(db, seasonId, allRows);
+    // Also upsert the equippable pieces into item_db so BIS resolves them (they don't drop —
+    // only tokens do — so the manifest sync never sees them).
+    if (itemDbRows.length) await writeItemDb(db, itemDbRows, seasonId, { replace: false });
 
     return c.json({
       ok:      true,
@@ -800,11 +808,16 @@ tierRouter.post('/auto-sync', async (c) => {
         5,
       );
       const rows = [];
+      const itemRows = [];
       for (const d of [first, ...rest.filter(Boolean)]) {
         const slot = TIER_ITEM_SLOT_MAP[d.inventory_type?.type];
-        if (slot) rows.push({ class: cls, slot, itemId: String(d.id) });
+        if (slot) {
+          rows.push({ class: cls, slot, itemId: String(d.id) });
+          const mapped = mapItem({ details: d, encounterName: 'Tier Set', instanceName: 'Tier Set', difficulty: 'MYTHIC' });
+          if (mapped) itemRows.push(mapped);
+        }
       }
-      if (rows.length) found.set(cls, { setId: set.id, name: set.name, slots: rows.length, rows });
+      if (rows.length) found.set(cls, { setId: set.id, name: set.name, slots: rows.length, rows, itemRows });
     }
 
     const allRows = [...found.values()].flatMap(f => f.rows);
@@ -812,6 +825,10 @@ tierRouter.post('/auto-sync', async (c) => {
       return c.json({ error: 'No current tier sets detected — all candidates were unreleased (404) or not class-restricted.' }, 400);
     }
     await setTierItems(db, seasonId, allRows);
+    // Also upsert the equippable pieces into item_db so BIS resolves them (they never drop
+    // directly — only tokens do — so the manifest sync never produces them).
+    const itemDbRows = [...found.values()].flatMap(f => f.itemRows ?? []);
+    if (itemDbRows.length) await writeItemDb(db, itemDbRows, seasonId, { replace: false });
 
     const missing = [...TIER_CLASSES].filter(c => !found.has(c));
     return c.json({

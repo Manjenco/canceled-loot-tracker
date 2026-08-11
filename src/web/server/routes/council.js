@@ -178,6 +178,8 @@ router.get('/items', async (c) => {
     const instanceMap = new Map();
     for (const item of itemDb) {
       if (item.source_type !== 'Raid' || !item.name) continue;
+      if (item.source_name === 'Tier Set') continue; // equippable tier pieces don't drop — only tokens do
+
       if (!instanceMap.has(item.instance)) instanceMap.set(item.instance, new Map());
       const bosses = instanceMap.get(item.instance);
       if (!bosses.has(item.source_name)) bosses.set(item.source_name, []);
