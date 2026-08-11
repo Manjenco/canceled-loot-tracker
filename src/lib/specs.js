@@ -190,6 +190,14 @@ export const CLASS_SPECS = {
 /** Flat list of all sheet spec names. */
 export const ALL_SPECS = Object.values(CLASS_SPECS).flat();
 
+const CLASS_BY_SPEC = new Map(
+  Object.entries(CLASS_SPECS).flatMap(([cls, specs]) => specs.map(s => [s, cls]))
+);
+/** Class name for a (canonical) spec name, or '' if unknown. */
+export function getClassForSpec(spec) {
+  return CLASS_BY_SPEC.get(toCanonical(spec)) ?? '';
+}
+
 // ── Role classification ───────────────────────────────────────────────────────
 
 const TANK_SPECS   = new Set(['Blood DK', 'Vengeance DH', 'Guardian Druid', 'Brewmaster Monk', 'Prot Paladin', 'Prot Warrior']);

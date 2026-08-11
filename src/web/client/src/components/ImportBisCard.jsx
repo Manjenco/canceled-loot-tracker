@@ -215,12 +215,10 @@ export default function ImportBisCard({ spec, onImported }) {
                     const badge = STATUS_BADGE[row.status];
                     const sentinelsOverall = [
                       ...(row.hasTier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
-                      ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
                       { value: '<Crafted>', label: '<Crafted>' },
                     ];
                     const sentinelsRaid = [
                       ...(row.hasTier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
-                      ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
                     ];
                     return (
                       <tr key={slot}>
@@ -245,6 +243,8 @@ export default function ImportBisCard({ spec, onImported }) {
                         </td>
                         <td className="import-bis-status">
                           {badge && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
+                          {row.tokenPiece && <span className="badge ptag-token" title="Token-granted tier piece">&lt;Token&gt;</span>}
+                          {row.outdated && <span className="badge ptag-outdated" title="Maxroll hasn't adopted the 12.1 catalyst changes — verify this tier pick against Wowhead">outdated</span>}
                         </td>
                       </tr>
                     );

@@ -4,7 +4,7 @@
  * Shows all 16 slots for the selected spec and source. Officers can override
  * both Overall BIS and Raid BIS per slot independently on top of the seeded source.
  *
- * Auto-inferred Raid BIS slots (tier, catalyst, raid-sourced items) show a locked
+ * Auto-inferred Raid BIS slots (tier, raid-sourced items) show a locked
  * badge by default. Editing Overall BIS on such a slot unlocks the Raid BIS field.
  *
  * The source bar lets officers switch between available BIS sources to compare
@@ -111,7 +111,7 @@ export default function AdminDefaultBis() {
 
   const handleEditOverall = (slot, trueBis, trueBisItemId = '') => {
     const row = rowBySlot[slot];
-    const isSentinel   = trueBis === '<Tier>' || trueBis === '<Catalyst>';
+    const isSentinel   = trueBis === '<Tier>';
     const overallItem  = (row?.overallOptions ?? []).find(o => o.name === trueBis);
     const wouldAutoInfer = isSentinel || overallItem?.sourceType === 'Raid';
 
@@ -293,7 +293,6 @@ export default function AdminDefaultBis() {
                           options={row.overallOptions ?? []}
                           sentinels={[
                             ...(row.hasTier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
-                            ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
                             { value: '<Crafted>', label: '<Crafted>' },
                           ]}
                           defaultValue={row.trueBisSeed ?? ''}
@@ -318,7 +317,6 @@ export default function AdminDefaultBis() {
                               options={options}
                               sentinels={[
                                 ...(row.hasTier     ? [{ value: '<Tier>',     label: '<Tier>'     }] : []),
-                                ...(row.hasCatalyst ? [{ value: '<Catalyst>', label: '<Catalyst>' }] : []),
                               ]}
                               defaultValue={row.raidBisSeed ?? ''}
                               pendingValue={currentRaid !== (row.raidBisSeed ?? '') ? currentRaid : ''}

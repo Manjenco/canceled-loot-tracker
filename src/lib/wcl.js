@@ -178,6 +178,81 @@ export async function getEncounterZone(encounterId, clientId, clientSecret) {
   };
 }
 
+const Q_EXPANSIONS = `
+  query { worldData { expansions { id name } } }
+`;
+
+const Q_EXPANSION_ZONES = `
+  query GetExpansionZones($expansionId: Int!) {
+    worldData {
+      zones(expansion_id: $expansionId) {
+        id
+        name
+        frozen
+        encounters { id name }
+      }
+    }
+  }
+`;
+
+/**
+ * List the current retail expansion's raid zones (for the season zone-ID picker).
+ * "Current" = the highest expansion id. Mythic+ / Delves zones are filtered out so only
+ * raid tiers remain. Returns each zone's id, name, frozen flag, and its boss names — the
+ * caller name-matches boss/zone names against the season's raid to pre-select the right one.
+ *
+ * @returns {{ expansion: {id, name}, zones: Array<{id, name, frozen, encounters: string[]}> }}
+ */
+export async function listRaidZones(clientId, clientSecret) {
+  const exp = await gql(Q_EXPANSIONS, {}, clientId, clientSecret);
+  const expansions = exp.worldData?.expansions ?? [];
+  if (!expansions.length) return { expansion: null, zones: [] };
+  const current = expansions.reduce((a, b) => (b.id > a.id ? b : a));
+
+  const zdata = await gql(Q_EXPANSION_ZONES, { expansionId: current.id }, clientId, clientSecret);
+  const zones = (zdata.worldData?.zones ?? [])
+    .filter(z => {
+      const n = String(z.name ?? '').toLowerCase();
+      return !n.startsWith('mythic+') && !n.startsWith('mythic +') && !n.startsWith('delves');
+    })
+    .map(z => ({
+      id:         z.id,
+      name:       z.name,
+      frozen:     !!z.frozen,
+      encounters: (z.encounters ?? []).map(e => e.name).filter(Boolean),
+    }));
+  return { expansion: { id: current.id, name: current.name }, zones };
+}
+
+/**
+ * Best-effort guess of which listed zone is the season's raid, by name-matching the season's
+ * raid instance name(s) and boss name(s) against each zone's name and encounters. Pure — no
+ * network. Returns null when nothing overlaps (expected before a tier goes live on WCL, when
+ * only PTR/beta placeholder zones exist). The officer always confirms the pick.
+ *
+ * @param {Array<{id,name,frozen,encounters:string[]}>} zones  from listRaidZones
+ * @param {{ raidInstanceNames?: string[], raidBossNames?: string[] }} hints
+ * @returns {{ zoneId, zoneName, score, bossHits } | null}
+ */
+export function guessRaidZone(zones, { raidInstanceNames = [], raidBossNames = [] } = {}) {
+  const norm = s => String(s ?? '').toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const instSet = new Set(raidInstanceNames.map(norm).filter(Boolean));
+  const bossSet = new Set(raidBossNames.map(norm).filter(Boolean));
+  let best = null;
+  for (const z of zones ?? []) {
+    const zn = norm(z.name);
+    let score = 0;
+    if (instSet.has(zn)) score += 100;                                  // zone name IS the raid
+    for (const inst of instSet) if (inst && zn && (zn.includes(inst) || inst.includes(zn))) score += 20;
+    const bossHits = (z.encounters ?? []).map(norm).filter(e => bossSet.has(e)).length;
+    score += bossHits * 10;                                             // shared bosses
+    if (!z.frozen) score += 1;                                          // tie-break toward the active tier
+    if (score > 1 && (!best || score > best.score)) best = { zone: z, score, bossHits };
+  }
+  if (!best) return null;
+  return { zoneId: String(best.zone.id), zoneName: best.zone.name, score: best.score, bossHits: best.bossHits };
+}
+
 /**
  * Build a Set of valid WCL encounter IDs for the given zone IDs.
  * Called once per sync run; results used to filter out dirty-log fights.

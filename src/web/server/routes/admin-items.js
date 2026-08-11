@@ -19,7 +19,7 @@ import {
 } from '../../../lib/db.js';
 import { getItemSet, getItemDetails, pLimit }
   from '../../../lib/blizzard-worker.js';
-import { mapItem, mapDb2Item, TIER_ITEM_SLOT_MAP, setTokenSlotOverrides, parseTokenSlotOverrides } from '../../../lib/item-seeder.js';
+import { mapItem, mapDb2Item, TIER_ITEM_SLOT_MAP, setTokenSlotOverrides, parseTokenSlotOverrides, tokenSlotWordCandidates } from '../../../lib/item-seeder.js';
 import { computeMplusItemPicks, fetchWagoTable, fetchWagoRowsById, latestLiveBuild, detectSeasonWse, tierSetCandidates } from '../../../lib/wago.js';
 
 const TIER_CLASSES = new Set([
@@ -107,7 +107,7 @@ async function getBlizzardCreds(db, env) {
  *    across the raid's encounters — no WSE gate.
  * Details (name/slot/armor) come from ItemSparse + Item via mapDb2Item().
  */
-async function fetchSourceItems(db, env, source, seasonId, build) {
+async function fetchSourceItems(db, env, source, seasonId, build, unknownTokens = null) {
   const difficulty = source.difficulty;
   const [instances, encounters, encounterItems] = await Promise.all([
     fetchWagoTable('JournalInstance',     { build }),
@@ -151,27 +151,68 @@ async function fetchSourceItems(db, env, source, seasonId, build) {
   return picks
     .map(p => mapDb2Item({
       sparse: sparse.get(p.itemId), item: items.get(p.itemId),
-      encounterName: p.encounterName, instanceName, difficulty,
+      encounterName: p.encounterName, instanceName, difficulty, unknownTokens,
     }))
     .filter(Boolean);
 }
 
 /**
+ * Load the tier token flavor-word → slot map into the seeder for this season: the per-season
+ * seasons.token_slot_words (officer-maintained, wins) merged over the legacy guild-wide
+ * global_config.token_slot_overrides. Built-in TOKEN_SLOT_WORDS remain the final fallback.
+ */
+async function applyTokenSlotOverrides(db, seasonId) {
+  const [globalConfig, seasonRow] = await Promise.all([
+    getGlobalConfig(db),
+    db.prepare('SELECT token_slot_words FROM seasons WHERE id = ?').bind(seasonId).first(),
+  ]);
+  setTokenSlotOverrides({
+    ...parseTokenSlotOverrides(globalConfig.token_slot_overrides),   // legacy global (low precedence)
+    ...parseTokenSlotOverrides(seasonRow?.token_slot_words),         // per-season (wins)
+  });
+  return seasonRow?.token_slot_words ?? '';                          // current per-season map (for the UI to merge into)
+}
+
+/**
+ * Seed tier-piece item IDs (from tier_items) into item_db via DB2 — the same source as all
+ * item seeding, so it works pre-launch. Equippable tier pieces never drop (only tokens do), so
+ * no manifest source produces them; source "Tier Set" marks them (and keeps them out of the
+ * council drop picker). Called right after tier_items is written. Returns rows written.
+ */
+async function seedTierPiecesToItemDb(db, seasonId, itemIds) {
+  const ids = [...new Set((itemIds ?? []).map(String))];
+  if (!ids.length) return 0;
+  const build = await buildForSeason(db, seasonId);
+  const [sparse, items] = await Promise.all([
+    fetchWagoRowsById('ItemSparse', ids, { build }),
+    fetchWagoRowsById('Item', ids, { build }),
+  ]);
+  const rows = [];
+  for (const id of ids) {
+    const mapped = mapDb2Item({ sparse: sparse.get(id), item: items.get(id), encounterName: 'Tier Set', instanceName: 'Tier Set', difficulty: 'MYTHIC' });
+    if (mapped) rows.push(mapped);
+  }
+  if (rows.length) await writeItemDb(db, rows, seasonId, { replace: false });
+  return rows.length;
+}
+
+/**
  * Fetch + map + dedupe the "desired" item set from every ENABLED manifest source.
- * Returns { desired, perSource, errors }. A source that fails is recorded in errors
- * (never throws for a single source) — callers use errors.length to gate removals.
+ * Returns { desired, perSource, errors, unknownTokens }. A source that fails is recorded in
+ * errors (never throws for a single source) — callers use errors.length to gate removals.
  */
 async function fetchManifestDesired(db, env, seasonId) {
   const sources = (await getSeasonSources(db, seasonId)).filter(s => s.enabled);
   // Item seeding is now entirely DB2-sourced — no Blizzard creds required.
-  setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
+  const currentTokenSlotWords = await applyTokenSlotOverrides(db, seasonId);
+  const unknownTokens = [];
   const build = await buildForSeason(db, seasonId);
   const perSource = [];
   const errors    = [];
   const items     = [];
   for (const src of sources) {
     try {
-      const mapped = await fetchSourceItems(db, env, src, seasonId, build);
+      const mapped = await fetchSourceItems(db, env, src, seasonId, build, unknownTokens);
       items.push(...mapped);
       perSource.push({ id: src.id, label: src.label || String(src.source_id), difficulty: src.difficulty, fetched: mapped.length });
     } catch (err) {
@@ -180,7 +221,7 @@ async function fetchManifestDesired(db, env, seasonId) {
   }
   const seen    = new Set();
   const desired = items.filter(i => (seen.has(i.itemId) ? false : (seen.add(i.itemId), true)));
-  return { sources, desired, perSource, errors };
+  return { sources, desired, perSource, errors, unknownTokens, currentTokenSlotWords };
 }
 
 const DIFF_FIELDS = [
@@ -281,15 +322,20 @@ router.post('/sync', async (c) => {
 
   try {
     const seasonId = await resolveSeasonId(db, reqSeason);
-    setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
+    const currentTokenSlotWords = await applyTokenSlotOverrides(db, seasonId);
+    const unknownTokens = [];
 
     // Fetch items from DB2 (M+ via the WSE rule, raids via encounter loot), pinned to
     // the season's build (latest/PTR for pre_release, else newest live).
     const build = await buildForSeason(db, seasonId);
-    const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId, build);
+    const items = await fetchSourceItems(db, c.env, { source_id: instanceId, difficulty }, seasonId, build, unknownTokens);
+
+    // Tier tokens whose flavor word isn't mapped for this tier — surfaced so the officer can
+    // map word→slot in the UI (POST /seasons/:id token_slot_words) and re-sync, no code change.
+    const tokenWordsToMap = tokenSlotWordCandidates(unknownTokens);
 
     if (!items.length) {
-      return c.json({ ok: true, written: 0, skipped: 0, total: 0, instanceName: '(unknown)', message: 'No mappable items found for this instance/difficulty.' });
+      return c.json({ ok: true, written: 0, skipped: 0, total: 0, instanceName: '(unknown)', unknownTokens: tokenWordsToMap, currentTokenSlotWords, seasonId, message: 'No mappable items found for this instance/difficulty.' });
     }
 
     // Deduplicate (same item might appear under multiple encounters)
@@ -311,6 +357,8 @@ router.post('/sync', async (c) => {
       instanceName,
       difficulty,
       seasonId,
+      unknownTokens: tokenWordsToMap,
+      currentTokenSlotWords,
     });
   } catch (err) {
     console.error('[admin-items] item-db/sync error:', err);
@@ -335,7 +383,7 @@ router.post('/add-item', async (c) => {
 
   try {
     const seasonId = await resolveSeasonId(db, reqSeason);
-    setTokenSlotOverrides(parseTokenSlotOverrides((await getGlobalConfig(db)).token_slot_overrides));
+    await applyTokenSlotOverrides(db, seasonId);
     const creds = await getBlizzardCreds(db, c.env);
 
     let details;
@@ -540,12 +588,12 @@ router.post('/sync-manifest', async (c) => {
   const { seasonId: reqSeason } = await c.req.json().catch(() => ({}));
   try {
     const seasonId = await resolveSeasonId(db, reqSeason);
-    const { perSource, desired, errors } = await fetchManifestDesired(db, c.env, seasonId);
+    const { perSource, desired, errors, unknownTokens } = await fetchManifestDesired(db, c.env, seasonId);
     if (!perSource.length && !errors.length) {
       return c.json({ error: 'No enabled sources in this season’s manifest.' }, 400);
     }
     if (desired.length) await writeItemDb(db, desired, seasonId, { replace: false });
-    return c.json({ ok: true, seasonId, total: desired.length, sources: perSource, errors });
+    return c.json({ ok: true, seasonId, total: desired.length, sources: perSource, errors, unknownTokens: tokenSlotWordCandidates(unknownTokens) });
   } catch (err) {
     console.error('[admin-items] sync-manifest error:', err);
     return c.json({ error: err.message }, 500);
@@ -565,7 +613,7 @@ router.post('/diff', async (c) => {
     const currentSeasonId = await getCurrentSeasonId(db);
     const isCurrent       = seasonId === currentSeasonId;
 
-    const { perSource, desired, errors } = await fetchManifestDesired(db, c.env, seasonId);
+    const { perSource, desired, errors, unknownTokens, currentTokenSlotWords } = await fetchManifestDesired(db, c.env, seasonId);
     if (!perSource.length && !errors.length) {
       return c.json({ error: 'No enabled sources in this season’s manifest.' }, 400);
     }
@@ -585,6 +633,7 @@ router.post('/diff', async (c) => {
       sourceErrors: errors, perSource,
       added, changed, removed: removedA,
       counts: { added: added.length, changed: changed.length, removed: removed.length },
+      unknownTokens: tokenSlotWordCandidates(unknownTokens), currentTokenSlotWords,
     });
   } catch (err) {
     console.error('[admin-items] diff error:', err);
@@ -723,10 +772,12 @@ tierRouter.post('/sync', async (c) => {
     }
 
     await setTierItems(db, seasonId, allRows);
+    const itemDbCount = await seedTierPiecesToItemDb(db, seasonId, allRows.map(r => r.itemId));
 
     return c.json({
       ok:      true,
       total:   allRows.length,
+      itemDb:  itemDbCount,
       sets:    setResults,
       errors,  // non-fatal per-set errors
       seasonId,
@@ -786,12 +837,14 @@ tierRouter.post('/auto-sync', async (c) => {
       return c.json({ error: 'No current tier sets detected — all candidates were unreleased (404) or not class-restricted.' }, 400);
     }
     await setTierItems(db, seasonId, allRows);
+    const itemDbCount = await seedTierPiecesToItemDb(db, seasonId, allRows.map(r => r.itemId));
 
     const missing = [...TIER_CLASSES].filter(c => !found.has(c));
     return c.json({
       ok: true,
       seasonId,
       total: allRows.length,
+      itemDb: itemDbCount,
       sets: [...found.entries()].map(([className, f]) => ({ className, setId: f.setId, setName: f.name, slots: f.slots })),
       missing, // classes we couldn't resolve (worth flagging in the UI)
       errors,

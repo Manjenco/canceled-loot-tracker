@@ -12,7 +12,7 @@ import {
   getBisSubmissionsForChar, getItemDbForArmorType, getEffectiveDefaultBisForSpec,
   batchUpsertBisSubmissions, clearPendingBisSubmission, clearRejectedBisSubmission,
   clearBisSubmission, resetBisRaidBisField,
-  getRosterMember, setPendingPrimarySpec, getCurrentSeasonId,
+  getRosterMember, setPendingPrimarySpec, getCurrentSeasonId, getTierItems,
 } from '../../../lib/db.js';
 import { viewSeasonId } from '../util/season.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
@@ -25,16 +25,18 @@ const ALL_SLOTS = [
 ];
 
 const TIER_SLOTS     = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
-const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 const DIFF_ORDER     = { Mythic: 0, Heroic: 1, Normal: 2, 'Mythic+': 3 };
 
-function itemOptionsForSlot(itemDb, slot, armorType, { raidOnly = false, canonSpec = '' } = {}) {
+function itemOptionsForSlot(itemDb, slot, armorType, { raidOnly = false, canonSpec = '', tierPieceIds = null } = {}) {
   let dbSlot = slot.replace(/ [12]$/, '');
   if (dbSlot === 'Off-Hand' && canonSpec && canDualWield(canonSpec)) dbSlot = 'Weapon';
   return itemDb
     .filter(item => {
       if (item.slot !== dbSlot)   return false;
-      if (item.is_tier_token)     return false;
+      // Equippable tier pieces (this class's tier_items members) are BIS-able — token/curio
+      // grants them. The NON_EQUIP tier tokens themselves are is_tier_token but NOT in
+      // tier_items, so they stay excluded.
+      if (item.is_tier_token && !(tierPieceIds && tierPieceIds.has(String(item.item_id)))) return false;
       if (raidOnly && item.source_type !== 'Raid') return false;
       if (item.armor_type === 'Accessory') {
         if (item.weapon_type && canonSpec) return canUseWeapon(canonSpec, item.weapon_type);
@@ -85,11 +87,16 @@ router.get('/', async (c) => {
     const seasonId = await viewSeasonId(c, db);
 
     // Phase 2 — narrow queries in parallel, scoped to this char/spec/armorType
-    const [submissions, itemDb, effectiveBis] = await Promise.all([
+    const [submissions, itemDb, effectiveBis, tierItems] = await Promise.all([
       getBisSubmissionsForChar(db, teamId, charId, charName, seasonId),
       getItemDbForArmorType(db, seasonId, armorType),
       getEffectiveDefaultBisForSpec(db, seasonId, canonicalSpec),
+      getTierItems(db, seasonId),
     ]);
+
+    // Equippable tier pieces for this character's class — BIS-able (granted by token/curio).
+    const charClass    = rosterEntry?.class ?? c.get('session').user.class ?? '';
+    const tierPieceIds = new Set(tierItems.filter(t => t.class === charClass).map(t => String(t.item_id)));
 
     // Keep the most recently submitted row per slot (submissions ordered DESC by submitted_at).
     // When both an Approved row and a newer Pending row exist for the same slot, the Pending
@@ -131,11 +138,10 @@ router.get('/', async (c) => {
         } : null,
         sentinels: {
           tier:     TIER_SLOTS.has(slot),
-          catalyst: CATALYST_SLOTS.has(slot),
           crafted:  true,
         },
-        overallOptions: itemOptionsForSlot(itemDb, slot, armorType, { canonSpec: canonicalSpec }),
-        raidOptions:    itemOptionsForSlot(itemDb, slot, armorType, { raidOnly: true, canonSpec: canonicalSpec }),
+        overallOptions: itemOptionsForSlot(itemDb, slot, armorType, { canonSpec: canonicalSpec, tierPieceIds }),
+        raidOptions:    itemOptionsForSlot(itemDb, slot, armorType, { raidOnly: true, canonSpec: canonicalSpec, tierPieceIds }),
       };
     });
 

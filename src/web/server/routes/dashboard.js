@@ -230,10 +230,8 @@ router.post('/simc', requireAuth, async (c) => {
         if (!charBis) continue;
 
         const matchesOverall = (isCrafted && charBis.trueBis === '<Crafted>') ||
-          charBis.trueBis === '<Catalyst>' ||
           matchesBis(charBis.trueBis, charBis.trueBisItemId, itemShape, armorType, bisSlot);
         const matchesRaid    = (isCrafted && charBis.raidBis === '<Crafted>') ||
-          charBis.raidBis === '<Catalyst>' ||
           matchesBis(charBis.raidBis, charBis.raidBisItemId, itemShape, armorType, bisSlot);
 
         if (!matchesOverall && !matchesRaid) continue;

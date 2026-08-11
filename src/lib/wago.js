@@ -3,14 +3,16 @@
  * dungeon's CURRENT-season Mythic+ loot, which the Blizzard REST API can't
  * distinguish from legacy reuse.
  *
- * The discriminator (validated empirically): a JournalEncounterItem row is
- * current-season loot iff
- *     DifficultyMask == -1  AND  WorldStateExpressionID ∈ { 0, <season WSE> }
- * scoped to the dungeon's JournalEncounter rows. Old dungeons' original loot is
- * DifficultyMask=3 (dropped); a multi-season dungeon gates each season's set behind
- * a WorldStateExpression (e.g. Midnight S1 = 50188, its prior season = 50187); native
- * / recently-reused dungeons use WSE 0 (unconditional). NON_EQUIP junk is left for
- * mapItem() to drop downstream.
+ * The discriminator (validated empirically, cross-checked against Wowhead's S2 M+
+ * rewards list): a JournalEncounterItem row is current-season loot iff
+ *     DifficultyMask ∈ { -1, 2 }  AND  WorldStateExpressionID ∈ { 0, <season WSE> }
+ * scoped to the dungeon's JournalEncounter rows. Most dungeons itemize their live
+ * loot as DifficultyMask=-1 (all difficulties), but a few reused dungeons (e.g. King's
+ * Rest) carry their whole base table at DifficultyMask=2 — excluding it dropped all 4
+ * bosses' loot. Old dungeons' retired loot is DifficultyMask=3 (still dropped); a
+ * multi-season dungeon gates each season's set behind a WorldStateExpression (e.g.
+ * Midnight S1 = 50188, its prior season = 50187); native / recently-reused dungeons use
+ * WSE 0 (unconditional). NON_EQUIP junk is left for mapItem() to drop downstream.
  *
  * The season WSE is a per-season constant (stored on seasons.mplus_wse), the same
  * shape as our other season config — see detectSeasonWse() to find it.
@@ -225,7 +227,7 @@ export function computeMplusItemPicks(encounters, encounterItems, instanceId, se
   for (const it of encounterItems) {
     const encId = String(it.JournalEncounterID);
     if (!encName.has(encId)) continue;
-    if (it.DifficultyMask !== '-1') continue;                              // drop old normal/heroic base loot
+    if (it.DifficultyMask !== '-1' && it.DifficultyMask !== '2') continue; // keep live masks (-1, and 2 for reused dungeons like King's Rest); drops retired base loot (3) + junk (0)
     const w = String(it.WorldStateExpressionID);
     if (w !== '0' && w !== wse) continue;                                  // drop other seasons' gated reuse
     const itemId = String(it.ItemID);

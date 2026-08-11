@@ -29,8 +29,9 @@ import { MIGRATIONS } from '../../../lib/migrations.js';
 import { fetchWagoTable, detectVeteranStarts, detectCraftedBonusIds } from '../../../lib/wago.js';
 import { applyRaidBisInference } from '../../../lib/bis-match.js';
 import { parseBisDocument, resolveBisItems, bisGuideUrl, splitSpecClass, ALL_SLOTS as BIS_SLOTS, VALID_SOURCES as BIS_SOURCES } from '../../../lib/bis-parser.js';
-import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs } from '../../../lib/specs.js';
+import { toCanonical, CLASS_SPECS, getArmorType, canUseWeapon, canDualWield, canHaveOffHand, getCharSpecs, getClassForSpec } from '../../../lib/specs.js';
 import { runWclSyncForTeam, runWclSyncWornBisOnly, runAttendanceBackfill } from '../../../lib/wcl-sync.js';
+import { listRaidZones, guessRaidZone } from '../../../lib/wcl.js';
 import {
   getTeamRegistry      as sheetsGetTeamRegistry,
   getGlobalConfig      as sheetsGetGlobalConfig,
@@ -58,17 +59,18 @@ async function batchInsert(db, stmts, chunkSize = 80) {
 }
 
 const TIER_SLOTS     = new Set(['Head', 'Shoulders', 'Chest', 'Hands', 'Legs']);
-const CATALYST_SLOTS = new Set(['Neck', 'Back', 'Wrists', 'Waist', 'Feet']);
 const DIFF_ORDER     = { Mythic: 0, Heroic: 1, Normal: 2 };
 
-function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '', raidOnly = true) {
+function itemOptionsForSlot(itemDb, slot, armorType, canonSpec = '', raidOnly = true, tierPieceIds = null) {
   let dbSlot = slot.replace(/ [12]$/, '');
   if (dbSlot === 'Off-Hand' && canonSpec && canDualWield(canonSpec)) dbSlot = 'Weapon';
   return itemDb
     .filter(item => {
       if (raidOnly && item.source_type !== 'Raid') return false;
       if (item.slot !== dbSlot)     return false;
-      if (item.is_tier_token)       return false;
+      // Equippable tier pieces (this class's tier_items members) are BIS-able; NON_EQUIP
+      // tier tokens are is_tier_token but not in tier_items, so they stay excluded.
+      if (item.is_tier_token && !(tierPieceIds && tierPieceIds.has(String(item.item_id)))) return false;
       if (item.armor_type === 'Accessory') {
         if (item.weapon_type && canonSpec) return canUseWeapon(canonSpec, item.weapon_type);
         return true;
@@ -143,11 +145,15 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
 
   try {
     const seasonId = await viewSeasonId(c, db);
-    const [allRows, overrideRows, itemDb, specConfig] = await Promise.all([
+    const [allRows, overrideRows, itemDb, specConfig, tierItems] = await Promise.all([
       getDefaultBis(db, seasonId), getDefaultBisOverrides(db, seasonId), getItemDb(db, seasonId), getSpecBisConfig(db, seasonId),
+      getTierItems(db, seasonId),
     ]);
 
     const canonicalSpec    = toCanonical(spec);
+    const tierPieceIds     = new Set(
+      tierItems.filter(t => t.class === getClassForSpec(canonicalSpec)).map(t => String(t.item_id))
+    );
     const specRows         = allRows.filter(r => r.spec === canonicalSpec);
     const availableSources = [...new Set(specRows.map(r => r.source).filter(Boolean))];
     const preferredSource  = specConfig.get(canonicalSpec) ?? availableSources[0] ?? '';
@@ -178,10 +184,9 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
         ...row,
         trueBisSeed:    seed?.true_bis  ?? '',
         raidBisSeed:    seed?.raid_bis  ?? '',
-        options:        itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, true),
-        overallOptions: itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, false),
+        options:        itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, true, tierPieceIds),
+        overallOptions: itemOptionsForSlot(itemDb, row.slot, armorType, canonicalSpec, false, tierPieceIds),
         hasTier:        TIER_SLOTS.has(row.slot),
-        hasCatalyst:    CATALYST_SLOTS.has(row.slot),
       };
     });
 
@@ -191,9 +196,9 @@ router.get('/default-bis', requireGlobalOfficer, async (c) => {
         true_bis: '', true_bis_item_id: '', raid_bis: '', raid_bis_item_id: '',
         trueBisSeed: '', raidBisSeed: '',
         raidBisAuto: false,
-        options:        itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, true),
-        overallOptions: itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, false),
-        hasTier: false, hasCatalyst: false,
+        options:        itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, true, tierPieceIds),
+        overallOptions: itemOptionsForSlot(itemDb, 'Off-Hand', armorType, canonicalSpec, false, tierPieceIds),
+        hasTier: false,
       });
     }
 
@@ -302,7 +307,15 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
     const tierItemIds = new Set(
       tierItems.filter(t => t.class === cls).map(t => String(t.item_id)),
     );
-    const opts = { tierItemIds, ...(tierSetPrefixes.length ? { tierSetPrefixes } : {}) };
+    // slot → this class's equippable tier piece, so an annotation-only <Tier> row can
+    // resolve to the real item (name + ID) instead of carrying the placeholder through.
+    const tierPieceBySlot = {};
+    for (const t of tierItems) {
+      if (t.class !== cls) continue;
+      const di = itemDb.find(i => String(i.item_id) === String(t.item_id));
+      if (di) tierPieceBySlot[t.slot] = { name: di.name, itemId: String(t.item_id) };
+    }
+    const opts = { tierItemIds, tierPieceBySlot, ...(tierSetPrefixes.length ? { tierSetPrefixes } : {}) };
 
     const suggestedUrl = url?.trim() || bisGuideUrl(canonicalSpec, source);
 
@@ -320,7 +333,7 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
       }
     }
 
-    const { rows: parsed, meta } = parseBisDocument(pageHtml, source);
+    const { rows: parsed, meta, catalyze } = parseBisDocument(pageHtml, source);
     if (!parsed.length) {
       // #4 — explain WHY no table matched rather than failing silently.
       const reasons = [...new Set(meta.rejects ?? [])];
@@ -332,9 +345,16 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
       return c.json({ error: `No BIS table found. ${detail}`, needsPaste: true, suggestedUrl }, 422);
     }
 
-    const resolved  = resolveBisItems(parsed, itemDb, opts);
+    const catalyzeBySlot = {};
+    for (const cat of (catalyze ?? [])) catalyzeBySlot[cat.slot] = cat;
+
+    const resolved  = resolveBisItems(parsed, itemDb, { ...opts, catalyzeBySlot });
     const armorType = getArmorType(canonicalSpec);
     const bySlot    = new Map(resolved.map(r => [r.slot, r]));
+
+    // Maxroll hasn't adopted the 12.1 catalyst model, so its tier-slot picks (native pieces,
+    // no catalyze target) are suspect — flag them for manual verification, don't drop them.
+    const flagOutdated = source === 'Maxroll';
 
     // Return a row for every slot (parsed values or blank) enriched with per-slot
     // Item DB options, so the review table can reuse the editor's ItemSelect.
@@ -343,10 +363,10 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
         ?? { slot, trueBis: '', trueBisItemId: '', raidBis: '', raidBisItemId: '', status: 'empty' };
       return {
         ...r,
-        options:        itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, true),
-        overallOptions: itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, false),
+        options:        itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, true, tierItemIds),
+        overallOptions: itemOptionsForSlot(itemDb, slot, armorType, canonicalSpec, false, tierItemIds),
         hasTier:        TIER_SLOTS.has(slot),
-        hasCatalyst:    CATALYST_SLOTS.has(slot),
+        outdated:       flagOutdated && TIER_SLOTS.has(slot) && !!r.trueBis,
       };
     });
 
@@ -376,6 +396,12 @@ router.post('/default-bis/parse', requireGlobalOfficer, async (c) => {
     }
     if (missingSlots.length) {
       warnings.push(`No item was parsed for: ${missingSlots.join(', ')}. The guide may omit ${missingSlots.length === 1 ? 'this slot' : 'these slots'}, or the format differs — fill in manually if needed.`);
+    }
+    if (flagOutdated && rows.some(r => r.outdated)) {
+      warnings.push(`Maxroll hasn't adopted the 12.1 catalyst changes, so its tier-slot picks are likely wrong (they list the native tier piece, not the item to catalyze). Each tier slot is flagged "outdated" — verify against Wowhead before importing.`);
+    }
+    if (source === 'Wowhead' && (catalyze ?? []).length === 0) {
+      warnings.push(`No "Best Gear to Catalyze" section was found on this Wowhead page — tier slots fall back to the native tier piece. If the guide has a catalyze section, make sure you pasted the fully rendered page (DevTools → copy <html> outerHTML).`);
     }
 
     const parsedCount = resolved.length;
@@ -1180,13 +1206,42 @@ router.put('/seasons/:id', requireGlobalOfficer, async (c) => {
   if (!id) return c.json({ error: 'Invalid season id' }, 400);
   let body;
   try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON body' }, 400); }
-  const { name, startDate, mplusWse, preRelease } = body ?? {};
+  const { name, startDate, mplusWse, preRelease, zoneIds, tokenSlotWords } = body ?? {};
   try {
-    await updateSeason(db, id, { name, startDate, mplusWse, preRelease });
+    await updateSeason(db, id, { name, startDate, mplusWse, preRelease, zoneIds, tokenSlotWords });
     return c.json({ ok: true });
   } catch (err) {
     console.error('[admin] PUT /seasons/:id error:', err);
     return c.json({ error: err.message ?? 'Failed to update season' }, 500);
+  }
+});
+
+// GET /api/admin/seasons/:id/wcl-zones — list the current expansion's raid zones from WCL,
+// with a best-effort name-match guess against this season's raid (from its seeded Item DB).
+// Used by the season editor's zone-ID picker. Requires WCL credentials.
+router.get('/seasons/:id/wcl-zones', requireGlobalOfficer, async (c) => {
+  const db = c.env.DB;
+  const id = Number(c.req.param('id'));
+  if (!id) return c.json({ error: 'Invalid season id' }, 400);
+  try {
+    const globalConfig      = await getGlobalConfig(db);
+    const clientId          = globalConfig.wcl_client_id;
+    const clientSecret      = c.env.WCL_CLIENT_SECRET ?? process.env.WCL_CLIENT_SECRET;
+    if (!clientId || !clientSecret) return c.json({ error: 'WCL credentials not configured' }, 400);
+
+    const [{ expansion, zones }, itemDb] = await Promise.all([
+      listRaidZones(clientId, clientSecret),
+      getItemDb(db, id),
+    ]);
+    const raidItems         = itemDb.filter(i => i.source_type === 'Raid');
+    const raidInstanceNames = [...new Set(raidItems.map(i => i.instance).filter(Boolean))];
+    const raidBossNames     = [...new Set(raidItems.map(i => i.source_name).filter(Boolean))];
+    const guess             = guessRaidZone(zones, { raidInstanceNames, raidBossNames });
+
+    return c.json({ expansion, zones, guess, raidInstanceNames });
+  } catch (err) {
+    console.error('[admin] GET /seasons/:id/wcl-zones error:', err);
+    return c.json({ error: err.message ?? 'Failed to list WCL zones' }, 500);
   }
 });
 

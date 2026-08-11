@@ -162,13 +162,9 @@ function extractWornBis(combatantEvents, actors, rosterLookup, bisLookup, itemDb
         const charBis = charBisMap?.get(bisSlot);
         if (!charBis) continue;
 
-        // <Catalyst>: any item worn in this slot qualifies — characters can only
-        // equip their own armor type, so the armor-type check is already implicit.
         const matchesOverall = (isCrafted && charBis.trueBis === '<Crafted>') ||
-          charBis.trueBis === '<Catalyst>' ||
           matchesBis(charBis.trueBis, charBis.trueBisItemId, itemShape, armorType, bisSlot);
         const matchesRaid    = (isCrafted && charBis.raidBis === '<Crafted>') ||
-          charBis.raidBis === '<Catalyst>' ||
           matchesBis(charBis.raidBis, charBis.raidBisItemId, itemShape, armorType, bisSlot);
 
         if (!matchesOverall && !matchesRaid) continue;
@@ -289,8 +285,12 @@ async function buildWclContext(db) {
 
   if (!wcl_client_id || !wcl_client_secret) throw new Error('WCL credentials not configured');
 
-  const zoneIds = String(wcl_zone_ids ?? '').split('|').map(Number).filter(Boolean);
-  if (!zoneIds.length) throw new Error('wcl_zone_ids not configured');
+  // Zone IDs are per-season now (each tier has its own WCL zone). Fall back to the legacy
+  // guild-wide wcl_zone_ids only when the season column is absent (pre-migration). An empty
+  // season value is authoritative — it means "no live zone yet", so sync pauses for this season.
+  const zoneStr = currentSeason.zone_ids ?? wcl_zone_ids ?? '';
+  const zoneIds = String(zoneStr).split('|').map(Number).filter(Boolean);
+  if (!zoneIds.length) throw new Error(`No WCL zone IDs configured for the current season ("${currentSeason.name}") — set them in Admin → Seasons once the raid is live on WCL.`);
 
   const seasonStartMs     = parseSheetDateMs(currentSeason.start_date);
   const validEncounterIds = await getValidEncounterIds(zoneIds, wcl_client_id, wcl_client_secret);
@@ -411,8 +411,9 @@ export async function runAttendanceBackfill(db, team) {
 
   const seasonId      = currentSeason.id;
   const seasonStartMs = parseSheetDateMs(currentSeason.start_date);
+  // Per-season zone IDs (legacy global as pre-migration fallback; '' is authoritative).
   const validZoneIds   = new Set(
-    String(wcl_zone_ids ?? '').split('|').map(Number).filter(Boolean)
+    String(currentSeason.zone_ids ?? wcl_zone_ids ?? '').split('|').map(Number).filter(Boolean)
   );
 
   const roster       = await getRoster(db, team.id);

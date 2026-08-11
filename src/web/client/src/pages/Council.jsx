@@ -64,7 +64,6 @@ function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroi
       && (TRACK_RANK[minOvBISTrack] ?? 0) >= itemTrackRank;
 
     const bisMatchPoints = c.overallBisMatch === true      ? 4
-      : c.overallBisMatch === 'catalyst'                   ? 3
       : (c.raidBisMatch && !slotAlreadySatisfied)          ? 2
       : 0;
 
@@ -97,8 +96,8 @@ function scoreCandidates(candidates, selectedDifficulty, tierDistPriority, heroi
     // found) rather than the aggregate MAX across all paired slots. This prevents the aggregate
     // raidBISTrack from Trinket 2 (a different item) from triggering a penalty on a Trinket 1
     // match (Simlock case), and correctly handles "has it in slot 1 but needs slot 2" (Narestrasz).
-    // If overallBisMatch is set (true or 'catalyst'), only check overallBIS — raidBIS is irrelevant.
-    const hasOverallMatch = c.overallBisMatch === true || c.overallBisMatch === 'catalyst';
+    // If overallBisMatch is set, only check overallBIS — raidBIS is irrelevant.
+    const hasOverallMatch = c.overallBisMatch === true;
     const alreadyOwnsBis =
       (hasOverallMatch  && (TRACK_RANK[wornS.ovMatchWornTrack   ?? ''] ?? 0) >= itemTrackRank) ||
       (!hasOverallMatch && c.raidBisMatch && (TRACK_RANK[wornS.raidMatchWornTrack ?? ''] ?? 0) >= itemTrackRank) ||
@@ -129,7 +128,6 @@ function scoreCurioCandidates(candidates, tierDistPriority, heroicWeight, normal
     const tierDistPts = tierScores[Math.min(tierCount, 4)] ?? 0;
 
     const bisMatchPoints = c.overallBisMatch === true      ? 4
-      : c.overallBisMatch === 'catalyst'                   ? 3
       : c.raidBisMatch                                     ? 2
       : 0;
 
@@ -157,7 +155,6 @@ function getCurioTags(c) {
   const tags = [];
   tags.push(`Has ${c._tierCount} tier`);
   if (c.overallBisMatch === true)           tags.push('Overall BIS');
-  else if (c.overallBisMatch === 'catalyst') tags.push('Catalyst');
   else if (c.raidBisMatch)                  tags.push('Raid BIS');
   else if (c.overallBisMatch === 'crafted')  tags.push('Crafted BIS');
   const wanted = c.tierSlotsWanted?.length ?? 0;
@@ -171,7 +168,6 @@ function getPriorityTags(c, selectedDifficulty) {
   if (isTierToken) tags.push(`Has ${c._tierCount} tier`);
 
   if (c.overallBisMatch === true)          tags.push('Overall BIS');
-  else if (c.overallBisMatch === 'catalyst') tags.push('Catalyst');
   else if (c.raidBisMatch)                 tags.push('Raid BIS');
   else if (c.overallBisMatch === 'crafted') tags.push('Crafted BIS');
 
@@ -226,7 +222,7 @@ function MiniTrackBadge({ track }) {
 function TierPips({ tierSlots, activeSlot }) {
   const owned = Object.keys(tierSlots ?? {}).length;
   return (
-    <span className="council-tier-pips-owned" title={`${owned}/5 tier pieces`}>
+    <span className="council-tier-pips-owned" title={`${owned}/5 tier pieces detected — may undercount catalyzed pieces (set bonus without a token item)`}>
       {Object.entries(TIER_SLOT_INITIAL).map(([slot, short]) => {
         const track   = tierSlots?.[slot];
         const isActive = slot === activeSlot;
@@ -439,7 +435,6 @@ function BisIndicator({ match, track }) {
   const badge = <MiniTrackBadge track={track} />;
   if (match === true)       return <span className="council-bis-yes" title="BIS match">✓{badge}</span>;
   if (match === 'crafted')  return <span className="council-bis-crafted" title="Crafted BIS">&lt;Crafted&gt;{badge}</span>;
-  if (match === 'catalyst') return <span className="council-bis-catalyst" title="Catalyst BIS">&lt;Catalyst&gt;{badge}</span>;
   return <span className="council-bis-no">—{badge}</span>;
 }
 

@@ -51,7 +51,7 @@ export default function AdminSeasons() {
     const list = d.seasons ?? [];
     setSeasons(list);
     setCurrentSeasonId(d.currentSeasonId ?? null);
-    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release }])));
+    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release, zoneIds: s.zone_ids ?? '' }])));
   }
 
   async function refresh() {
@@ -77,7 +77,7 @@ export default function AdminSeasons() {
   const setEdit = (id, patch) => setEdits(e => ({ ...e, [id]: { ...e[id], ...patch } }));
 
   async function saveSeason(id) {
-    const { name, startDate, mplusWse, preRelease } = edits[id];
+    const { name, startDate, mplusWse, preRelease, zoneIds } = edits[id];
     if (!name?.trim()) { setRow(id, { result: { error: 'Name is required' } }); return; }
     setRow(id, { saving: true, result: null });
     try {
@@ -89,6 +89,7 @@ export default function AdminSeasons() {
           startDate: startDate ?? '',
           mplusWse: (mplusWse === '' || mplusWse == null) ? null : Number(mplusWse),
           preRelease: !!preRelease,
+          zoneIds: (zoneIds ?? '').trim(),   // '' deliberately clears (pauses WCL sync for the season)
         }),
       });
       const d = await r.json();
@@ -145,6 +146,21 @@ export default function AdminSeasons() {
     }
   }
 
+  async function detectZones(id) {
+    setRow(id, { zonesLoading: true, result: null });
+    try {
+      const r = await fetch(apiPath(`/api/admin/seasons/${id}/wcl-zones`), { credentials: 'include' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'Failed to list zones');
+      setRow(id, { zonePicker: d });                       // { expansion, zones, guess, raidInstanceNames }
+      if (d.guess?.zoneId) setEdit(id, { zoneIds: d.guess.zoneId }); // pre-select the best guess
+    } catch (e) {
+      setRow(id, { result: { error: e.message } });
+    } finally {
+      setRow(id, { zonesLoading: false });
+    }
+  }
+
   async function createSeason() {
     if (!newName.trim()) { setCreateResult({ error: 'Name is required' }); return; }
     setCreating(true); setCreateResult(null);
@@ -177,7 +193,8 @@ export default function AdminSeasons() {
     return e.name !== s.name
       || (e.startDate ?? '') !== normaliseDate(s.start_date)
       || String(e.mplusWse ?? '') !== String(s.mplus_wse ?? '')
-      || !!e.preRelease !== !!s.pre_release;
+      || !!e.preRelease !== !!s.pre_release
+      || String(e.zoneIds ?? '') !== String(s.zone_ids ?? '');
   };
 
   return (
@@ -207,6 +224,7 @@ export default function AdminSeasons() {
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500 }}>Name</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 160 }}>Start Date</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 200 }} title="Current Mythic+ WorldStateExpression gate (DB2). Used to pick this season's M+ loot.">M+ WSE</th>
+              <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 210 }} title="WCL zone IDs for this season's raid (pipe-separated). WCL attendance/worn-BIS sync only counts fights in these zones. Blank pauses sync until the raid is live on WCL.">WCL Zone IDs</th>
               <th style={{ textAlign: 'center', padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 90 }} title="Seed the Item DB from the latest (PTR) datamine build instead of the newest live build. Use while prepping a season before its patch launches.">Pre-release</th>
               <th style={{ textAlign: 'center', padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 110 }}>Current</th>
               <th style={{ textAlign: 'right',  padding: '4px 0 8px',     color: 'var(--text-muted)', fontWeight: 500, width: 220 }}>Actions</th>
@@ -252,6 +270,29 @@ export default function AdminSeasons() {
                     >
                       {rs.detecting ? '…' : 'Detect'}
                     </button>
+                  </td>
+                  <td style={{ padding: '8px 8px 8px 0', whiteSpace: 'nowrap' }}>
+                    <input
+                      className="config-input config-input-narrow"
+                      style={{ width: 78 }}
+                      value={e.zoneIds ?? ''}
+                      onChange={ev => setEdit(s.id, { zoneIds: ev.target.value })}
+                      placeholder="e.g. 46"
+                    />
+                    <button
+                      className="btn-secondary"
+                      style={{ marginLeft: 6, fontSize: 12, padding: '3px 8px' }}
+                      onClick={() => detectZones(s.id)}
+                      disabled={rs.zonesLoading}
+                      title="List the current expansion's raid zones from WCL to pick from"
+                    >
+                      {rs.zonesLoading ? '…' : 'Detect'}
+                    </button>
+                    {s.id === currentSeasonId && !String(e.zoneIds ?? '').trim() && (
+                      <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 3 }} title="No WCL zone set for the current season — attendance/worn-BIS sync is paused until you set it (do this once the raid is live on WCL).">
+                        ⚠ sync paused — no zone set
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '8px 8px 8px 0', textAlign: 'center' }}>
                     <input
@@ -321,6 +362,66 @@ export default function AdminSeasons() {
         </button>
         <ResultMsg result={createResult} />
       </div>
+
+      {(() => {
+        const openId = Object.keys(rowState).find(id => rowState[id]?.zonePicker);
+        if (!openId) return null;
+        const pick = rowState[openId].zonePicker;
+        const close = () => setRow(Number(openId), { zonePicker: null });
+        const use = (zoneId) => { setEdit(Number(openId), { zoneIds: String(zoneId) }); close(); };
+        return (
+          <div onClick={close} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+            <div onClick={ev => ev.stopPropagation()} className="card" style={{ maxWidth: 560, width: '90%', maxHeight: '80vh', overflowY: 'auto' }}>
+              <div className="card-title">
+                WCL raid zones{pick.expansion ? ` — ${pick.expansion.name}` : ''}
+              </div>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+                Pick this season’s raid. WCL only lists tiers it has logs for, so a not-yet-live raid
+                won’t appear — leave the zone blank until it does.
+                {pick.raidInstanceNames?.length
+                  ? <> This season’s seeded raid: <strong>{pick.raidInstanceNames.join(', ')}</strong>.</>
+                  : null}
+              </p>
+              {pick.guess?.zoneId
+                ? <p style={{ fontSize: 13, marginBottom: 12, color: 'var(--bis)' }}>
+                    Best name match: <strong>{pick.guess.zoneName}</strong> (zone {pick.guess.zoneId}) — pre-selected below.
+                  </p>
+                : <p style={{ fontSize: 13, marginBottom: 12, color: '#fbbf24' }}>
+                    No confident name match — none of the listed zones matched this season’s raid (expected before the tier is live on WCL).
+                  </p>}
+              {!pick.zones?.length
+                ? <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>No raid zones returned.</p>
+                : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <tbody>
+                      {pick.zones.map(z => {
+                        const isGuess = String(z.id) === String(pick.guess?.zoneId ?? '');
+                        return (
+                          <tr key={z.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: isGuess ? 'rgba(76,175,80,0.08)' : 'transparent' }}>
+                            <td style={{ padding: '6px 8px', fontFamily: 'monospace', color: 'var(--text-muted)' }}>{z.id}</td>
+                            <td style={{ padding: '6px 8px' }}>
+                              {z.name}
+                              {z.frozen ? <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--text-muted)' }}>(frozen)</span> : null}
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                {z.encounters?.length ? `${z.encounters.length} boss${z.encounters.length !== 1 ? 'es' : ''}: ${z.encounters.slice(0, 4).join(', ')}${z.encounters.length > 4 ? '…' : ''}` : 'no bosses listed'}
+                              </div>
+                            </td>
+                            <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                              <button className="btn-secondary" style={{ fontSize: 12, padding: '3px 10px' }} onClick={() => use(z.id)}>Use</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              <div style={{ marginTop: 14, textAlign: 'right' }}>
+                <button className="btn-secondary" onClick={close}>Close</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

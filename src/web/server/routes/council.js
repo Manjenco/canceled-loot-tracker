@@ -11,7 +11,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import {
   getItemDb, getRoster, getLootSummary, getBisSubmissions,
   getEffectiveDefaultBis, getRaids, getTeamConfig, getGlobalConfig, getTierSnapshot,
-  getWornBis, getCurrentSeasonId,
+  getWornBis, getCurrentSeasonId, getTierItems,
 } from '../../../lib/db.js';
 import { viewSeasonId } from '../util/season.js';
 import { toCanonical, getArmorType, canUseWeapon, canDualWield, getCharSpecs } from '../../../lib/specs.js';
@@ -82,7 +82,7 @@ function isEligible(item, charArmorType, canonSpec) {
   return charArmorType === item.armor_type;
 }
 
-function computeSpecBisMatch(charId, spec, item, itemSlot, approvedBis, defaultBisMap) {
+function computeSpecBisMatch(charId, spec, item, itemSlot, approvedBis, defaultBisMap, tokenPieceIds = null) {
   const canonSpec  = toCanonical(spec);
   const armorType  = getArmorType(canonSpec);
 
@@ -95,7 +95,7 @@ function computeSpecBisMatch(charId, spec, item, itemSlot, approvedBis, defaultB
     slotVariants = [itemSlot];
   }
 
-  const matchRank  = v => v === true ? 3 : v === 'catalyst' ? 2 : v === 'crafted' ? 1 : 0;
+  const matchRank  = v => v === true ? 3 : v === 'crafted' ? 1 : 0;
   const expandSlot = s => SLOT_EXPANSIONS[s] ?? [s];
 
   let overallBisMatch  = false;
@@ -129,8 +129,7 @@ function computeSpecBisMatch(charId, spec, item, itemSlot, approvedBis, defaultB
 
     let slotOvMatch;
     if      (trueBis === '<Crafted>')  slotOvMatch = 'crafted';
-    else if (trueBis === '<Catalyst>') slotOvMatch = 'catalyst';
-    else if (trueBis)                  slotOvMatch = matchesBis(trueBis, trueBisId, itemShape, armorType, slotVar);
+    else if (trueBis)                  slotOvMatch = matchesBis(trueBis, trueBisId, itemShape, armorType, slotVar, tokenPieceIds);
     else                               slotOvMatch = false;
 
     const slotRank = matchRank(slotOvMatch);
@@ -149,7 +148,7 @@ function computeSpecBisMatch(charId, spec, item, itemSlot, approvedBis, defaultB
     const resolvedRaidBisId = raidBisId || (trueBis !== '<Crafted>' ? trueBisId : '');
 
     if (resolvedRaidBis) hasRaidBis = true;
-    if (resolvedRaidBis && matchesBis(resolvedRaidBis, resolvedRaidBisId, itemShape, armorType, slotVar)) {
+    if (resolvedRaidBis && matchesBis(resolvedRaidBis, resolvedRaidBisId, itemShape, armorType, slotVar, tokenPieceIds)) {
       raidBisMatch = true;
       for (const s of expandSlot(slotVar)) raidMatchSlots.add(s);
     }
@@ -179,6 +178,8 @@ router.get('/items', async (c) => {
     const instanceMap = new Map();
     for (const item of itemDb) {
       if (item.source_type !== 'Raid' || !item.name) continue;
+      if (item.source_name === 'Tier Set') continue; // equippable tier pieces don't drop — only tokens do
+
       if (!instanceMap.has(item.instance)) instanceMap.set(item.instance, new Map());
       const bosses = instanceMap.get(item.instance);
       if (!bosses.has(item.source_name)) bosses.set(item.source_name, []);
@@ -218,16 +219,22 @@ router.get('/candidates', async (c) => {
   const db = c.env.DB;
   try {
     const seasonId = await viewSeasonId(c, db);
-    const [itemDb, effectiveBis, roster, lootSummary, bisSubmissions, raids, wornBisMap] = await Promise.all([
+    const [itemDb, effectiveBis, roster, lootSummary, bisSubmissions, raids, wornBisMap, tierItems] = await Promise.all([
       getItemDb(db, seasonId), getEffectiveDefaultBis(db, seasonId),
       getRoster(db, teamId), getLootSummary(db, teamId, seasonId),
       getBisSubmissions(db, teamId, seasonId), getRaids(db, teamId, seasonId),
-      getWornBis(db, teamId, seasonId),
+      getWornBis(db, teamId, seasonId), getTierItems(db, seasonId),
     ]);
 
     const item = itemDb.find(i => String(i.item_id) === String(itemId));
     if (!item) return c.json({ error: 'Item not found' }, 404);
     const itemSlot = item.slot;
+
+    // Item IDs of token-granted equippable tier pieces (from tier_items). A tier TOKEN
+    // drop satisfies a candidate who BIS'd one of these pieces for the matching slot/armor.
+    const tokenPieceIds = item.is_tier_token
+      ? new Set(tierItems.map(t => String(t.item_id)))
+      : null;
 
     const tierSnapshotMap = new Map();
     if (item.is_tier_token) {
@@ -276,7 +283,7 @@ router.get('/candidates', async (c) => {
       if (!isEligible(item, primaryArmor, primaryCanon)) continue;
 
       const { overallBisMatch, raidBisMatch, hasRaidBis, overallMatchSlots, raidMatchSlots } =
-        computeSpecBisMatch(char.id, charSpec.primary, item, itemSlot, approvedBis, defaultBisMap);
+        computeSpecBisMatch(char.id, charSpec.primary, item, itemSlot, approvedBis, defaultBisMap, tokenPieceIds);
 
       const s    = statsByChar.get(char.id);
       const acct = acctStats[char.owner_id] ?? { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };
@@ -292,7 +299,7 @@ router.get('/candidates', async (c) => {
         })
         .map(spec => {
           const { overallBisMatch: ovm, raidBisMatch: rbm, hasRaidBis: hrb } =
-            computeSpecBisMatch(char.id, spec, item, itemSlot, approvedBis, defaultBisMap);
+            computeSpecBisMatch(char.id, spec, item, itemSlot, approvedBis, defaultBisMap, tokenPieceIds);
           return { spec, overallBisMatch: ovm, raidBisMatch: rbm, hasRaidBis: hrb,
             wornBis: getWornTracksForSlot(wornBisMap, char.id, spec, itemSlot) };
         });
@@ -329,11 +336,17 @@ router.get('/curio-candidates', async (c) => {
   const db = c.env.DB;
   try {
     const seasonId = await viewSeasonId(c, db);
-    const [effectiveBis, roster, lootSummary, bisSubmissions, raids, globalConfig, tierSnapshots] = await Promise.all([
+    const [effectiveBis, roster, lootSummary, bisSubmissions, raids, globalConfig, tierSnapshots, tierItems] = await Promise.all([
       getEffectiveDefaultBis(db, seasonId),
       getRoster(db, teamId), getLootSummary(db, teamId, seasonId), getBisSubmissions(db, teamId, seasonId),
       getRaids(db, teamId, seasonId), getGlobalConfig(db), getTierSnapshot(db, teamId, seasonId),
+      getTierItems(db, seasonId),
     ]);
+
+    // A curio grants any tier piece; a candidate "wants tier" for a slot when their
+    // effective BIS there is a token-granted piece (a tier_items member) — or the
+    // transitional <Tier> placeholder for annotation-only guide rows.
+    const tokenPieceIds = new Set(tierItems.map(t => String(t.item_id)));
 
     const tierSnapshotMap = new Map();
     for (const snap of tierSnapshots) {
@@ -378,10 +391,16 @@ router.get('/curio-candidates', async (c) => {
         const personalSub      = approvedBis[char.id + '|' + slot] ?? null;
         const defRow           = defaultBisMap[canonSpec + '|' + slot] ?? null;
         const effectiveTrueBis = personalSub?.true_bis ?? defRow?.true_bis ?? '';
+        const effectiveTrueId  = personalSub?.true_bis_item_id ?? defRow?.true_bis_item_id ?? '';
         const effectiveRaidBis = personalSub?.raid_bis ?? defRow?.raid_bis ?? '';
+        const effectiveRaidId  = personalSub?.raid_bis_item_id ?? defRow?.raid_bis_item_id ?? '';
         const resolvedRaidBis  = effectiveRaidBis || (effectiveTrueBis !== '<Crafted>' ? effectiveTrueBis : '');
-        if (effectiveTrueBis === '<Tier>') overallTierWanted = true;
-        if (resolvedRaidBis === '<Tier>') tierSlotsWanted.push(slot);
+        const resolvedRaidId   = effectiveRaidId  || (effectiveTrueBis !== '<Crafted>' ? effectiveTrueId  : '');
+
+        const overallIsTier = effectiveTrueBis === '<Tier>' || (effectiveTrueId && tokenPieceIds.has(String(effectiveTrueId)));
+        const raidIsTier    = resolvedRaidBis === '<Tier>' || (resolvedRaidId  && tokenPieceIds.has(String(resolvedRaidId)));
+        if (overallIsTier) overallTierWanted = true;
+        if (raidIsTier) tierSlotsWanted.push(slot);
       }
       const s    = statsByChar.get(char.id);
       const acct = acctStats[char.owner_id] ?? { bisN: 0, bisH: 0, bisM: 0, nonBisN: 0, nonBisH: 0, nonBisM: 0 };

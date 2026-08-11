@@ -64,7 +64,6 @@ export default function AdminGlobalConfig() {
 
   // WCL
   const [wclClientId,       setWclClientId]       = useState('');
-  const [wclZoneIds,        setWclZoneIds]         = useState('');
   const [wclVeteranBonus,   setWclVeteranBonus]   = useState('');
   const [wclCraftedBonuses, setWclCraftedBonuses] = useState('');
   const [wclResult,         setWclResult]         = useState(null);
@@ -102,7 +101,6 @@ export default function AdminGlobalConfig() {
         setGlobalOfficerRole( c.global_officer_role_id    ?? '');
         setCurioItemId(       c.curio_item_id             ?? '');
         setWclClientId(       c.wcl_client_id             ?? '');
-        setWclZoneIds(        c.wcl_zone_ids              ?? '');
         setWclVeteranBonus(   c.wcl_veteran_bonus_id      ?? '');
         setWclCraftedBonuses( c.wcl_crafted_bonus_ids     ?? '');
         setSpecOverrides(     c.spec_id_overrides         ?? '');
@@ -144,7 +142,6 @@ export default function AdminGlobalConfig() {
     setWclSaving(true); setWclResult(null);
     setWclResult(await saveFields([
       ['wcl_client_id',         wclClientId],
-      ['wcl_zone_ids',          wclZoneIds],
       ['wcl_veteran_bonus_id',  wclVeteranBonus],
       ['wcl_crafted_bonus_ids', wclCraftedBonuses],
     ]));
@@ -276,8 +273,11 @@ export default function AdminGlobalConfig() {
         <Field label="WCL Client ID" hint="OAuth client ID from your WCL API application.">
           <input className="config-input" value={wclClientId} onChange={e => setWclClientId(e.target.value)} placeholder="WCL client ID" />
         </Field>
-        <Field label="Zone IDs" hint="Pipe-separated WCL zone IDs for the current tier, e.g. 38|41. Fights outside these zones are excluded.">
-          <input className="config-input" value={wclZoneIds} onChange={e => setWclZoneIds(e.target.value)} placeholder="e.g. 38|41" />
+        <Field label="Zone IDs" hint="Moved to per-season — each tier has its own WCL raid zone.">
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+            WCL raid zone IDs now live on each season. Set them in <strong>Admin → Seasons</strong>{' '}
+            (with a “Detect” picker), so a new tier’s zone doesn’t overwrite the previous season’s.
+          </p>
         </Field>
         <Field label="Season Bonus IDs (tracks + crafted)" hint="Detect auto-finds, from Blizzard's data, every season's upgrade-track starts AND crafted-gear markers — covering current + future seasons, so it rarely needs re-running. It writes the track list and the Crafted Item Bonus IDs below. The Veteran fallback field is used only if Detect hasn't been run.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
