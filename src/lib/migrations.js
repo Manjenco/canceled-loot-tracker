@@ -327,4 +327,19 @@ CREATE INDEX idx_season_sources_season ON season_sources(season_id);
     check: async () => false, // one-time data change — gated by the schema_migrations table, not a schema probe
     sql: `UPDATE seasons SET is_current = 0`,
   },
+
+  {
+    name: '0010_season_zone_ids',
+    description: 'Add zone_ids (WCL zone IDs) to seasons — moved off the guild-wide global wcl_zone_ids so each season keeps its own raid zone. Backfills every season from the global value (lossless: no per-season zones existed before), so the current season keeps syncing.',
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM pragma_table_info('seasons') WHERE name = 'zone_ids'"
+      ).first();
+      return !!row;
+    },
+    sql: `
+ALTER TABLE seasons ADD COLUMN zone_ids TEXT NOT NULL DEFAULT '';
+UPDATE seasons SET zone_ids = COALESCE((SELECT value FROM global_config WHERE key = 'wcl_zone_ids'), '');
+`.trim(),
+  },
 ];

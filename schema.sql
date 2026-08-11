@@ -22,7 +22,8 @@ CREATE TABLE seasons (
   start_date TEXT    NOT NULL DEFAULT '',  -- ISO date, e.g. "2025-01-21"
   is_current INTEGER NOT NULL DEFAULT 0,   -- 1 = active season
   mplus_wse  INTEGER DEFAULT NULL,         -- current M+ WorldStateExpressionID gate (DB2); per season
-  pre_release INTEGER NOT NULL DEFAULT 0   -- 1 = seed from the latest (PTR) DB2 build; 0 = pinned to the newest live build
+  pre_release INTEGER NOT NULL DEFAULT 0,  -- 1 = seed from the latest (PTR) DB2 build; 0 = pinned to the newest live build
+  zone_ids   TEXT    NOT NULL DEFAULT ''   -- pipe-separated WCL zone IDs for this season's raid; '' pauses WCL sync
 );
 
 -- Raid and M+ item database, seeded via /admin → Sync Loot Tables
