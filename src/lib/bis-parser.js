@@ -459,13 +459,20 @@ export function parseBisDocument(html, source) {
 }
 
 /**
- * Parse Wowhead's "Best Gear to Catalyze" card block into per-tier-slot catalyze targets.
- * Each card is a <p> with the slot in a class-coloured span, the item in an
- * `a.icon-badge-content` (href carries item=ID), and the source in a trailing <b>.
+ * Parse Wowhead's "Best Gear to Catalyze" cards into per-tier-slot catalyze targets.
+ * Handles BOTH page forms: the raw server source (BBCode — what fetch/View-Source yields,
+ * `[icon-badge=ID]` cards) and the fully-rendered DOM (`a.icon-badge-content` cards). The
+ * main BIS table is BBCode too, so a fetched/pasted-raw page carries this section as BBCode.
  * @returns {Array<{ slot, itemName, itemId, source }>}  empty if the block is absent.
  */
 export function parseCatalyzeSection(html) {
   const str = String(html ?? '');
+  if (/\[icon-badge=/i.test(str)) return parseCatalyzeBBCode(str);   // raw Wowhead source
+  return parseCatalyzeRendered(str);                                 // pasted rendered DOM
+}
+
+/** Rendered-DOM form: slot in a class-coloured span, item in a.icon-badge-content, source in <b>. */
+function parseCatalyzeRendered(str) {
   // Anchor on the actual heading element, not any raw text — the page's table of contents
   // repeats the phrase in an <a>, which would otherwise point the scan at the wrong region.
   const head = /<h[1-4][^>]*>[\s\S]*?Best Gear to Catalyze[\s\S]*?<\/h[1-4]>/i.exec(str);
@@ -475,19 +482,41 @@ export function parseCatalyzeSection(html) {
   const nextH   = after.search(/<h[1-4][\s/>]/i);
   const section = nextH < 0 ? after : after.slice(0, nextH);
 
-  // Anchor each card at its slot's class-coloured span, then pull item id/name + source.
   const cardRe = /<span class="c\d+">([^<]+)<\/span>[\s\S]*?<a class="icon-badge-content"[^>]*\bitem=(\d+)[^>]*>\s*<span class="icon-badge-content-text[^"]*">([^<]+)<\/span>[\s\S]*?<b>([^<]+)<\/b>/gi;
   const out = [];
   let m;
   while ((m = cardRe.exec(section))) {
     const slot = normaliseSlot(m[1]);
     if (!slot || !TIER_SLOTS.has(slot)) continue;
-    out.push({
-      slot,
-      itemName: decodeEntities(m[3].trim()),
-      itemId:   m[2],
-      source:   decodeEntities(m[4].trim()),
-    });
+    out.push({ slot, itemName: decodeEntities(m[3].trim()), itemId: m[2], source: decodeEntities(m[4].trim()) });
+  }
+  return out;
+}
+
+/**
+ * BBCode form (raw Wowhead source). The block is:
+ *   [h3][color=cN]Best Gear to Catalyze…[/color][/h3] … [grid] … [p]
+ *     [large][b][color=cN]Head[/color][/b][/large]
+ *     [center][icon-badge=ID quality=4 …][url guide=…][large][b]Source[/b][/large][/url][/center]
+ *   [/p] …
+ * Slashes may be JSON-escaped ([\/color]). Item name isn't in the card — resolveBisItems
+ * fills it from the Item DB by ID. Bounded to the catalyze [grid] so page-wide [color=cN]
+ * spans and other [icon-badge] cards can't leak in.
+ */
+function parseCatalyzeBBCode(str) {
+  const headIdx = str.search(/Best Gear to Catalyze/i);
+  if (headIdx < 0) return [];
+  const tail    = str.slice(headIdx);
+  const gridEnd = tail.search(/\[\\?\/grid\]/i);
+  const section = gridEnd >= 0 ? tail.slice(0, gridEnd) : tail.slice(0, 4000);
+
+  const cardRe = /\[color=c\d+\]([^\[]+?)\[\\?\/color\][\s\S]*?\[icon-badge=(\d+)[^\]]*\][\s\S]*?\[b\]([^\[]+?)\[\\?\/b\]/gi;
+  const out = [];
+  let m;
+  while ((m = cardRe.exec(section))) {
+    const slot = normaliseSlot(m[1]);
+    if (!slot || !TIER_SLOTS.has(slot)) continue;
+    out.push({ slot, itemName: '', itemId: m[2], source: decodeEntities(m[3].trim()) });
   }
   return out;
 }

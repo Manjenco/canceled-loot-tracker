@@ -455,6 +455,22 @@ test('parseCatalyzeSection (Wowhead)', async (t) => {
     assert.equal(c.length, 5);
     assert.equal(Object.fromEntries(c.map(x => [x.slot, x.itemId])).Head, '251220');
   });
+
+  await t.test('raw Wowhead BBCode form (fetched/View-Source) parses too', () => {
+    // The main BIS table is BBCode, so a fetched page carries this section as BBCode, not
+    // rendered icon-badge HTML. Slashes are JSON-escaped ([\/color]).
+    const bb = String.raw`[td]x[\/td][\/table]`
+      + String.raw`[h3 toc=false][color=c6]Best Gear to Catalyze for Frost Death Knight [\/color][\/h3]Prose.`
+      + String.raw`[grid column-width=300]`
+      + String.raw`[p][large][b][color=c6]Head[\/color][\/b][\/large][center][icon-badge=251229 quality=4 tooltip="C1"][url guide=1][large][b]Voidscar Arena[\/b][\/large][\/url][\/center][\/p]`
+      + String.raw`[p][large][b][color=c6]Gloves[\/color][\/b][\/large][center][icon-badge=160213 quality=4][url guide=2][large][b]King's Rest[\/b][\/large][\/url][\/center][\/p]`
+      + String.raw`[\/grid][h3]Other[\/h3][p][color=c6]junk[\/color][icon-badge=999][b]no[\/b]`;
+    const bySlot = Object.fromEntries(parseCatalyzeSection(bb).map(c => [c.slot, c]));
+    assert.equal(bySlot.Head.itemId, '251229');
+    assert.equal(bySlot.Hands.itemId, '160213');           // Gloves → Hands
+    assert.equal(bySlot.Head.source, 'Voidscar Arena');
+    assert.ok(!bySlot.Legs, 'the [icon-badge] after the grid is not captured');
+  });
 });
 
 const CAT_DB = [
