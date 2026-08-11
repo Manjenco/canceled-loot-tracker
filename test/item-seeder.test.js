@@ -29,6 +29,15 @@ test('tierTokenInfo', async (t) => {
     assert.deepEqual(tierTokenInfo(tok('Aetherweave Unraveled Nullcore', CLOTH)), { slot: 'Shoulders', armorType: 'Cloth'   });
   });
 
+  await t.test('Midnight S2 (Venomous Abyss) token words resolve to the right slot', () => {
+    // Verified from each token's tooltip ("Create a soulbound set <slot> item…").
+    assert.deepEqual(tierTokenInfo(tok('Venomforged Effigy',  PLATE)),   { slot: 'Head',      armorType: 'Plate'   });
+    assert.deepEqual(tierTokenInfo(tok('Venomcured Remnant',  LEATHER)), { slot: 'Shoulders', armorType: 'Leather' });
+    assert.deepEqual(tierTokenInfo(tok('Venomcast Icon',      MAIL)),    { slot: 'Chest',     armorType: 'Mail'    });
+    assert.deepEqual(tierTokenInfo(tok('Venomwoven Idol',     CLOTH)),   { slot: 'Hands',     armorType: 'Cloth'   });
+    assert.deepEqual(tierTokenInfo(tok('Venomforged Relic',   PLATE)),   { slot: 'Legs',      armorType: 'Plate'   });
+  });
+
   await t.test('legacy descriptive token names still resolve a slot', () => {
     assert.deepEqual(tierTokenInfo(tok("Vanquisher's Helm of Doom", PLATE)), { slot: 'Head', armorType: 'Plate' });
   });

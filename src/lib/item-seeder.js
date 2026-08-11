@@ -102,9 +102,11 @@ function playableClasses(details) {
   return ds.replace(/^Classes?:\s*/i, '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
-// The one per-expansion touch: the token flavor word → slot. Matched as whole words.
+// The one per-tier touch: the token flavor word → slot. Matched as whole words.
+// (Verified from each token's tooltip: "Create a soulbound set <slot> item…".)
 const TOKEN_SLOT_WORDS = {
-  Riftbloom: 'Chest', Fanatical: 'Head', Unraveled: 'Shoulders', Hungering: 'Hands', Corrupted: 'Legs', // Midnight
+  Riftbloom: 'Chest', Fanatical: 'Head', Unraveled: 'Shoulders', Hungering: 'Hands', Corrupted: 'Legs', // Midnight S1
+  Effigy: 'Head', Remnant: 'Shoulders', Icon: 'Chest', Idol: 'Hands', Relic: 'Legs',                    // Midnight S2 — The Venomous Abyss
 };
 // Descriptive fallback for expansions that name tokens after gear types (stable).
 const LEGACY_SLOT_KEYWORDS = [
