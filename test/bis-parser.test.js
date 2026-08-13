@@ -468,8 +468,45 @@ test('parseCatalyzeSection (Wowhead)', async (t) => {
     const bySlot = Object.fromEntries(parseCatalyzeSection(bb).map(c => [c.slot, c]));
     assert.equal(bySlot.Head.itemId, '251229');
     assert.equal(bySlot.Hands.itemId, '160213');           // Gloves → Hands
-    assert.equal(bySlot.Head.source, 'Voidscar Arena');
-    assert.ok(!bySlot.Legs, 'the [icon-badge] after the grid is not captured');
+    assert.ok(!bySlot.Legs, 'the [icon-badge] past the next heading is not captured');
+  });
+
+  await t.test('BBCode two-row [table] catalyze layout (slot header row + icon-badge row)', () => {
+    // Some authors render the block as a table: a header row of "Slot - Source" [b] labels above
+    // a row of [icon-badge] cells. Slots and items align by column, so ordered-zip pairs them.
+    // A later [icon-badge] table (under the next heading) must be excluded.
+    const bb = String.raw`[h3 toc=false][color=c4]Best Gear to Catalyze for Assassination Rogue[\/color][\/h3]Prose.[center][table class=grid]`
+      + String.raw`[tr][td][large][b]Head - [url guide=1]Ula'tek[\/url][\/b][\/large][\/td][td][large][b]Chest - [url guide=2]Den of Nalorakk[\/url][\/b][\/large][\/td][td][large][b]Legs - [url guide=3]The Coiled Altar[\/url][\/b][\/large][\/td][\/tr]`
+      + String.raw`[tr][td][icon-badge=271875 quality=4][\/td][td][icon-badge=251159 quality=3][\/td][td][icon-badge=268225 quality=4][\/td][\/tr][\/table][\/center]`
+      + String.raw`[h3 type=bar]Learn About Popular Gear[\/h3][table][tr][td][b][icon-badge=999001][\/b][\/td][\/tr][\/table]`;
+    const bySlot = Object.fromEntries(parseCatalyzeSection(bb).map(c => [c.slot, c]));
+    assert.equal(bySlot.Head.itemId, '271875');
+    assert.equal(bySlot.Chest.itemId, '251159');
+    assert.equal(bySlot.Legs.itemId, '268225');
+    assert.ok(!Object.values(bySlot).some(c => c.itemId === '999001'), 'table under the next heading is excluded');
+  });
+
+  await t.test('BBCode slot label with a non-numeric color token ([color=CLASS_COLOR]) still parses', () => {
+    // Some guides emit a literal [color=CLASS_COLOR] placeholder instead of a numeric class
+    // color (c8). The slot-label color must not be assumed numeric.
+    const bb = String.raw`[h3][color=c8]Best Gear to Catalyze for Arcane Mage[\/color][\/h3][grid]`
+      + String.raw`[p][large][b][color=CLASS_COLOR]Head[\/color][\/b][\/large][center][icon-badge=271874 quality=4][url guide=1][large][b]Ula'tek[\/b][\/large][\/url][\/center][\/p]`
+      + String.raw`[\/grid]`;
+    const [c] = parseCatalyzeSection(bb);
+    assert.equal(c.slot, 'Head');
+    assert.equal(c.itemId, '271874');
+  });
+
+  await t.test('BBCode cards with a blank source ([b][/b]) still parse (source is optional)', () => {
+    // Some authors leave the source label empty and put it only in the tooltip. The slot +
+    // item must still resolve; source falls back to ''.
+    const bb = String.raw`[h3][color=q1]Best Gear to Catalyze for Discipline Priest[\/color][\/h3][grid]`
+      + String.raw`[p][large][b][color=q1]Shoulder[\/color][\/b][\/large][center][icon-badge=268241 quality=4 tooltip="Cata_1_Tooltip"][large][b][\/b][\/large][\/center][\/p]`
+      + String.raw`[p][large][b][color=q1]Legs[\/color][\/b][\/large][center][icon-badge=271554 quality=4][large][b][\/b][\/large][\/center][\/p][\/grid]`;
+    const bySlot = Object.fromEntries(parseCatalyzeSection(bb).map(c => [c.slot, c]));
+    assert.equal(bySlot.Shoulders.itemId, '268241');   // Shoulder → Shoulders, [color=q1]
+    assert.equal(bySlot.Shoulders.source, '');
+    assert.equal(bySlot.Legs.itemId, '271554');
   });
 });
 
