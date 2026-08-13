@@ -510,7 +510,9 @@ function parseCatalyzeBBCode(str) {
   const gridEnd = tail.search(/\[\\?\/grid\]/i);
   const section = gridEnd >= 0 ? tail.slice(0, gridEnd) : tail.slice(0, 4000);
 
-  const cardRe = /\[color=c\d+\]([^\[]+?)\[\\?\/color\][\s\S]*?\[icon-badge=(\d+)[^\]]*\][\s\S]*?\[b\]([^\[]+?)\[\\?\/b\]/gi;
+  // Slot label is [color=X]Slot[/color] where X varies by guide author — a numeric class
+  // color (c8), or a literal placeholder like CLASS_COLOR — so accept any color token.
+  const cardRe = /\[color=[^\]]+\]([^\[]+?)\[\\?\/color\][\s\S]*?\[icon-badge=(\d+)[^\]]*\][\s\S]*?\[b\]([^\[]+?)\[\\?\/b\]/gi;
   const out = [];
   let m;
   while ((m = cardRe.exec(section))) {

@@ -471,6 +471,18 @@ test('parseCatalyzeSection (Wowhead)', async (t) => {
     assert.equal(bySlot.Head.source, 'Voidscar Arena');
     assert.ok(!bySlot.Legs, 'the [icon-badge] after the grid is not captured');
   });
+
+  await t.test('BBCode slot label with a non-numeric color token ([color=CLASS_COLOR]) still parses', () => {
+    // Some guides emit a literal [color=CLASS_COLOR] placeholder instead of a numeric class
+    // color (c8). The slot-label color must not be assumed numeric.
+    const bb = String.raw`[h3][color=c8]Best Gear to Catalyze for Arcane Mage[\/color][\/h3][grid]`
+      + String.raw`[p][large][b][color=CLASS_COLOR]Head[\/color][\/b][\/large][center][icon-badge=271874 quality=4][url guide=1][large][b]Ula'tek[\/b][\/large][\/url][\/center][\/p]`
+      + String.raw`[\/grid]`;
+    const [c] = parseCatalyzeSection(bb);
+    assert.equal(c.slot, 'Head');
+    assert.equal(c.itemId, '271874');
+    assert.equal(c.source, "Ula'tek");
+  });
 });
 
 const CAT_DB = [
