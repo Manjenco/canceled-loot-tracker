@@ -510,15 +510,22 @@ function parseCatalyzeBBCode(str) {
   const gridEnd = tail.search(/\[\\?\/grid\]/i);
   const section = gridEnd >= 0 ? tail.slice(0, gridEnd) : tail.slice(0, 4000);
 
-  // Slot label is [color=X]Slot[/color] where X varies by guide author — a numeric class
-  // color (c8), or a literal placeholder like CLASS_COLOR — so accept any color token.
-  const cardRe = /\[color=[^\]]+\]([^\[]+?)\[\\?\/color\][\s\S]*?\[icon-badge=(\d+)[^\]]*\][\s\S]*?\[b\]([^\[]+?)\[\\?\/b\]/gi;
+  // Card core = the slot label ([color=X]Slot[/color], X varies by author: a numeric class
+  // color c8, quality color q1, or a literal like CLASS_COLOR) followed by the item's
+  // [icon-badge=ID]. The source label is optional — some guides leave it blank ([b][/b]) and
+  // put the source only in the tooltip — so it's pulled separately per card, never required.
+  const coreRe = /\[color=[^\]]+\]([^\[]+?)\[\\?\/color\][\s\S]*?\[icon-badge=(\d+)/gi;
   const out = [];
   let m;
-  while ((m = cardRe.exec(section))) {
+  while ((m = coreRe.exec(section))) {
     const slot = normaliseSlot(m[1]);
     if (!slot || !TIER_SLOTS.has(slot)) continue;
-    out.push({ slot, itemName: '', itemId: m[2], source: decodeEntities(m[3].trim()) });
+    // Source: the first non-empty [b]…[/b] before the next card (next [color=…]) or section end.
+    const rest    = section.slice(coreRe.lastIndex);
+    const nextCard = rest.search(/\[color=[^\]]+\]/i);
+    const window  = nextCard >= 0 ? rest.slice(0, nextCard) : rest;
+    const sm      = /\[b\]([^\[]+?)\[\\?\/b\]/i.exec(window);
+    out.push({ slot, itemName: '', itemId: m[2], source: sm ? decodeEntities(sm[1].trim()) : '' });
   }
   return out;
 }

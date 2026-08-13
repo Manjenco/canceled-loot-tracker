@@ -483,6 +483,18 @@ test('parseCatalyzeSection (Wowhead)', async (t) => {
     assert.equal(c.itemId, '271874');
     assert.equal(c.source, "Ula'tek");
   });
+
+  await t.test('BBCode cards with a blank source ([b][/b]) still parse (source is optional)', () => {
+    // Some authors leave the source label empty and put it only in the tooltip. The slot +
+    // item must still resolve; source falls back to ''.
+    const bb = String.raw`[h3][color=q1]Best Gear to Catalyze for Discipline Priest[\/color][\/h3][grid]`
+      + String.raw`[p][large][b][color=q1]Shoulder[\/color][\/b][\/large][center][icon-badge=268241 quality=4 tooltip="Cata_1_Tooltip"][large][b][\/b][\/large][\/center][\/p]`
+      + String.raw`[p][large][b][color=q1]Legs[\/color][\/b][\/large][center][icon-badge=271554 quality=4][large][b][\/b][\/large][\/center][\/p][\/grid]`;
+    const bySlot = Object.fromEntries(parseCatalyzeSection(bb).map(c => [c.slot, c]));
+    assert.equal(bySlot.Shoulders.itemId, '268241');   // Shoulder → Shoulders, [color=q1]
+    assert.equal(bySlot.Shoulders.source, '');
+    assert.equal(bySlot.Legs.itemId, '271554');
+  });
 });
 
 const CAT_DB = [
