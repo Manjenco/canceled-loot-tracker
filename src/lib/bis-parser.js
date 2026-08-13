@@ -507,25 +507,22 @@ function parseCatalyzeBBCode(str) {
   const headIdx = str.search(/Best Gear to Catalyze/i);
   if (headIdx < 0) return [];
   const tail    = str.slice(headIdx);
-  const gridEnd = tail.search(/\[\\?\/grid\]/i);
-  const section = gridEnd >= 0 ? tail.slice(0, gridEnd) : tail.slice(0, 4000);
+  // Bound to the next heading — the catalyze block sits before it, whether it's a [grid] of
+  // cards or a [table]. (Opening headings are unescaped, e.g. [h3 …]; closes are [\/h3].)
+  const nextH   = tail.search(/\[h[1-6][\s\]]/i);
+  const section = nextH < 0 ? tail : tail.slice(0, nextH);
 
-  // Card core = the slot label ([color=X]Slot[/color], X varies by author: a numeric class
-  // color c8, quality color q1, or a literal like CLASS_COLOR) followed by the item's
-  // [icon-badge=ID]. The source label is optional — some guides leave it blank ([b][/b]) and
-  // put the source only in the tooltip — so it's pulled separately per card, never required.
-  const coreRe = /\[color=[^\]]+\]([^\[]+?)\[\\?\/color\][\s\S]*?\[icon-badge=(\d+)/gi;
+  // Authors format this block several ways: a [grid] of cards with the slot in a [color=X] or
+  // [b] label beside each [icon-badge]; or a two-row [table] with a header row of "Slot" / "Slot
+  // - Source" [b] labels above a row of [icon-badge] cells. The one invariant is that the slot
+  // labels and the item icon-badges appear in the SAME ORDER — so extract both sequences and zip.
+  const slots = [...section.matchAll(/(?:\[color=[^\]]+\]|\[b\])\s*(Head|Shoulders?|Chest|Gloves?|Hands?|Legs?)\b/gi)]
+    .map(m => normaliseSlot(m[1]));
+  const ids   = [...section.matchAll(/\[icon-badge=(\d+)/gi)].map(m => m[1]);
+
   const out = [];
-  let m;
-  while ((m = coreRe.exec(section))) {
-    const slot = normaliseSlot(m[1]);
-    if (!slot || !TIER_SLOTS.has(slot)) continue;
-    // Source: the first non-empty [b]…[/b] before the next card (next [color=…]) or section end.
-    const rest    = section.slice(coreRe.lastIndex);
-    const nextCard = rest.search(/\[color=[^\]]+\]/i);
-    const window  = nextCard >= 0 ? rest.slice(0, nextCard) : rest;
-    const sm      = /\[b\]([^\[]+?)\[\\?\/b\]/i.exec(window);
-    out.push({ slot, itemName: '', itemId: m[2], source: sm ? decodeEntities(sm[1].trim()) : '' });
+  for (let i = 0; i < Math.min(slots.length, ids.length); i++) {
+    if (slots[i] && TIER_SLOTS.has(slots[i])) out.push({ slot: slots[i], itemName: '', itemId: ids[i], source: '' });
   }
   return out;
 }
