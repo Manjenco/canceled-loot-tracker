@@ -4,7 +4,29 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSpecIdOverrides, setSpecIdOverrides, specNameForId } from '../src/lib/specs.js';
+import {
+  parseSpecIdOverrides, setSpecIdOverrides, specNameForId,
+  getClassForSpec, toCanonical, ALL_SPECS, CLASS_SPECS,
+} from '../src/lib/specs.js';
+
+test('getClassForSpec resolves every spec in both sheet and canonical form', () => {
+  // Regression: CLASS_BY_SPEC was keyed by the short sheet names while getClassForSpec
+  // looks up by toCanonical(spec). Any class whose sheet name differs from its canonical
+  // name (Shaman, Death Knight, Demon Hunter, Hunter, Warlock…) missed and returned '',
+  // which silently emptied the tier-piece filter on the Default BIS editor.
+  const expected = {};
+  for (const [cls, specs] of Object.entries(CLASS_SPECS)) for (const s of specs) expected[s] = cls;
+
+  for (const sheet of ALL_SPECS) {
+    assert.equal(getClassForSpec(sheet),            expected[sheet], `sheet form: ${sheet}`);
+    assert.equal(getClassForSpec(toCanonical(sheet)), expected[sheet], `canonical form: ${toCanonical(sheet)}`);
+  }
+  // The exact forms the Default BIS page sends (the ones that used to break).
+  assert.equal(getClassForSpec('Elemental Shaman'),   'Shaman');
+  assert.equal(getClassForSpec('Frost Death Knight'), 'Death Knight');
+  assert.equal(getClassForSpec('Havoc Demon Hunter'), 'Demon Hunter');
+  assert.equal(getClassForSpec('unknown spec'),       ''); // still '' for genuinely unknown input
+});
 
 test('spec-id overrides', async (t) => {
   await t.test('parseSpecIdOverrides parses id:name pairs, ignores junk', () => {
