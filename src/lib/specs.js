@@ -190,10 +190,15 @@ export const CLASS_SPECS = {
 /** Flat list of all sheet spec names. */
 export const ALL_SPECS = Object.values(CLASS_SPECS).flat();
 
+// Keyed by the CANONICAL spec name, since getClassForSpec() normalises its input with
+// toCanonical() before the lookup. CLASS_SPECS lists the short sheet names (e.g. "Ele
+// Shaman"), so key on toCanonical(s) ("Elemental Shaman") — otherwise every class whose
+// sheet name differs from its canonical name (Shaman, DK, DH, Hunter, Warlock…) misses
+// and getClassForSpec returns '' (which silently empties tier-piece filters, etc.).
 const CLASS_BY_SPEC = new Map(
-  Object.entries(CLASS_SPECS).flatMap(([cls, specs]) => specs.map(s => [s, cls]))
+  Object.entries(CLASS_SPECS).flatMap(([cls, specs]) => specs.map(s => [toCanonical(s), cls]))
 );
-/** Class name for a (canonical) spec name, or '' if unknown. */
+/** Class name for a spec name (canonical or sheet form), or '' if unknown. */
 export function getClassForSpec(spec) {
   return CLASS_BY_SPEC.get(toCanonical(spec)) ?? '';
 }
