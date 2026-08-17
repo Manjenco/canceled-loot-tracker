@@ -357,4 +357,20 @@ ALTER TABLE seasons ADD COLUMN token_slot_words TEXT NOT NULL DEFAULT '';
 UPDATE seasons SET token_slot_words = COALESCE((SELECT value FROM global_config WHERE key = 'token_slot_overrides'), '');
 `.trim(),
   },
+
+  {
+    name: '0012_roster_soft_delete_unique',
+    description: 'Make the roster name uniqueness index partial (WHERE deleted = 0), so a soft-deleted character no longer holds its (team_id, char_name, server) slot and block re-adding a character with the same name.',
+    check: async (db) => {
+      // Applied once the index definition carries the partial WHERE clause.
+      const row = await db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_roster_name_server'"
+      ).first();
+      return !!row?.sql && /WHERE\s+deleted/i.test(row.sql);
+    },
+    sql: `
+DROP INDEX IF EXISTS idx_roster_name_server;
+CREATE UNIQUE INDEX idx_roster_name_server ON roster(team_id, char_name, server) WHERE deleted = 0;
+`.trim(),
+  },
 ];

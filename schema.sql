@@ -138,7 +138,9 @@ CREATE TABLE roster (
   deleted               INTEGER NOT NULL DEFAULT 0   -- 1 = soft-deleted; hidden from all roster reads
 );
 
-CREATE UNIQUE INDEX idx_roster_name_server ON roster(team_id, char_name, server);
+-- Partial: only live characters must be unique. A soft-deleted row (deleted = 1) keeps its
+-- real name but drops out of the index, so its name/server can be reused by a new character.
+CREATE UNIQUE INDEX idx_roster_name_server ON roster(team_id, char_name, server) WHERE deleted = 0;
 CREATE INDEX        idx_roster_team_status ON roster(team_id, status);
 CREATE INDEX        idx_roster_team_owner  ON roster(team_id, owner_id);
 
