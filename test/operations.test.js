@@ -281,4 +281,18 @@ test('data layer operations (season-partitioned)', async (t) => {
     const refs = await db.getDefaultBisItemRefs(D, 1);
     assert.ok(refs.has(helmItemId));
   });
+
+  await t.test('approvePrimarySpecChange swaps specs instead of duplicating the primary', async () => {
+    const mageId = chars.find(ch => ch.cls === 'Mage').id;   // Zephyrak, primary "Frost Mage"
+    await db.setSecondarySpecs(D, mageId, ['Arcane Mage']);
+    await db.setPendingPrimarySpec(D, mageId, 'Arcane Mage'); // request promote of the secondary
+    await db.approvePrimarySpecChange(D, mageId);
+
+    const row = await db.getRosterMember(D, mageId);
+    assert.equal(row.spec, 'Arcane Mage');                    // promoted secondary is now primary
+    assert.deepEqual(row.secondarySpecs, ['Frost Mage']);     // old primary demoted; promoted spec removed
+    assert.equal(row.pending_primary_spec, '');               // request cleared
+    // No spec appears in both primary and secondary → BIS renders exactly one primary tab.
+    assert.ok(!row.secondarySpecs.includes(row.spec));
+  });
 });

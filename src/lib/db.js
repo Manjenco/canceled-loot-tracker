@@ -300,6 +300,11 @@ export async function getRosterPendingSpecChanges(db, teamId) {
   });
 }
 
+// Roster caches share the `roster` prefix: `roster:${teamId}` (list), `roster_member:${id}`
+// (single), and `roster_pending_spec:${teamId}` (pending spec-change review list). Every roster
+// write must invalidate all three, so they call cacheInvalidatePrefix('roster') — NOT 'roster:',
+// which would leave roster_member and roster_pending_spec stale (spec changes appearing not to
+// apply, and pending requests missing from the officer review page).
 export async function getRosterMember(db, id) {
   return cachedRead(`roster_member:${id}`, TTL.SHORT, async () => {
     const row = await first(db, 'SELECT * FROM roster WHERE id = ?', id);
@@ -330,22 +335,22 @@ export async function deleteRosterChar(db, id) {
   // view immediately. FK-referenced child rows (loot_log, bis_submissions, etc.)
   // are left untouched — they remain queryable and the loot history is intact.
   await run(db, 'UPDATE roster SET deleted = 1 WHERE id = ?', id);
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 export async function renameRosterChar(db, id, newName) {
   await run(db, 'UPDATE roster SET char_name = ? WHERE id = ?', newName, id);
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 export async function setRosterStatus(db, id, status) {
   await run(db, 'UPDATE roster SET status = ? WHERE id = ?', status, id);
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 export async function setRosterOwner(db, id, ownerId, ownerNick) {
   await run(db, 'UPDATE roster SET owner_id = ?, owner_nick = ? WHERE id = ?', ownerId, ownerNick, id);
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 export async function setOwnerNick(db, teamId, ownerId, ownerNick) {
@@ -366,7 +371,7 @@ export async function setOwnerIdAllChars(db, teamId, oldOwnerId, newOwnerId, own
 
 export async function setRosterServer(db, id, server) {
   await run(db, 'UPDATE roster SET server = ? WHERE id = ?', server, id);
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 /**
@@ -392,31 +397,41 @@ export async function setAttendanceAdjustment(db, teamId, charId, adjustment) {
 }
 
 export async function setSecondarySpecs(db, id, specs) {
+  // Dedupe defensively — the route validates primary/class, but keep the column itself clean.
+  const clean = [...new Set((specs ?? []).filter(Boolean))];
   await run(db,
     'UPDATE roster SET secondary_specs = ? WHERE id = ?',
-    specs.join('|'), id
+    clean.join('|'), id
   );
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 export async function setPendingPrimarySpec(db, id, spec) {
   await run(db, 'UPDATE roster SET pending_primary_spec = ? WHERE id = ?', spec, id);
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 export async function approvePrimarySpecChange(db, id) {
   const char = await getRosterMember(db, id);
   if (!char?.pending_primary_spec) return;
+  const newPrimary = char.pending_primary_spec;
+  const oldPrimary = char.spec;
+  // Swap, don't just overwrite: promote the pending secondary to primary AND demote the old
+  // primary into the secondary list, dropping the promoted spec from secondary — otherwise the
+  // promoted spec lands in both primary and secondary (two "primary" tabs) and the old primary
+  // is lost. Dedupe for safety.
+  const secondary = (char.secondarySpecs ?? []).filter(s => s && s !== newPrimary && s !== oldPrimary);
+  if (oldPrimary && oldPrimary !== newPrimary) secondary.push(oldPrimary);
   await run(db,
-    'UPDATE roster SET spec = ?, pending_primary_spec = ? WHERE id = ?',
-    char.pending_primary_spec, '', id
+    'UPDATE roster SET spec = ?, secondary_specs = ?, pending_primary_spec = ? WHERE id = ?',
+    newPrimary, [...new Set(secondary)].join('|'), '', id
   );
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 export async function rejectPrimarySpecChange(db, id) {
   await run(db, 'UPDATE roster SET pending_primary_spec = ? WHERE id = ?', '', id);
-  cacheInvalidatePrefix('roster:');
+  cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
 // ── Loot log ──────────────────────────────────────────────────────────────────
