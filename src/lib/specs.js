@@ -105,7 +105,10 @@ export function toSheet(canonicalSpec) {
  */
 export function getCharSpecs(rosterEntry) {
   const primary   = rosterEntry.spec ?? '';
-  const secondary = rosterEntry.secondarySpecs ?? [];
+  // Defensive: strip the primary and any duplicates out of the secondary list, so a dirty row
+  // (e.g. a legacy approve that left the promoted spec in secondary_specs) can't render the
+  // primary twice or show two "primary" tabs. `all` is then duplicate-free by construction.
+  const secondary = [...new Set((rosterEntry.secondarySpecs ?? []).filter(s => s && s !== primary))];
   const pending   = rosterEntry.pendingPrimarySpec || null;
   return { primary, secondary, pending, all: [primary, ...secondary].filter(Boolean) };
 }

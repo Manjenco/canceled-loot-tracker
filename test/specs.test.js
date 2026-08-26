@@ -7,8 +7,26 @@ import assert from 'node:assert/strict';
 import {
   parseSpecIdOverrides, setSpecIdOverrides, specNameForId,
   getClassForSpec, toCanonical, ALL_SPECS, CLASS_SPECS,
-  resolveVeteranStarts, buildTrackRanges, getItemTrack,
+  resolveVeteranStarts, buildTrackRanges, getItemTrack, getCharSpecs,
 } from '../src/lib/specs.js';
+
+test('getCharSpecs strips the primary and duplicates out of the secondary list', () => {
+  // A dirty row where the primary also sits in secondary_specs (the old approve bug) must not
+  // render the primary twice or expose two "primary" specs.
+  const dirty = getCharSpecs({ spec: 'Enh Shaman', secondarySpecs: ['Enh Shaman', 'Resto Shaman'], pendingPrimarySpec: '' });
+  assert.deepEqual(dirty.secondary, ['Resto Shaman']);
+  assert.deepEqual(dirty.all, ['Enh Shaman', 'Resto Shaman']);      // no duplicate, one primary
+  assert.equal(dirty.all.filter(s => s === dirty.primary).length, 1);
+
+  // Duplicate secondaries collapse.
+  const dupes = getCharSpecs({ spec: 'Frost Mage', secondarySpecs: ['Arcane Mage', 'Arcane Mage'], pendingPrimarySpec: '' });
+  assert.deepEqual(dupes.secondary, ['Arcane Mage']);
+
+  // Clean rows pass through unchanged; pending surfaces.
+  const clean = getCharSpecs({ spec: 'Ele Shaman', secondarySpecs: ['Enh Shaman'], pendingPrimarySpec: 'Enh Shaman' });
+  assert.deepEqual(clean.all, ['Ele Shaman', 'Enh Shaman']);
+  assert.equal(clean.pending, 'Enh Shaman');
+});
 
 test('resolveVeteranStarts scopes track detection to the season, else falls back', () => {
   const MULTI = '9544|10266|10305|12777|12825|12873'; // auto-detected, every season's Veteran start
