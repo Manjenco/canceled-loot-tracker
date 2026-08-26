@@ -51,7 +51,7 @@ export default function AdminSeasons() {
     const list = d.seasons ?? [];
     setSeasons(list);
     setCurrentSeasonId(d.currentSeasonId ?? null);
-    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release, zoneIds: s.zone_ids ?? '', veteranBonusId: s.veteran_bonus_id ?? '' }])));
+    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release, zoneIds: s.zone_ids ?? '', veteranBonusId: s.veteran_bonus_id == null ? '' : String(s.veteran_bonus_id) }])));
   }
 
   async function refresh() {
@@ -90,7 +90,7 @@ export default function AdminSeasons() {
           mplusWse: (mplusWse === '' || mplusWse == null) ? null : Number(mplusWse),
           preRelease: !!preRelease,
           zoneIds: (zoneIds ?? '').trim(),   // '' deliberately clears (pauses WCL sync for the season)
-          veteranBonusId: (veteranBonusId ?? '').trim(),  // '' clears → legacy multi-season fallback
+          veteranBonusId: String(veteranBonusId ?? '').trim(),  // String(): veteran_bonus_id is an INTEGER from D1, so coerce before trim. '' clears → legacy multi-season fallback
         }),
       });
       const d = await r.json();
