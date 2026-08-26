@@ -247,6 +247,23 @@ export function buildTrackRanges(veteranStartId) {
   return TRACK_NAMES.map((track, i) => ({ bonusId: veteranStartId + i * 8, track }));
 }
 
+/**
+ * Resolve which Veteran-track start bonus IDs to feed buildTrackRanges for track detection.
+ *
+ * When the season pins its own veteran_bonus_id, detection is scoped to THAT season's block
+ * only — so prior-season gear (a different block) reads as Unknown and drops out, and Worn BIS
+ * resets each season. Without it, we fall back to the multi-season global list (auto-detected
+ * across every season) or the single manual value — the legacy behaviour, which classifies gear
+ * from any season and therefore does NOT reset. Returns a de-duped array of numeric starts.
+ */
+export function resolveVeteranStarts(seasonVeteranBonusId, globalMultiList, globalSingle) {
+  const seasonVet = Number(seasonVeteranBonusId) || 0;
+  const raw = seasonVet
+    ? [seasonVet]
+    : String(globalMultiList || globalSingle || '').split('|').map(Number).filter(Boolean);
+  return [...new Set(raw)];
+}
+
 /** Returns the upgrade track name for an item given its bonus IDs, or 'Unknown' if not found. */
 export function getItemTrack(bonusIDs, trackRanges) {
   for (const bonusId of bonusIDs ?? []) {

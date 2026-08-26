@@ -201,7 +201,14 @@ Column order is the source of truth. Tabs marked **[master]** live in the master
 - Tracks never decrease — values are merged with existing sheet data on each sync run (best-ever)
 - Items with unrecognised bonus IDs (Unknown track) are skipped entirely
 - Characters not on the roster (pugs) are skipped
-- Reset manually per season via Admin page → "Reset Worn BIS Data"
+- **Season reset:** worn BIS is season-scoped (season_id), so a new season starts empty. Track
+  detection is scoped to the season's own Veteran block via `seasons.veteran_bonus_id` — so
+  prior-season gear worn into the new season reads as Unknown and drops out, and the data resets.
+  If that season field is unset, detection falls back to the multi-season auto-detected list
+  (`wcl_track_veteran_ids`), which classifies gear from any season and therefore does NOT reset —
+  set the season's Track Base in Admin → Seasons to get the reset. `resolveVeteranStarts()` in
+  specs.js encodes this; used by both the WCL sync and the dashboard SimC importer.
+- Reset manually mid-season via Admin page → "Reset Worn BIS Data"
 
 ### Tier Items **[master]** (A=Class B=Slot C=ItemId)
 - Current season's tier piece item IDs, one row per class × slot (13 classes × 5 slots = 65 rows)
@@ -215,7 +222,8 @@ Guild-wide settings shared across all teams:
 - `season_start`           — ISO date of current season start (e.g. "2025-01-21"); used as a universal cutoff for all historical data queries and WCL report filtering
 - `wcl_client_id`          — Warcraft Logs OAuth client ID (non-sensitive, fine in sheet)
 - `wcl_zone_ids`           — pipe-separated WCL zone IDs for current tier (e.g. "38|41"); fights outside these zones are excluded from sync
-- `wcl_veteran_bonus_id`   — start bonus ID of the Veteran upgrade track; each track uses 8 consecutive IDs, so Champion = veteran+8, Hero = veteran+16, Mythic = veteran+24; update each new season (Midnight S1: 12777)
+- `wcl_veteran_bonus_id`   — legacy single Veteran-track start bonus ID; each track uses 8 consecutive IDs, so Champion = veteran+8, Hero = veteran+16, Mythic = veteran+24. Superseded per-season by `seasons.veteran_bonus_id` (set in Admin → Seasons) — the season value scopes track detection to that season so Worn BIS resets; this global is only a fallback (Midnight S1: 12777, S2: 12825)
+- `wcl_track_veteran_ids`   — auto-detected pipe-separated list of EVERY season's Veteran start (Detect Track Ranges). Used only as the fallback when a season has no `veteran_bonus_id`; because it spans seasons it classifies gear from any season, so it does NOT reset Worn BIS between seasons
 - `wcl_crafted_bonus_ids`  — pipe-separated bonus IDs that identify crafted items in WCL gear data (e.g. "9481|9513"); items matching any of these IDs are recorded as track 'Crafted' instead of being skipped; update each new season
 - `wcl_client_secret` is **not** stored here — env var `WCL_CLIENT_SECRET` only (Cloudflare Worker secret in prod, `.dev.vars` locally)
 

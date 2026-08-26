@@ -104,6 +104,10 @@ export async function getSeasons(db) {
   return all(db, 'SELECT * FROM seasons ORDER BY id');
 }
 
+export async function getSeason(db, seasonId) {
+  return first(db, 'SELECT * FROM seasons WHERE id = ?', seasonId);
+}
+
 /**
  * Resolve the current season:
  *   1. an explicit manual override (is_current = 1) always wins, else
@@ -157,17 +161,22 @@ export async function createSeason(db, { name, startDate, isCurrent = false }) {
   return result.meta?.last_row_id;
 }
 
-export async function updateSeason(db, seasonId, { name, startDate, mplusWse, preRelease, zoneIds, tokenSlotWords }) {
+export async function updateSeason(db, seasonId, { name, startDate, mplusWse, preRelease, zoneIds, tokenSlotWords, veteranBonusId }) {
   await run(db,
     `UPDATE seasons SET name = COALESCE(?, name), start_date = COALESCE(?, start_date),
        mplus_wse = COALESCE(?, mplus_wse), pre_release = COALESCE(?, pre_release),
-       zone_ids = COALESCE(?, zone_ids), token_slot_words = COALESCE(?, token_slot_words) WHERE id = ?`,
+       zone_ids = COALESCE(?, zone_ids), token_slot_words = COALESCE(?, token_slot_words),
+       veteran_bonus_id = CASE WHEN ? THEN ? ELSE veteran_bonus_id END WHERE id = ?`,
     name ?? null, startDate ?? null,
     (mplusWse === undefined || mplusWse === null || mplusWse === '') ? null : Number(mplusWse),
     (preRelease === undefined || preRelease === null) ? null : (preRelease ? 1 : 0),
     // zoneIds is authoritative when provided — '' deliberately clears (pauses sync); undefined leaves it.
     (zoneIds === undefined || zoneIds === null) ? null : String(zoneIds),
     (tokenSlotWords === undefined || tokenSlotWords === null) ? null : String(tokenSlotWords),
+    // veteran_bonus_id can't clear via COALESCE (NULL means "keep"), so gate on an explicit flag:
+    // undefined → leave unchanged; '' → clear to NULL (legacy multi-season fallback); number → set.
+    veteranBonusId === undefined ? 0 : 1,
+    (veteranBonusId === '' || veteranBonusId === null || veteranBonusId === undefined) ? null : Number(veteranBonusId),
     seasonId
   );
   cacheInvalidate('current_season');

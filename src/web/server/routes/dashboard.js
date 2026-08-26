@@ -10,10 +10,10 @@ import {
   getLootLogForChar, getBisSubmissionsForChar, getEffectiveDefaultBisForSpec,
   getWornBisForChar, getRosterMember, getGlobalConfig, getTierItems,
   upsertWornBis, upsertTierSnapshot,
-  getItemDb, getBisSubmissions, getEffectiveDefaultBis, getRoster, getCurrentSeasonId,
+  getItemDb, getBisSubmissions, getEffectiveDefaultBis, getRoster, getCurrentSeasonId, getSeason,
 } from '../../../lib/db.js';
 import { viewSeasonId } from '../util/season.js';
-import { toCanonical, getCharSpecs, getArmorType, buildTrackRanges, getItemTrack, mergeTrack } from '../../../lib/specs.js';
+import { toCanonical, getCharSpecs, getArmorType, buildTrackRanges, getItemTrack, mergeTrack, resolveVeteranStarts } from '../../../lib/specs.js';
 import { matchesBis, applyRaidBisInference, PAIRED_BIS_SLOTS } from '../../../lib/bis-match.js';
 import { parseSimcGear, parseSimcHeader } from '../../../lib/simc.js';
 
@@ -129,13 +129,14 @@ router.post('/simc', requireAuth, async (c) => {
 
   try {
     const seasonId = await viewSeasonId(c, db);
-    const [globalConfig, itemDbRows, tierItemRows, allSubs, effectiveDefaultBis, roster] = await Promise.all([
+    const [globalConfig, itemDbRows, tierItemRows, allSubs, effectiveDefaultBis, roster, season] = await Promise.all([
       getGlobalConfig(db),
       getItemDb(db, seasonId),
       getTierItems(db, seasonId),
       getBisSubmissions(db, teamId, seasonId),
       getEffectiveDefaultBis(db, seasonId),
       getRoster(db, teamId),
+      getSeason(db, seasonId),
     ]);
 
     const rosterEntry = roster.find(r =>
@@ -148,8 +149,10 @@ router.post('/simc', requireAuth, async (c) => {
     const charClass  = rosterEntry.class;
     const armorType  = getArmorType(toCanonical(activeSpec));
 
-    const { wcl_veteran_bonus_id, wcl_crafted_bonus_ids } = globalConfig;
-    const trackRanges    = buildTrackRanges(Number(wcl_veteran_bonus_id) || 0);
+    const { wcl_veteran_bonus_id, wcl_track_veteran_ids, wcl_crafted_bonus_ids } = globalConfig;
+    // Scope track detection to the viewed season's Veteran block (matches the WCL sync); falls
+    // back to the multi-season global list when the season has no veteran_bonus_id set.
+    const trackRanges    = resolveVeteranStarts(season?.veteran_bonus_id, wcl_track_veteran_ids, wcl_veteran_bonus_id).flatMap(buildTrackRanges);
     const craftedBonusIds = new Set(
       String(wcl_crafted_bonus_ids ?? '').split('|').map(Number).filter(Boolean)
     );
