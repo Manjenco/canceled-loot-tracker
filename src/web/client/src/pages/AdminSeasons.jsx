@@ -51,7 +51,7 @@ export default function AdminSeasons() {
     const list = d.seasons ?? [];
     setSeasons(list);
     setCurrentSeasonId(d.currentSeasonId ?? null);
-    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release, zoneIds: s.zone_ids ?? '' }])));
+    setEdits(Object.fromEntries(list.map(s => [s.id, { name: s.name, startDate: normaliseDate(s.start_date), mplusWse: s.mplus_wse ?? '', preRelease: !!s.pre_release, zoneIds: s.zone_ids ?? '', veteranBonusId: s.veteran_bonus_id ?? '' }])));
   }
 
   async function refresh() {
@@ -77,7 +77,7 @@ export default function AdminSeasons() {
   const setEdit = (id, patch) => setEdits(e => ({ ...e, [id]: { ...e[id], ...patch } }));
 
   async function saveSeason(id) {
-    const { name, startDate, mplusWse, preRelease, zoneIds } = edits[id];
+    const { name, startDate, mplusWse, preRelease, zoneIds, veteranBonusId } = edits[id];
     if (!name?.trim()) { setRow(id, { result: { error: 'Name is required' } }); return; }
     setRow(id, { saving: true, result: null });
     try {
@@ -90,6 +90,7 @@ export default function AdminSeasons() {
           mplusWse: (mplusWse === '' || mplusWse == null) ? null : Number(mplusWse),
           preRelease: !!preRelease,
           zoneIds: (zoneIds ?? '').trim(),   // '' deliberately clears (pauses WCL sync for the season)
+          veteranBonusId: (veteranBonusId ?? '').trim(),  // '' clears → legacy multi-season fallback
         }),
       });
       const d = await r.json();
@@ -194,7 +195,8 @@ export default function AdminSeasons() {
       || (e.startDate ?? '') !== normaliseDate(s.start_date)
       || String(e.mplusWse ?? '') !== String(s.mplus_wse ?? '')
       || !!e.preRelease !== !!s.pre_release
-      || String(e.zoneIds ?? '') !== String(s.zone_ids ?? '');
+      || String(e.zoneIds ?? '') !== String(s.zone_ids ?? '')
+      || String(e.veteranBonusId ?? '') !== String(s.veteran_bonus_id ?? '');
   };
 
   return (
@@ -225,6 +227,7 @@ export default function AdminSeasons() {
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 160 }}>Start Date</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 200 }} title="Current Mythic+ WorldStateExpression gate (DB2). Used to pick this season's M+ loot.">M+ WSE</th>
               <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 210 }} title="WCL zone IDs for this season's raid (pipe-separated). WCL attendance/worn-BIS sync only counts fights in these zones. Blank pauses sync until the raid is live on WCL.">WCL Zone IDs</th>
+              <th style={{ textAlign: 'left',   padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 110 }} title="This season's Veteran-track start bonus ID. Scopes upgrade-track detection to THIS season so Worn BIS resets each season. Blank falls back to the multi-season auto-detected list (won't reset). Find it via Global Config → Detect Track Ranges.">Track Base</th>
               <th style={{ textAlign: 'center', padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 90 }} title="Seed the Item DB from the latest (PTR) datamine build instead of the newest live build. Use while prepping a season before its patch launches.">Pre-release</th>
               <th style={{ textAlign: 'center', padding: '4px 8px 8px 0', color: 'var(--text-muted)', fontWeight: 500, width: 110 }}>Current</th>
               <th style={{ textAlign: 'right',  padding: '4px 0 8px',     color: 'var(--text-muted)', fontWeight: 500, width: 220 }}>Actions</th>
@@ -291,6 +294,20 @@ export default function AdminSeasons() {
                     {s.id === currentSeasonId && !String(e.zoneIds ?? '').trim() && (
                       <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 3 }} title="No WCL zone set for the current season — attendance/worn-BIS sync is paused until you set it (do this once the raid is live on WCL).">
                         ⚠ sync paused — no zone set
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ padding: '8px 8px 8px 0', whiteSpace: 'nowrap' }}>
+                    <input
+                      className="config-input config-input-narrow"
+                      style={{ width: 78 }}
+                      value={e.veteranBonusId ?? ''}
+                      onChange={ev => setEdit(s.id, { veteranBonusId: ev.target.value })}
+                      placeholder="e.g. 12825"
+                    />
+                    {s.id === currentSeasonId && !String(e.veteranBonusId ?? '').trim() && (
+                      <div style={{ fontSize: 11, color: '#fbbf24', marginTop: 3 }} title="No Veteran-track base set — Worn BIS uses the multi-season list and will include prior-season gear (won't reset). Set this season's Veteran start bonus ID.">
+                        ⚠ won't reset — no base set
                       </div>
                     )}
                   </td>

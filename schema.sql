@@ -24,7 +24,8 @@ CREATE TABLE seasons (
   mplus_wse  INTEGER DEFAULT NULL,         -- current M+ WorldStateExpressionID gate (DB2); per season
   pre_release INTEGER NOT NULL DEFAULT 0,  -- 1 = seed from the latest (PTR) DB2 build; 0 = pinned to the newest live build
   zone_ids   TEXT    NOT NULL DEFAULT '',  -- pipe-separated WCL zone IDs for this season's raid; '' pauses WCL sync
-  token_slot_words TEXT NOT NULL DEFAULT '' -- tier token flavor-word → slot map, e.g. "Idol:Hands|Icon:Chest"; per-tier, edited from the Item DB sync UI
+  token_slot_words TEXT NOT NULL DEFAULT '', -- tier token flavor-word → slot map, e.g. "Idol:Hands|Icon:Chest"; per-tier, edited from the Item DB sync UI
+  veteran_bonus_id INTEGER DEFAULT NULL     -- this season's Veteran-track start bonus ID; scopes upgrade-track detection to THIS season so Worn BIS resets each season. NULL → fall back to the multi-season global list (legacy, doesn't reset)
 );
 
 -- Raid and M+ item database, seeded via /admin → Sync Loot Tables

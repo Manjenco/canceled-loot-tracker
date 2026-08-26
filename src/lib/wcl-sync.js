@@ -75,7 +75,7 @@ import {
   getCombatantInfo,
 } from './wcl.js';
 import { matchesBis, PAIRED_BIS_SLOTS } from './bis-match.js';
-import { getArmorType, toCanonical, getCharSpecs, specNameForId, setSpecIdOverrides, parseSpecIdOverrides, mergeTrack, TRACK_ORDER, buildTrackRanges, getItemTrack } from './specs.js';
+import { getArmorType, toCanonical, getCharSpecs, specNameForId, setSpecIdOverrides, parseSpecIdOverrides, mergeTrack, TRACK_ORDER, buildTrackRanges, getItemTrack, resolveVeteranStarts } from './specs.js';
 
 // WCL difficulty integer → human label
 const DIFFICULTY_LABEL = {
@@ -271,12 +271,16 @@ async function buildWclContext(db) {
   const seasonId         = currentSeason.id;
   // Officer-supplied spec-ID overrides (e.g. a new spec) merged over the built-in map — deploy-free.
   setSpecIdOverrides(parseSpecIdOverrides(spec_id_overrides));
-  // Prefer the auto-detected multi-season list (wcl_track_veteran_ids, pipe-separated);
-  // fall back to the single manual wcl_veteran_bonus_id. Building ranges for every season's
-  // block is harmless (disjoint) and means track detection needs no "current season" value.
-  const veteranStarts    = String(wcl_track_veteran_ids || wcl_veteran_bonus_id || '')
-    .split('|').map(Number).filter(Boolean);
+  // Scope upgrade-track detection to THIS season's block when the season pins its own
+  // Veteran start (seasons.veteran_bonus_id) — so prior-season gear worn into the new season
+  // reads as Unknown and drops out, and Worn BIS resets each season. Falls back to the
+  // multi-season global list (auto-detected) when unset, which classifies gear from any
+  // season and therefore does NOT reset (the legacy behaviour).
+  const veteranStarts    = resolveVeteranStarts(currentSeason.veteran_bonus_id, wcl_track_veteran_ids, wcl_veteran_bonus_id);
   const trackRanges      = veteranStarts.flatMap(buildTrackRanges);
+  if (!Number(currentSeason.veteran_bonus_id)) {
+    log.warn(`[wcl-sync] season "${currentSeason.name}" has no veteran_bonus_id — using multi-season track ranges; Worn BIS will include prior-season gear and won't reset. Set it in Admin → Seasons.`);
+  }
   // Pipe-separated list of bonus IDs that identify crafted items, e.g. "9481|9513|9484"
   const craftedBonusIds  = new Set(
     String(wcl_crafted_bonus_ids ?? '').split('|').map(Number).filter(Boolean)

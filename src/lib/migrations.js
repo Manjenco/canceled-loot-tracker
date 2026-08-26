@@ -373,4 +373,16 @@ DROP INDEX IF EXISTS idx_roster_name_server;
 CREATE UNIQUE INDEX idx_roster_name_server ON roster(team_id, char_name, server) WHERE deleted = 0;
 `.trim(),
   },
+
+  {
+    name: '0013_season_veteran_bonus_id',
+    description: "Add veteran_bonus_id to seasons — this season's Veteran-track start bonus ID. Scopes WCL upgrade-track detection to THIS season so Worn BIS (best-worn) resets each season, instead of the multi-season global list that carries prior-season gear forward. Left NULL on backfill (the global wcl_veteran_bonus_id is a single, often-stale value that can't be trusted per-season); set it per season in Admin → Seasons.",
+    check: async (db) => {
+      const row = await db.prepare(
+        "SELECT 1 FROM pragma_table_info('seasons') WHERE name = 'veteran_bonus_id'"
+      ).first();
+      return !!row;
+    },
+    sql: `ALTER TABLE seasons ADD COLUMN veteran_bonus_id INTEGER DEFAULT NULL`,
+  },
 ];

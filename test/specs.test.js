@@ -7,7 +7,35 @@ import assert from 'node:assert/strict';
 import {
   parseSpecIdOverrides, setSpecIdOverrides, specNameForId,
   getClassForSpec, toCanonical, ALL_SPECS, CLASS_SPECS,
+  resolveVeteranStarts, buildTrackRanges, getItemTrack,
 } from '../src/lib/specs.js';
+
+test('resolveVeteranStarts scopes track detection to the season, else falls back', () => {
+  const MULTI = '9544|10266|10305|12777|12825|12873'; // auto-detected, every season's Veteran start
+  const SINGLE = '12777';                             // legacy single global (often stale)
+
+  // A season that pins its own Veteran start → ONLY that block (so Worn BIS resets each season).
+  assert.deepEqual(resolveVeteranStarts(12825, MULTI, SINGLE), [12825]);
+  assert.deepEqual(resolveVeteranStarts('12825', MULTI, SINGLE), [12825]);
+
+  // No season base → fall back to the multi-season list (legacy: classifies gear from any season).
+  assert.deepEqual(resolveVeteranStarts(null, MULTI, SINGLE), [9544, 10266, 10305, 12777, 12825, 12873]);
+  assert.deepEqual(resolveVeteranStarts('',   MULTI, SINGLE), [9544, 10266, 10305, 12777, 12825, 12873]);
+  assert.deepEqual(resolveVeteranStarts(0,    MULTI, SINGLE), [9544, 10266, 10305, 12777, 12825, 12873]);
+
+  // Multi list absent → fall back to the single global.
+  assert.deepEqual(resolveVeteranStarts(null, '', SINGLE), [12777]);
+  // Nothing configured → empty (all tracks read Unknown).
+  assert.deepEqual(resolveVeteranStarts(null, '', ''), []);
+
+  // The payoff: with a season base, prior-season gear (a different block) reads Unknown and drops
+  // out of Worn BIS, so it resets; the multi-season fallback would classify it and carry it forward.
+  const s2Ranges = resolveVeteranStarts(12825, MULTI, SINGLE).flatMap(buildTrackRanges);
+  assert.equal(getItemTrack([12825 + 24], s2Ranges), 'Mythic');     // this season's Mythic gear
+  assert.equal(getItemTrack([12777 + 24], s2Ranges), 'Unknown');    // last season's Mythic gear → dropped
+  const legacyRanges = resolveVeteranStarts(null, MULTI, SINGLE).flatMap(buildTrackRanges);
+  assert.equal(getItemTrack([12777 + 24], legacyRanges), 'Mythic'); // legacy: last season's gear still counts
+});
 
 test('getClassForSpec resolves every spec in both sheet and canonical form', () => {
   // Regression: CLASS_BY_SPEC was keyed by the short sheet names while getClassForSpec
