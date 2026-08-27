@@ -411,22 +411,34 @@ export async function setPendingPrimarySpec(db, id, spec) {
   cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
 }
 
-export async function approvePrimarySpecChange(db, id) {
-  const char = await getRosterMember(db, id);
-  if (!char?.pending_primary_spec) return;
-  const newPrimary = char.pending_primary_spec;
-  const oldPrimary = char.spec;
-  // Swap, don't just overwrite: promote the pending secondary to primary AND demote the old
-  // primary into the secondary list, dropping the promoted spec from secondary — otherwise the
-  // promoted spec lands in both primary and secondary (two "primary" tabs) and the old primary
-  // is lost. Dedupe for safety.
-  const secondary = (char.secondarySpecs ?? []).filter(s => s && s !== newPrimary && s !== oldPrimary);
+// Set the primary spec by SWAPPING, not overwriting: promote newPrimary, demote the old primary
+// into the secondary list, drop newPrimary from secondary, and clear any pending request.
+// Otherwise the new spec lands in both primary and secondary (two "primary" tabs) and the old
+// primary is lost. Dedupe for safety. Shared by approve (uses the pending spec) and the officer
+// force-change (uses an arbitrary valid spec).
+async function writePrimarySpecSwap(db, id, newPrimary, oldPrimary, secondarySpecs) {
+  const secondary = (secondarySpecs ?? []).filter(s => s && s !== newPrimary && s !== oldPrimary);
   if (oldPrimary && oldPrimary !== newPrimary) secondary.push(oldPrimary);
   await run(db,
     'UPDATE roster SET spec = ?, secondary_specs = ?, pending_primary_spec = ? WHERE id = ?',
     newPrimary, [...new Set(secondary)].join('|'), '', id
   );
   cacheInvalidatePrefix('roster');  // see note at getRosterMember: clears all roster* caches
+}
+
+export async function approvePrimarySpecChange(db, id) {
+  const char = await getRosterMember(db, id);
+  if (!char?.pending_primary_spec) return;
+  await writePrimarySpecSwap(db, id, char.pending_primary_spec, char.spec, char.secondarySpecs);
+}
+
+// Officer override: force the primary spec directly (no raider request / pending needed). Demotes
+// the old primary into secondary and clears any pending request. The caller validates the spec
+// against the character's class.
+export async function forcePrimarySpec(db, id, newSpec) {
+  const char = await getRosterMember(db, id);
+  if (!char) return;
+  await writePrimarySpecSwap(db, id, newSpec, char.spec, char.secondarySpecs);
 }
 
 export async function rejectPrimarySpecChange(db, id) {
