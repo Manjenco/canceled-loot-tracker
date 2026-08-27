@@ -438,6 +438,8 @@ function CharacterDetail({ charId, charName, onClose }) {
   const [specMsg,      setSpecMsg]      = useState(null);
   const [showAddSpec,  setShowAddSpec]  = useState(false);
   const [addSpecValue, setAddSpecValue] = useState('');
+  const [showSetPrimary,  setShowSetPrimary]  = useState(false);
+  const [setPrimaryValue, setSetPrimaryValue] = useState('');
 
   const reload = () => {
     setLoading(true);
@@ -499,8 +501,28 @@ function CharacterDetail({ charId, charName, onClose }) {
     finally { setSpecBusy(false); }
   };
 
+  // Officer override — set the primary spec directly (no raider request needed). The old primary
+  // is demoted to a secondary and any pending request is cleared.
+  const handleForcePrimary = async () => {
+    if (!data || !setPrimaryValue) return;
+    setSpecBusy(true); setSpecMsg(null);
+    try {
+      const res = await fetch(apiPath(`/api/roster/${charId}/force-primary-spec`), {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spec: setPrimaryValue }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.status);
+      setShowSetPrimary(false); setSetPrimaryValue('');
+      setActiveSpec(setPrimaryValue);   // follow the new primary in the BIS tabs
+      reload();
+    } catch (err) { setSpecMsg(`Error: ${err.message}`); }
+    finally { setSpecBusy(false); }
+  };
+
   const allSpecs        = data ? [data.spec, ...(data.secondarySpecs ?? [])] : [];
   const addableSpecs    = data ? (CLASS_SPECS[data.class] ?? []).filter(s => !allSpecs.includes(s)) : [];
+  const primaryOptions  = data ? (CLASS_SPECS[data.class] ?? []).filter(s => s !== data.spec) : [];
   const bisForSpec      = activeSpec && data?.bisBySpec ? (data.bisBySpec[activeSpec] ?? data.bis) : data?.bis;
   const defaultsForSpec = activeSpec && data?.defaultsBySpec ? (data.defaultsBySpec[activeSpec] ?? data.specDefaults) : data?.specDefaults;
 
@@ -514,6 +536,21 @@ function CharacterDetail({ charId, charName, onClose }) {
               <>
                 <span className="roster-detail-name">{charName || data.charName}</span>
                 <span className="roster-detail-spec">{data.spec} (primary)</span>
+                {primaryOptions.length > 0 && !showSetPrimary && (
+                  <button className="btn-secondary spec-add-btn" disabled={specBusy}
+                    title="Force a primary spec change (officer). Demotes the current primary to a secondary."
+                    onClick={() => setShowSetPrimary(true)}>Set primary</button>
+                )}
+                {showSetPrimary && (
+                  <span className="spec-add-inline">
+                    <select value={setPrimaryValue} onChange={e => setSetPrimaryValue(e.target.value)}>
+                      <option value="">New primary…</option>
+                      {primaryOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <button className="btn-primary" disabled={!setPrimaryValue || specBusy} onClick={handleForcePrimary}>Set</button>
+                    <button className="btn-secondary" onClick={() => { setShowSetPrimary(false); setSetPrimaryValue(''); }}>Cancel</button>
+                  </span>
+                )}
                 {(data.secondarySpecs ?? []).map(s => (
                   <span key={s} className="roster-detail-spec roster-detail-spec-secondary">
                     {s}

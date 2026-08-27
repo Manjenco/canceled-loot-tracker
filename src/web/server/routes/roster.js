@@ -23,7 +23,7 @@ import {
   getWornBisForChar,
   setRosterStatus, setOwnerNick, setOwnerIdAllChars, setRosterOwner, addRosterChar, deleteRosterChar,
   renameRosterChar, setRosterServer, setSecondarySpecs,
-  approvePrimarySpecChange, rejectPrimarySpecChange,
+  approvePrimarySpecChange, rejectPrimarySpecChange, forcePrimarySpec,
   setAttendanceAdjustment, getCurrentSeasonId,
 } from '../../../lib/db.js';
 import { viewSeasonId } from '../util/season.js';
@@ -439,6 +439,30 @@ router.post('/:charId/spec-change', async (c) => {
   } catch (err) {
     console.error('[ROSTER] Spec change error:', err);
     return c.json({ error: 'Failed to process spec change' }, 500);
+  }
+});
+
+// Officer-forced primary spec change — no raider request / pending approval needed.
+router.post('/:charId/force-primary-spec', async (c) => {
+  const { teamId } = c.get('session').user;
+  const charId     = Number(c.req.param('charId'));
+  const { spec }   = await c.req.json();
+  if (!charId)      return c.json({ error: 'charId is required' }, 400);
+  if (!spec?.trim()) return c.json({ error: 'spec is required' }, 400);
+
+  const db = c.env.DB;
+  try {
+    const roster     = await getRoster(db, teamId);
+    const rosterChar = roster.find(r => r.id === charId);
+    if (!rosterChar) return c.json({ error: 'Character not found' }, 404);
+    if (!(CLASS_SPECS[rosterChar.class] ?? []).includes(spec))
+      return c.json({ error: `"${spec}" is not a valid spec for class "${rosterChar.class}"` }, 400);
+
+    await forcePrimarySpec(db, charId, spec);
+    return c.json({ ok: true, charName: rosterChar.char_name, spec, role: specToRole(spec) });
+  } catch (err) {
+    console.error('[ROSTER] Force primary spec error:', err);
+    return c.json({ error: 'Failed to set primary spec' }, 500);
   }
 });
 

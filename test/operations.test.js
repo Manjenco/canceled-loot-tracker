@@ -295,4 +295,27 @@ test('data layer operations (season-partitioned)', async (t) => {
     // No spec appears in both primary and secondary → BIS renders exactly one primary tab.
     assert.ok(!row.secondarySpecs.includes(row.spec));
   });
+
+  await t.test('forcePrimarySpec sets primary directly, demotes old, clears pending', async () => {
+    const warId = chars.find(ch => ch.cls === 'Warrior').id;  // Morthrak
+    // Known starting state: primary "Arms Warrior", secondary ["Fury Warrior"], a pending request.
+    await db.forcePrimarySpec(D, warId, 'Arms Warrior');
+    await db.setSecondarySpecs(D, warId, ['Fury Warrior']);
+    await db.setPendingPrimarySpec(D, warId, 'Fury Warrior');
+
+    // Force to a brand-new spec that isn't currently a secondary.
+    await db.forcePrimarySpec(D, warId, 'Prot Warrior');
+    const row = await db.getRosterMember(D, warId);
+    assert.equal(row.spec, 'Prot Warrior');
+    assert.equal(row.pending_primary_spec, '');               // pending request cleared
+    assert.ok(row.secondarySpecs.includes('Arms Warrior'));   // old primary demoted to secondary
+    assert.ok(!row.secondarySpecs.includes(row.spec));        // primary never duplicated
+
+    // Force to an existing secondary → swap.
+    await db.forcePrimarySpec(D, warId, 'Fury Warrior');
+    const row2 = await db.getRosterMember(D, warId);
+    assert.equal(row2.spec, 'Fury Warrior');
+    assert.ok(!row2.secondarySpecs.includes('Fury Warrior')); // promoted spec removed from secondary
+    assert.ok(row2.secondarySpecs.includes('Prot Warrior'));  // previous primary demoted
+  });
 });
