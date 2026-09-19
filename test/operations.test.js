@@ -296,6 +296,21 @@ test('data layer operations (season-partitioned)', async (t) => {
     assert.ok(!row.secondarySpecs.includes(row.spec));
   });
 
+  await t.test('getRclcResponseMap returns a Map even after the rows were cached first (no key collision)', async () => {
+    await db.setRclcResponseMap(D, teamId, [
+      { button: 'BIS',          internalType: 'BIS',      counted: true },
+      { button: 'Item Upgrade', internalType: 'Non-BIS',  counted: true },
+    ]);
+    // Populate the shared `rclc_map:` cache with the ARRAY shape first (what the admin page does)…
+    const rows = await db.getRclcResponseMapRows(D, teamId);
+    assert.ok(Array.isArray(rows), 'rows accessor returns an array');
+    // …then the loot-import accessor must still hand back a Map, not the cached array.
+    const map = await db.getRclcResponseMap(D, teamId);
+    assert.ok(map instanceof Map, 'getRclcResponseMap returns a Map');
+    assert.equal(map.get('BIS')?.internalType, 'BIS');
+    assert.equal(map.get('Item Upgrade')?.counted, true);
+  });
+
   await t.test('forcePrimarySpec sets primary directly, demotes old, clears pending', async () => {
     const warId = chars.find(ch => ch.cls === 'Warrior').id;  // Morthrak
     // Known starting state: primary "Arms Warrior", secondary ["Fury Warrior"], a pending request.
