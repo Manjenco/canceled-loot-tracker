@@ -1335,20 +1335,20 @@ export async function invalidateWornBisSlots(db, teamId, targets, seasonId) {
 // ── RCLC response map ─────────────────────────────────────────────────────────
 
 export async function getRclcResponseMap(db, teamId) {
-  return cachedRead(`rclc_map:${teamId}`, TTL.SHORT, async () => {
-    const rows = await all(db,
-      'SELECT * FROM rclc_response_map WHERE team_id = ?',
-      teamId
-    );
-    const map = new Map();
-    for (const r of rows) {
-      map.set(r.rclc_button, {
-        internalType: r.internal_type,
-        counted:      r.counted_in_totals === 1,
-      });
-    }
-    return map;
-  });
+  // Build the Map from the shared cached rows — NOT a second cachedRead under the same
+  // `rclc_map:${teamId}` key. getRclcResponseMapRows caches an array under that key; a second
+  // loader returning a Map on the same key meant whichever ran first for a team won the cache,
+  // so a Map caller could receive an array (loot import crashed: "responseMap.get is not a
+  // function"). One key, one shape; the Map is rebuilt per call (cheap).
+  const rows = await getRclcResponseMapRows(db, teamId);
+  const map = new Map();
+  for (const r of rows) {
+    map.set(r.rclc_button, {
+      internalType: r.internal_type,
+      counted:      r.counted_in_totals === 1,
+    });
+  }
+  return map;
 }
 
 // ── Schema migrations ─────────────────────────────────────────────────────────
